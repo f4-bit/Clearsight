@@ -1,0 +1,2 @@
+# Clearsight multi-container orchestration placeholder.
+# Services to be defined in upcoming phases: backend, worker, frontend, postgres, redis, minio, mlflow.

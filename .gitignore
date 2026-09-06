@@ -1,0 +1,12 @@
+# Clearsight root ignores
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.next/
+.env
+*.onnx
+mlruns/
+.DS_Store
+.opencode
+openspec/
