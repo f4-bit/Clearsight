@@ -10,3 +10,9 @@ mlruns/
 .DS_Store
 .opencode
 openspec/
+*.pth
+*.pt
+*.h5
+*.safetensors
+ml/models/cache/
+docker/ml-service.env

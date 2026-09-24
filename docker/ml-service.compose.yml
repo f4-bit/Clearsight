@@ -1,0 +1,37 @@
+services:
+  ml-redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    networks:
+      - clearsight-ml
+    volumes:
+      - clearsight-ml-redis:/data
+
+  ml-service:
+    build:
+      context: ..
+      dockerfile: docker/ml-service.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ml-service.env
+    environment:
+      ML_REDIS_URL: redis://ml-redis:6379/0
+      ML_MODEL_CACHE_DIR: /models
+      ML_MANIFEST_PATH: /app/ml/models/manifest.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - clearsight-ml-models:/models
+    depends_on:
+      - ml-redis
+    gpus: all
+    networks:
+      - clearsight-ml
+
+networks:
+  clearsight-ml:
+    driver: bridge
+
+volumes:
+  clearsight-ml-models:
+  clearsight-ml-redis:

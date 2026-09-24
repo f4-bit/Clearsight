@@ -1,0 +1,58 @@
+{
+  "version": "2026-09-24",
+  "class_names": [
+    "Glaucoma",
+    "Non_Glaucoma",
+    "Suspicious_Glaucoma"
+  ],
+  "clinical_features": [
+    "Age",
+    "Gender",
+    "dioptre_1",
+    "dioptre_2",
+    "astigmatism",
+    "Phakic/Pseudophakic",
+    "Pneumatic",
+    "Perkins",
+    "Pachymetry",
+    "Axial_Length",
+    "VF_DM"
+  ],
+  "clinical_mean": null,
+  "clinical_std": null,
+  "segmentation": {
+    "disc_threshold": 0.4,
+    "cup_threshold": 0.33,
+    "image_size": 512,
+    "crop_margin": 100,
+    "classifier_crop_size": 384,
+    "classifier_crop_min": 600,
+    "classifier_crop_max": 1000,
+    "clahe_clip_limit": 2.0,
+    "clahe_tile_grid": 8
+  },
+  "ensemble": {
+    "efficientnet_b3": 0.5,
+    "resnet50": 0.5
+  },
+  "artifacts": {
+    "segmentation": {
+      "repository": "F4-bit/Clearsight-CD-Segmentation-CNN-Base-model",
+      "revision": "9c895971e4da6e69d3c4aab7087d2fb7d4ef7a1f",
+      "filename": "best_fpn_resnet18 - 13042026.h5",
+      "sha256": "0b9b573c50ba4a1b79bb8c89df173be5568cad7cc19d5d82e5f7a73eeacd5594"
+    },
+    "efficientnet_b3": {
+      "repository": "F4-bit/fold_4_efficientnet_b3",
+      "revision": "f008baa66e6ee36b1dca15ee9afbb670bffbcb26",
+      "filename": "best_model_fold4_efficientnet_b3.pth",
+      "sha256": "4f9bee56432d28a649a0d3591c9bb2ec25133bf39d034253daee1b8faa0e8eb3"
+    },
+    "resnet50": {
+      "repository": "F4-bit/fold_4_resnet_50",
+      "revision": "1cf2396be8d78cf5850bff1bf9a1bebb717dbbda",
+      "filename": "best_model_fold4_resnet50.pth",
+      "sha256": "53805e981df4f2fa769afcab5deed1d6029d983b70cc7e41a43d7b720cfc0533"
+    }
+  }
+}
