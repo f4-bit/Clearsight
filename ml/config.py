@@ -25,6 +25,7 @@ class Settings:
     host: str
     port: int
     device: str
+    inference_backend: str
     model_cache_dir: Path
     model_manifest_path: Path
     redis_url: str | None
@@ -62,6 +63,7 @@ def get_settings() -> Settings:
         host=os.getenv("ML_HOST", "0.0.0.0"),
         port=int(os.getenv("ML_PORT", "8000")),
         device=os.getenv("ML_DEVICE", "cuda"),
+        inference_backend=os.getenv("ML_INFERENCE_BACKEND", "pytorch").strip().lower(),
         model_cache_dir=Path(os.getenv("ML_MODEL_CACHE_DIR", str(default_cache))),
         model_manifest_path=Path(
             os.getenv("ML_MANIFEST_PATH", str(default_manifest))

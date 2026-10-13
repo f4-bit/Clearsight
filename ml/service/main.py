@@ -12,7 +12,8 @@ from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ml.config import Settings, get_settings
-from ml.inference.classification import ClassificationRunner
+from ml.inference.classification import ClassificationEngine, ClassificationRunner
+from ml.inference.onnx_serving import OnnxClassificationRunner
 from ml.inference.pipeline import InferencePipeline
 from ml.inference.segmentation import SegmentationRunner
 from ml.models.registry import artifact_spec, ensure_artifact, load_manifest
@@ -49,11 +50,12 @@ def build_runtime(settings: Settings) -> Runtime:
         cache,
     )
     segmentation = SegmentationRunner(segmentation_path, settings.device)
-    classification = ClassificationRunner(
-        {"efficientnet_b3": efficientnet_path, "resnet50": resnet_path},
-        settings,
-        manifest,
-    )
+    model_paths = {"efficientnet_b3": efficientnet_path, "resnet50": resnet_path}
+    classification: ClassificationEngine
+    if settings.inference_backend == "onnx":
+        classification = OnnxClassificationRunner(model_paths, settings, manifest)
+    else:
+        classification = ClassificationRunner(model_paths, settings, manifest)
     pipeline = InferencePipeline(
         settings=settings,
         segmentation=segmentation,

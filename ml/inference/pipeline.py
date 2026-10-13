@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import fnmatch
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
@@ -11,7 +12,7 @@ import numpy as np
 
 from ml.config import Settings
 from ml.inference.cdr import calculate_area_cdr, calculate_vertical_cdr
-from ml.inference.classification import ClassificationRunner
+from ml.inference.classification import ClassificationEngine
 from ml.inference.ensemble import combine_predictions
 from ml.inference.localization import (
     apply_segmentation_preprocessing,
@@ -30,12 +31,34 @@ from ml.service.schemas import InferenceRequest, JobStatus
 from ml.service.storage import ArtifactStore
 
 
+def host_is_allowed(
+    hostname: str | None,
+    netloc: str | None,
+    patterns: Sequence[str],
+) -> bool:
+    """Return ``True`` when ``hostname`` matches any allowed host pattern.
+
+    Patterns support shell-style wildcards (via :func:`fnmatch.fnmatchcase`), so
+    Azure Blob Storage hosts such as ``clearsight.blob.core.windows.net`` match
+    the ``*.blob.core.windows.net`` allowlist entry.
+    """
+
+    if not patterns:
+        return True
+    candidates = [value for value in (hostname, netloc) if value]
+    return any(
+        fnmatch.fnmatchcase(candidate, pattern)
+        for pattern in patterns
+        for candidate in candidates
+    )
+
+
 class InferencePipeline:
     def __init__(
         self,
         settings: Settings,
         segmentation: SegmentationRunner,
-        classification: ClassificationRunner,
+        classification: ClassificationEngine,
         artifact_store: ArtifactStore,
         manifest: dict[str, Any],
     ) -> None:
@@ -51,8 +74,10 @@ class InferencePipeline:
             raise ValueError("The signed image URL is invalid")
         if parsed.scheme == "http" and not self.settings.allow_http_signed_urls:
             raise ValueError("HTTP signed image URLs are disabled")
-        if self.settings.allowed_signed_url_hosts and (
-            parsed.hostname not in self.settings.allowed_signed_url_hosts
+        if self.settings.allowed_signed_url_hosts and not host_is_allowed(
+            parsed.hostname,
+            parsed.netloc,
+            self.settings.allowed_signed_url_hosts,
         ):
             raise ValueError("The signed image URL host is not allowed")
         if not self.settings.allowed_signed_url_hosts and parsed.scheme == "https":

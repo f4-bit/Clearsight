@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import torch
@@ -38,6 +38,17 @@ class ClassifierPrediction:
     probabilities: dict[str, float]
     predicted_class: str
     confidence: float
+
+
+class ClassificationEngine(Protocol):
+    """Structural interface shared by the PyTorch and ONNX classification runners."""
+
+    def predict(
+        self,
+        image: np.ndarray,
+        cdr: float,
+        clinical_features: dict[str, float],
+    ) -> dict[str, ClassifierPrediction]: ...
 
 
 class ClassificationRunner:
