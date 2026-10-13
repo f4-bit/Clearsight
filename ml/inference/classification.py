@@ -11,6 +11,27 @@ from ml.config import Settings
 
 CLASS_NAMES = ("Glaucoma", "Non_Glaucoma", "Suspicious_Glaucoma")
 
+CLINICAL_EPSILON = 1e-8
+
+
+def normalize_clinical_features(
+    features: dict[str, float],
+    clinical_features: tuple[str, ...],
+    clinical_mean: list[float],
+    clinical_std: list[float],
+) -> np.ndarray:
+    if len(clinical_mean) != len(clinical_features):
+        raise ValueError("clinical_mean length does not match feature schema")
+    if len(clinical_std) != len(clinical_features):
+        raise ValueError("clinical_std length does not match feature schema")
+    values = np.asarray(
+        [float(features[name]) for name in clinical_features],
+        dtype=np.float32,
+    )
+    mean = np.asarray(clinical_mean, dtype=np.float32)
+    std = np.asarray(clinical_std, dtype=np.float32)
+    return ((values - mean) / (std + CLINICAL_EPSILON)).astype(np.float32)
+
 
 @dataclass(frozen=True)
 class ClassifierPrediction:
@@ -31,14 +52,16 @@ class ClassificationRunner:
         self.device = torch.device(settings.device)
         self.class_names = tuple(manifest["class_names"])
         self.clinical_features = tuple(manifest["clinical_features"])
-        self.clinical_mean = settings.clinical_mean or manifest.get("clinical_mean")
-        self.clinical_std = settings.clinical_std or manifest.get("clinical_std")
-        if not self.clinical_mean or not self.clinical_std:
+        clinical_mean = settings.clinical_mean or manifest.get("clinical_mean")
+        clinical_std = settings.clinical_std or manifest.get("clinical_std")
+        if not clinical_mean or not clinical_std:
             raise RuntimeError("clinical_mean and clinical_std are required")
-        if len(self.clinical_mean) != len(self.clinical_features):
+        if len(clinical_mean) != len(self.clinical_features):
             raise RuntimeError("clinical_mean length does not match feature schema")
-        if len(self.clinical_std) != len(self.clinical_features):
+        if len(clinical_std) != len(self.clinical_features):
             raise RuntimeError("clinical_std length does not match feature schema")
+        self.clinical_mean: list[float] = [float(value) for value in clinical_mean]
+        self.clinical_std: list[float] = [float(value) for value in clinical_std]
         self.models: dict[str, torch.nn.Module] = {}
         from ml.models.architecture import create_model, model_state_dict
 
@@ -53,13 +76,12 @@ class ClassificationRunner:
             self.models[model_type] = model.to(self.device).eval()
 
     def _clinical_vector(self, features: dict[str, float]) -> torch.Tensor:
-        values = np.asarray(
-            [float(features[name]) for name in self.clinical_features],
-            dtype=np.float32,
+        normalized = normalize_clinical_features(
+            features,
+            self.clinical_features,
+            self.clinical_mean,
+            self.clinical_std,
         )
-        mean = np.asarray(self.clinical_mean, dtype=np.float32)
-        std = np.asarray(self.clinical_std, dtype=np.float32)
-        normalized = (values - mean) / (std + 1e-8)
         return torch.from_numpy(normalized).unsqueeze(0).to(self.device)
 
     def predict(
