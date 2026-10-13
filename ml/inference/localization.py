@@ -111,7 +111,7 @@ def create_classifier_crop(
 ) -> np.ndarray:
     if disc_points is None or len(disc_points) < 3:
         raise ValueError("A disc contour is required for the classifier crop")
-    points = np.asarray(disc_points, dtype=np.float32)
+    points = np.asarray(disc_points, dtype=np.float32).reshape(-1, 2)
     points[:, 0] += context.x_offset
     points[:, 1] += context.y_offset
     x_min, x_max = points[:, 0].min(), points[:, 0].max()

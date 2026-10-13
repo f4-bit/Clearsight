@@ -25,7 +25,7 @@ from ml.service.schemas import (
     JobResponse,
     JobStatus,
 )
-from ml.service.storage import MinioArtifactStore
+from ml.service.storage import create_artifact_store
 
 
 @dataclass
@@ -41,14 +41,24 @@ def build_runtime(settings: Settings) -> Runtime:
         artifact_spec(manifest, "segmentation"),
         cache,
     )
-    efficientnet_path = ensure_artifact(
-        artifact_spec(manifest, "efficientnet_b3"),
-        cache,
-    )
-    resnet_path = ensure_artifact(
-        artifact_spec(manifest, "resnet50"),
-        cache,
-    )
+    onnx_efficientnet = cache / "efficientnet_b3.fp16.onnx"
+    onnx_resnet = cache / "resnet50.fp16.onnx"
+    if (
+        settings.inference_backend == "onnx"
+        and onnx_efficientnet.exists()
+        and onnx_resnet.exists()
+    ):
+        efficientnet_path = onnx_efficientnet
+        resnet_path = onnx_resnet
+    else:
+        efficientnet_path = ensure_artifact(
+            artifact_spec(manifest, "efficientnet_b3"),
+            cache,
+        )
+        resnet_path = ensure_artifact(
+            artifact_spec(manifest, "resnet50"),
+            cache,
+        )
     segmentation = SegmentationRunner(segmentation_path, settings.device)
     model_paths = {"efficientnet_b3": efficientnet_path, "resnet50": resnet_path}
     classification: ClassificationEngine
@@ -60,7 +70,7 @@ def build_runtime(settings: Settings) -> Runtime:
         settings=settings,
         segmentation=segmentation,
         classification=classification,
-        artifact_store=MinioArtifactStore(settings),
+        artifact_store=create_artifact_store(settings),
         manifest=manifest,
     )
     return Runtime(pipeline=pipeline, queue=create_job_queue(settings))

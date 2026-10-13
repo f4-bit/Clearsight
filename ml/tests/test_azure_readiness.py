@@ -25,7 +25,7 @@ def _patch_runtime(monkeypatch, tmp_path: Path, recorded: dict[str, bool]) -> No
         service_main, "ensure_artifact", lambda spec, cache: tmp_path / f"{spec}.onnx"
     )
     monkeypatch.setattr(service_main, "SegmentationRunner", _FakeRunner)
-    monkeypatch.setattr(service_main, "MinioArtifactStore", lambda settings: object())
+    monkeypatch.setattr(service_main, "create_artifact_store", lambda settings: object())
     monkeypatch.setattr(service_main, "create_job_queue", lambda settings: object())
 
     def _pytorch(*args, **kwargs):

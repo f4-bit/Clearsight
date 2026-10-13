@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from typing import Protocol
+from urllib.parse import urlparse
 
 from ml.config import Settings
 
@@ -18,6 +20,7 @@ class ArtifactStore(Protocol):
 
 class MinioArtifactStore:
     def __init__(self, settings: Settings) -> None:
+        self.minio_required = settings.minio_required
         if settings.minio_required and not all(
             [
                 settings.minio_endpoint,
@@ -61,10 +64,94 @@ class MinioArtifactStore:
     ) -> str | None:
         if self.client is None or bucket is None:
             return None
-        self.client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=payload,
-            ContentType=content_type,
-        )
+        try:
+            self.client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=payload,
+                ContentType=content_type,
+            )
+        except Exception:
+            if self.minio_required:
+                raise
+            return None
         return f"s3://{bucket}/{key}"
+
+
+class AzureBlobArtifactStore:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.client = None
+        if settings.minio_required and not all(
+            [
+                settings.minio_endpoint,
+                settings.minio_secret_key,
+            ]
+        ):
+            raise RuntimeError("Azure Blob Storage configuration is incomplete")
+
+        account_url = settings.minio_endpoint or ""
+        if account_url and not account_url.startswith(("http://", "https://")):
+            account_url = f"https://{account_url}"
+
+        connection_string = os.getenv(
+            "AZURE_STORAGE_CONNECTION_STRING"
+        ) or os.getenv("ML_AZURE_STORAGE_CONNECTION_STRING")
+
+        if not connection_string and not all(
+            [account_url, settings.minio_secret_key]
+        ):
+            return
+
+        from azure.storage.blob import BlobServiceClient
+
+        if connection_string:
+            self.client = BlobServiceClient.from_connection_string(
+                connection_string
+            )
+        else:
+            self.client = BlobServiceClient(
+                account_url=account_url,
+                credential=settings.minio_secret_key,
+            )
+
+    def upload_bytes(
+        self,
+        bucket: str | None,
+        key: str,
+        payload: bytes,
+        content_type: str,
+    ) -> str | None:
+        if self.client is None or bucket is None:
+            return None
+        from azure.storage.blob import ContentSettings
+
+        try:
+            container = self.client.get_container_client(bucket)
+            container.upload_blob(
+                name=key,
+                data=payload,
+                overwrite=True,
+                content_settings=ContentSettings(content_type=content_type),
+            )
+        except Exception:
+            if self.settings.minio_required:
+                raise
+            return None
+        return f"azure://{bucket}/{key}"
+
+
+def _is_azure_blob_endpoint(endpoint: str | None) -> bool:
+    if not endpoint:
+        return False
+    candidate = endpoint
+    if "://" in candidate:
+        candidate = urlparse(candidate).hostname or ""
+    candidate = candidate.split("/")[0].split(":")[0]
+    return candidate.endswith("blob.core.windows.net")
+
+
+def create_artifact_store(settings: Settings) -> ArtifactStore:
+    if _is_azure_blob_endpoint(settings.minio_endpoint):
+        return AzureBlobArtifactStore(settings)
+    return MinioArtifactStore(settings)

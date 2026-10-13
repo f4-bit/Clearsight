@@ -104,8 +104,18 @@ function Invoke-AzCli {
 
 function Test-Exists {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    & az @Arguments 2>$null | Out-Null
-    return $LASTEXITCODE -eq 0
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try {
+        & az @Arguments 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 function Get-AzValue {
@@ -117,6 +127,13 @@ function Get-AzValue {
     return "$value".Trim()
 }
 
+if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+    $azFallbackPath = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin"
+    if (Test-Path -LiteralPath (Join-Path $azFallbackPath "az.cmd")) {
+        $env:PATH = "$env:PATH;$azFallbackPath"
+        Write-Warn "Azure CLI (az) was not on PATH; added '$azFallbackPath' for this process."
+    }
+}
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw "Azure CLI (az) was not found on PATH. Install it from https://aka.ms/azure-cli."
 }
