@@ -32,8 +32,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ResourceGroup = "rg-clearsight-eastus2",
-    [string]$Location = "eastus2",
+    [string]$ResourceGroup = "rg-clearsight-northcentralus",
+    [string]$Location = "northcentralus",
     [string]$StorageAccount = "",
     [string]$AcrName = "",
     [string]$PostgresServer = "",
@@ -42,7 +42,7 @@ param(
     [string]$PostgresDatabase = "clearsight",
     [string]$ContainerAppEnv = "clearsight-env",
     [string]$ContainerAppName = "clearsight-ml-service",
-    [string]$ImageTag = "latest",
+    [string]$ImageTag = "v3",
     [string]$ModelsDir = "",
     [string]$InitSqlPath = "",
     [string]$EnvOutputPath = "",
@@ -295,32 +295,132 @@ if (-not (Test-Exists @("postgres", "flexible-server", "db", "show", "--resource
     )
 }
 
-Invoke-AzCli @(
-    "postgres", "flexible-server", "firewall-rule", "create",
-    "--resource-group", $ResourceGroup,
-    "--server-name", $PostgresServer,
-    "--name", "AllowAzureServices",
-    "--start-ip-address", "0.0.0.0",
-    "--end-ip-address", "0.0.0.0",
-    "--output", "none"
-)
+if (-not (Test-Exists @("postgres", "flexible-server", "firewall-rule", "show", "--resource-group", $ResourceGroup, "--server-name", $PostgresServer, "--name", "AllowAzureServices"))) {
+    Invoke-AzCli @(
+        "postgres", "flexible-server", "firewall-rule", "create",
+        "--resource-group", $ResourceGroup,
+        "--server-name", $PostgresServer,
+        "--name", "AllowAzureServices",
+        "--start-ip-address", "0.0.0.0",
+        "--end-ip-address", "0.0.0.0",
+        "--output", "none"
+    )
+}
+else {
+    Write-Info "Firewall rule 'AllowAzureServices' already exists."
+}
+
+Write-Info "Determining the public IP of this machine for a temporary firewall rule..."
+$localPublicIp = $null
+try {
+    $localPublicIp = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 15).Trim()
+}
+catch {
+    Write-Warn "Could not determine the public IP of this machine: $($_.Exception.Message)"
+}
+$hasLocalRule = $false
+if ($localPublicIp -and $localPublicIp -match '^\d{1,3}(\.\d{1,3}){3}$') {
+    Invoke-AzCli @(
+        "postgres", "flexible-server", "firewall-rule", "create",
+        "--resource-group", $ResourceGroup,
+        "--server-name", $PostgresServer,
+        "--name", "AllowLocalClient",
+        "--start-ip-address", $localPublicIp,
+        "--end-ip-address", $localPublicIp,
+        "--output", "none"
+    )
+    $hasLocalRule = $true
+    Write-Info "Temporary firewall rule 'AllowLocalClient' added for $localPublicIp."
+}
+else {
+    Write-Warn "No valid public IP detected; skipping the temporary firewall rule. Schema application may fail."
+}
 
 Write-Info "Applying schema from '$InitSqlPath'..."
 if (-not (Test-Path -LiteralPath $InitSqlPath)) {
     throw "Schema file '$InitSqlPath' was not found."
 }
-Invoke-AzCli @(
-    "postgres", "flexible-server", "execute",
-    "--resource-group", $ResourceGroup,
-    "--name", $PostgresServer,
-    "--database-name", $PostgresDatabase,
-    "--admin-user", $PostgresAdmin,
-    "--admin-password", $PostgresPassword,
-    "--file-path", $InitSqlPath,
-    "--output", "none"
-)
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    throw "Python was not found on PATH; it is required to apply '$InitSqlPath' via psycopg2."
+}
+
+& python -c "import psycopg2" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "psycopg2 is not installed; installing 'psycopg2-binary'..."
+    & python -m pip install --quiet --disable-pip-version-check psycopg2-binary
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to install psycopg2-binary; install it manually with 'python -m pip install psycopg2-binary'."
+    }
+}
 
 $postgresHost = "$PostgresServer.postgres.database.azure.com"
+$pgRunnerScript = Join-Path ([System.IO.Path]::GetTempPath()) "clearsight_apply_schema.py"
+$pgRunnerCode = @'
+import os
+import sys
+
+import psycopg2
+
+sql_path = os.environ["PG_INIT_SQL"]
+with open(sql_path, "r", encoding="utf-8") as handle:
+    schema_sql = handle.read()
+
+if not schema_sql.strip():
+    print("Init SQL file is empty; nothing to apply.")
+    sys.exit(0)
+
+dsn = {
+    "host": os.environ["PGHOST"],
+    "port": os.environ.get("PGPORT", "5432"),
+    "dbname": os.environ["PGDATABASE"],
+    "user": os.environ["PGUSER"],
+    "password": os.environ["PGPASSWORD"],
+    "sslmode": "require",
+    "connect_timeout": 30,
+}
+
+with psycopg2.connect(**dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute(schema_sql)
+
+print("Applied schema from {0}.".format(sql_path))
+'@
+Set-Content -LiteralPath $pgRunnerScript -Value $pgRunnerCode -Encoding UTF8
+
+$previousPgEnv = @{}
+foreach ($name in @("PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PG_INIT_SQL")) {
+    $previousPgEnv[$name] = [System.Environment]::GetEnvironmentVariable($name)
+}
+$env:PGHOST = $postgresHost
+$env:PGPORT = "5432"
+$env:PGDATABASE = $PostgresDatabase
+$env:PGUSER = $PostgresAdmin
+$env:PGPASSWORD = $PostgresPassword
+$env:PG_INIT_SQL = $InitSqlPath
+try {
+    & python $pgRunnerScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Applying schema via psycopg2 failed (exit $LASTEXITCODE)."
+    }
+}
+finally {
+    foreach ($name in $previousPgEnv.Keys) {
+        [System.Environment]::SetEnvironmentVariable($name, $previousPgEnv[$name])
+    }
+    Remove-Item -LiteralPath $pgRunnerScript -Force -ErrorAction SilentlyContinue
+}
+
+if ($hasLocalRule) {
+    Invoke-AzCli @(
+        "postgres", "flexible-server", "firewall-rule", "delete",
+        "--resource-group", $ResourceGroup,
+        "--server-name", $PostgresServer,
+        "--name", "AllowLocalClient",
+        "--yes",
+        "--output", "none"
+    )
+    Write-Info "Temporary firewall rule 'AllowLocalClient' removed."
+}
 
 # 7. Azure Container Apps -----------------------------------------------------
 Write-Info "Ensuring Container Apps environment '$ContainerAppEnv'..."
@@ -347,7 +447,7 @@ $envVars = @(
     "ML_DEVICE=cpu",
     "ML_HOST=0.0.0.0",
     "ML_PORT=8000",
-    "ML_MINIO_REQUIRED=true",
+    "ML_MINIO_REQUIRED=false",
     "ML_MINIO_SECURE=true",
     "ML_MINIO_ENDPOINT=https://$StorageAccount.blob.core.windows.net",
     "ML_MINIO_ACCESS_KEY=$StorageAccount",
@@ -374,8 +474,8 @@ if (-not (Test-Exists @("containerapp", "show", "--name", $ContainerAppName, "--
         "--target-port", "8000",
         "--ingress", "external",
         "--transport", "http",
-        "--cpu", "0.5",
-        "--memory", "1.0Gi",
+        "--cpu", "1.0",
+        "--memory", "2.0Gi",
         "--min-replicas", "0",
         "--max-replicas", "1",
         "--env-vars"

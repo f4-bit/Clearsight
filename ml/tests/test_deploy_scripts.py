@@ -187,8 +187,8 @@ def test_deploy_script_has_no_syntax_errors() -> None:
 def test_deploy_script_declares_required_resources() -> None:
     content = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     for token in [
-        "rg-clearsight-eastus2",
-        "eastus2",
+        "rg-clearsight-northcentralus",
+        "northcentralus",
         '"Standard_LRS"',
         '"Standard_B1ms"',
         '"Basic"',
@@ -200,7 +200,7 @@ def test_deploy_script_declares_required_resources() -> None:
         "segmentation-overlays",
         "gradcam-overlays",
         "models",
-        '"postgres", "flexible-server", "execute"',
+        "psycopg2",
         '"containerapp", "create"',
     ]:
         assert token in content, f"Expected token '{token}' in deploy_azure.ps1"
