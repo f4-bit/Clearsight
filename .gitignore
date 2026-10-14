@@ -10,3 +10,8 @@ mlruns/
 .DS_Store
 .opencode
 openspec/
+.atl/
+
+# GGA and Agent instructions
+.gga
+AGENTS.md
