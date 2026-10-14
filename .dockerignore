@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+node_modules
+.next
+mlruns
+openspec
+__pycache__
+*.pyc
+*.pth
+*.h5
+*.onnx
+.env*
+docker/ml-service.env
+!models_cache/**/*.onnx
+!models_cache/**/*.h5

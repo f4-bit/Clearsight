@@ -104,8 +104,8 @@ El sistema es una plataforma de apoyo al diagnóstico oftalmológico diseñada p
 * **Conversión a ONNX:** Exportar los modelos de visión desde PyTorch/TensorFlow a formato Open Neural Network Exchange (`.onnx`) con precisión FP16.
 * **Batching Bilateral:** Si el médico envía ambos ojos, se forma un tensor conjunto de dimensión $[2, 3, H, W]$ para procesar ambos hemisferios oculares en un único pase hacia adelante.
 * **Pipeline Híbrido:**
-1. Red Convolucional / Vision Transformer $\rightarrow$ Extrae el vector de características (*embeddings*) del fondo de ojo.
-2. Clasificador Tabular (Random Forest / XGBoost / MLP) $\rightarrow$ Concatena embeddings + variables clínicas $\rightarrow$ Emite probabilidad final.
+1. Red Convolucional / Vision Transformer --> Extrae el vector de características (*embeddings*) del fondo de ojo.
+2. Clasificador Tabular (Random Forest / XGBoost / MLP) --> Concatena embeddings + variables clínicas --> Emite probabilidad final.
 
 
 
@@ -129,50 +129,50 @@ Para un equipo multidisciplinar de ingeniería, las cargas de trabajo se distrib
 
 | Rol Asignado | Responsabilidades Principales | Entregables Clave |
 | --- | --- | --- |
-| **Ingeniero Frontend (UI/UX Clínico)** | • Desarrollo del portal web en Next.js/React.<br>
+| **Ingeniero Frontend (UI/UX Clínico)** | • Desarrollo del portal web en Next.js/React.
 
-<br>• Implementación del visor de imágenes con canvas/overlay Grad-CAM.<br>
+• Implementación del visor de imágenes con canvas/overlay Grad-CAM.
 
-<br>• Interfaz de validación médica (Human-in-the-Loop).<br>
+• Interfaz de validación médica (Human-in-the-Loop).
 
-<br>• Conexión con endpoints del backend mediante OpenAPI/REST. | • Portal web funcional y responsive.<br>
+• Conexión con endpoints del backend mediante OpenAPI/REST. | • Portal web funcional y responsive.
 
-<br>• Componente visor de retinografías.<br>
+• Componente visor de retinografías.
 
-<br>• Formularios con validación en cliente. |
-| **Ingeniero Backend & Seguridad** | • API REST en FastAPI con autenticación y RBAC.<br>
+• Formularios con validación en cliente. |
+| **Ingeniero Backend & Seguridad** | • API REST en FastAPI con autenticación y RBAC.
 
-<br>• Sanitización de imágenes (limpieza EXIF) y subida a Object Storage.<br>
+• Sanitización de imágenes (limpieza EXIF) y subida a Object Storage.
 
-<br>• Modelado e implementación de PostgreSQL.<br>
+• Modelado e implementación de PostgreSQL.
 
-<br>• Encolamiento asíncrono con Celery y Redis. | • API documentada con Swagger/OpenAPI.<br>
+• Encolamiento asíncrono con Celery y Redis. | • API documentada con Swagger/OpenAPI.
 
-<br>• Scripts de migración de BD (Alembic).<br>
+• Scripts de migración de BD (Alembic).
 
-<br>• Módulo de carga y sanitización segura. |
-| **Ingeniero de ML & Optimización (Serving)** | • Exportación y optimización de modelos a ONNX / TensorRT.<br>
+• Módulo de carga y sanitización segura. |
+| **Ingeniero de ML & Optimización (Serving)** | • Exportación y optimización de modelos a ONNX / TensorRT.
 
-<br>• Construcción del worker de inferencia en Celery.<br>
+• Construcción del worker de inferencia en Celery.
 
-<br>• Implementación del pipeline de preprocesamiento y Grad-CAM.<br>
+• Implementación del pipeline de preprocesamiento y Grad-CAM.
 
-<br>• Benchmark de latencia (PyTorch nativo vs. ONNX Runtime). | • Worker de inferencia dockerizado.<br>
+• Benchmark de latencia (PyTorch nativo vs. ONNX Runtime). | • Worker de inferencia dockerizado.
 
-<br>• Script de exportación y testing ONNX.<br>
+• Script de exportación y testing ONNX.
 
-<br>• Módulo generador de Grad-CAM. |
-| **Ingeniero MLOps & Arquitectura de Datos** | • Configuración y despliegue del servidor MLflow y MinIO.<br>
+• Módulo generador de Grad-CAM. |
+| **Ingeniero MLOps & Arquitectura de Datos** | • Configuración y despliegue del servidor MLflow y MinIO.
 
-<br>• Pipeline de extracción de feedback validado (ETL).<br>
+• Pipeline de extracción de feedback validado (ETL).
 
-<br>• Script automatizado de reentrenamiento y validación de métricas.<br>
+• Script automatizado de reentrenamiento y validación de métricas.
 
-<br>• Orquestación general (Docker Compose para desarrollo local). | • `docker-compose.yml` integral del sistema.<br>
+• Orquestación general (Docker Compose para desarrollo local). | • `docker-compose.yml` integral del sistema.
 
-<br>• Servidor MLflow con Model Registry activo.<br>
+• Servidor MLflow con Model Registry activo.
 
-<br>• Pipeline de reentrenamiento batch funcional. |
+• Pipeline de reentrenamiento batch funcional. |
 
 ---
 

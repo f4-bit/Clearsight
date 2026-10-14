@@ -5,12 +5,19 @@ __pycache__/
 node_modules/
 .next/
 .env
+.env.azure
 *.onnx
 mlruns/
 .DS_Store
 .opencode
 openspec/
 .atl/
+*.pth
+*.pt
+*.h5
+*.safetensors
+ml/models/cache/
+docker/ml-service.env
 
 # GGA and Agent instructions
 .gga
