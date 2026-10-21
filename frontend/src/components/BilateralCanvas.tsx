@@ -1,40 +1,37 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { InferenceResult, LABEL_TO_CLINICAL } from "@/types/clinical";
 
 interface BilateralCanvasProps {
   od: InferenceResult;
   os: InferenceResult;
-  isSynced?: boolean;
 }
 
 export type FilterMode = "rgb" | "red_free" | "clahe";
 
-export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProps) {
+const MIN_ZOOM = 0.75;
+const MAX_ZOOM = 3;
+const ZOOM_STEP = 0.25;
+const MAX_PAN = 320;
+
+const clampZoom = (value: number) =>
+  Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, +value.toFixed(2)));
+
+const clampPan = (value: number) => Math.min(MAX_PAN, Math.max(-MAX_PAN, value));
+
+export function BilateralCanvas({ od, os }: BilateralCanvasProps) {
   const [filterMode, setFilterMode] = useState<FilterMode>("rgb");
   const [showDisc, setShowDisc] = useState<boolean>(true);
   const [showCup, setShowCup] = useState<boolean>(true);
   const [showGradCam, setShowGradCam] = useState<boolean>(true);
   const [gradCamOpacity, setGradCamOpacity] = useState<number>(60);
   const [showReticle, setShowReticle] = useState<boolean>(true);
-  const [zoomOD, setZoomOD] = useState<number>(1);
-  const [zoomOS, setZoomOS] = useState<number>(1);
-
-  const handleZoom = (delta: number) => {
-    if (isSynced) {
-      const nextZoom = Math.min(2.5, Math.max(0.75, +(zoomOD + delta).toFixed(2)));
-      setZoomOD(nextZoom);
-      setZoomOS(nextZoom);
-    } else {
-      setZoomOD((prev) => Math.min(2.5, Math.max(0.75, +(prev + delta).toFixed(2))));
-    }
-  };
 
   return (
     <div className="flex flex-col flex-1 h-full min-h-0 bg-cockpit-bg p-3.5 gap-3">
       {/* Unified Toolbar */}
-      <div className="h-9 w-full bg-cockpit-card border border-cockpit-border rounded px-3 flex items-center justify-between text-xs">
+      <div className="min-h-9 w-full bg-cockpit-card border border-cockpit-border rounded px-3 py-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
         {/* Left: Render Filters */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-bold text-cockpit-text-dim tracking-wider uppercase">
@@ -43,9 +40,9 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
           <div className="flex items-center gap-1 bg-cockpit-bg/60 p-0.5 rounded border border-cockpit-border">
             {(
               [
-                ["rgb", "Color RGB"],
+                ["rgb", "Color original"],
                 ["red_free", "Aneritro (RNFL)"],
-                ["clahe", "Contraste CLAHE"],
+                ["clahe", "Realce de contraste"],
               ] as const
             ).map(([mode, label]) => (
               <button
@@ -63,7 +60,7 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
           </div>
         </div>
 
-        {/* Center: Custom Sober Layer Toggles */}
+        {/* Center: Layer Toggles */}
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] font-bold text-cockpit-text-dim tracking-wider uppercase mr-1">
             Capas:
@@ -71,7 +68,11 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
           {[
             { label: "Disco", active: showDisc, toggle: () => setShowDisc(!showDisc) },
             { label: "Copa", active: showCup, toggle: () => setShowCup(!showCup) },
-            { label: "Grad-CAM", active: showGradCam, toggle: () => setShowGradCam(!showGradCam) },
+            {
+              label: "Mapa de calor",
+              active: showGradCam,
+              toggle: () => setShowGradCam(!showGradCam),
+            },
           ].map((layer) => (
             <button
               key={layer.label}
@@ -83,16 +84,17 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
                   : "bg-transparent border-cockpit-border text-cockpit-text-dim hover:text-cockpit-text"
               }`}
             >
-              {layer.active ? "✓ " : ""}{layer.label}
+              {layer.active ? "✓ " : ""}
+              {layer.label}
             </button>
           ))}
         </div>
 
-        {/* Right: Grad-CAM Opacity Slider, Zoom & Reticle */}
+        {/* Right: Grad-CAM Opacity, Reticle & Navigation Hint */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <label htmlFor="gradcam-slider" className="text-[11px] text-cockpit-text-muted">
-              Calor:
+              Intensidad:
             </label>
             <input
               id="gradcam-slider"
@@ -100,37 +102,14 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
               min="0"
               max="100"
               value={gradCamOpacity}
-              aria-label="Opacidad de mapa térmico Grad-CAM"
+              aria-label="Intensidad del mapa de calor"
               onChange={(e) => setGradCamOpacity(Number(e.target.value))}
               disabled={!showGradCam}
               className="w-16 h-1 bg-cockpit-border rounded appearance-none cursor-pointer accent-white disabled:opacity-30"
             />
-            <span className="font-mono text-[11px] text-cockpit-text w-7 text-right tabular-nums">
+            <span className="font-mono text-[11px] text-cockpit-text w-8 text-right tabular-nums">
               {gradCamOpacity}%
             </span>
-          </div>
-
-          <div className="h-3.5 w-[1px] bg-cockpit-border" />
-
-          {/* Zoom controls */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => handleZoom(-0.25)}
-              aria-label="Reducir zoom"
-              className="px-1.5 py-0.5 rounded bg-cockpit-subtle border border-cockpit-border text-cockpit-text text-xs hover:bg-[#25252E]"
-            >
-              -
-            </button>
-            <span className="font-mono text-[10px] text-cockpit-text-muted w-9 text-center tabular-nums">
-              {(zoomOD * 100).toFixed(0)}%
-            </span>
-            <button
-              onClick={() => handleZoom(0.25)}
-              aria-label="Aumentar zoom"
-              className="px-1.5 py-0.5 rounded bg-cockpit-subtle border border-cockpit-border text-cockpit-text text-xs hover:bg-[#25252E]"
-            >
-              +
-            </button>
           </div>
 
           <div className="h-3.5 w-[1px] bg-cockpit-border" />
@@ -160,7 +139,6 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
           showGradCam={showGradCam}
           gradCamOpacity={gradCamOpacity}
           showReticle={showReticle}
-          zoomScale={zoomOD}
         />
         <RetinalViewport
           data={os}
@@ -170,7 +148,6 @@ export function BilateralCanvas({ od, os, isSynced = true }: BilateralCanvasProp
           showGradCam={showGradCam}
           gradCamOpacity={gradCamOpacity}
           showReticle={showReticle}
-          zoomScale={isSynced ? zoomOD : zoomOS}
         />
       </div>
     </div>
@@ -185,7 +162,6 @@ interface RetinalViewportProps {
   showGradCam: boolean;
   gradCamOpacity: number;
   showReticle: boolean;
-  zoomScale: number;
 }
 
 function RetinalViewport({
@@ -196,11 +172,65 @@ function RetinalViewport({
   showGradCam,
   gradCamOpacity,
   showReticle,
-  zoomScale,
 }: RetinalViewportProps) {
   const isOD = data.eye_side === "OD";
+  const eyeLabel = isOD ? "ojo derecho (OD)" : "ojo izquierdo (OS)";
   const isReviewRequired = data.quality.review_required;
   const clinicalPresentation = LABEL_TO_CLINICAL[data.label ?? "Non_Glaucoma"] ?? "Normal";
+
+  const stageRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [zoom, setZoom] = useState<number>(1);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+
+  const zoomBy = useCallback((delta: number) => {
+    setZoom((prev) => clampZoom(prev + delta));
+  }, []);
+
+  const resetViewport = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  // Wheel zoom scoped to this viewport only (non-passive so the page does not scroll)
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      setZoom((prev) => clampZoom(prev - event.deltaY * 0.0015));
+    };
+
+    stage.addEventListener("wheel", handleWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    setIsDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    setPan({
+      x: clampPan(drag.panX + (event.clientX - drag.x)),
+      y: clampPan(drag.panY + (event.clientY - drag.y)),
+    });
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setIsDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
 
   const getTriageColor = () => {
     if (isReviewRequired) return "text-amber-300";
@@ -234,14 +264,30 @@ function RetinalViewport({
             {isReviewRequired
               ? "Revisión Requerida (Opacidad)"
               : data.cdr_vertical != null
-              ? `vCDR ${data.cdr_vertical.toFixed(2)} · ${clinicalPresentation === "Normal" ? "Fisiológico normal" : clinicalPresentation === "Suspect" ? "Excavación límite" : "Glaucomatoso"}`
+              ? `vCDR ${data.cdr_vertical.toFixed(2)} · ${
+                  clinicalPresentation === "Normal"
+                    ? "Fisiológico normal"
+                    : clinicalPresentation === "Suspect"
+                    ? "Excavación límite"
+                    : "Glaucomatoso"
+                }`
               : "vCDR no disponible"}
           </span>
         </div>
       </div>
 
       {/* Retinal Canvas Stage */}
-      <div className="relative flex-1 bg-[#060608] flex items-center justify-center overflow-hidden">
+      <div
+        ref={stageRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        style={{ touchAction: "none" }}
+        className={`relative flex-1 bg-[#060608] flex items-center justify-center overflow-hidden ${
+          isDragging ? "cursor-grabbing" : "cursor-grab"
+        }`}
+      >
         {/* Anatomical Quadrant Markers (S, I, N, T) */}
         <span className="absolute top-2.5 font-mono text-[9px] text-zinc-600">S</span>
         <span
@@ -260,11 +306,14 @@ function RetinalViewport({
 
         {/* Retinal Simulation Sphere */}
         <div
-          className={`relative w-[360px] h-[360px] rounded-full overflow-hidden transition-transform duration-150 ${getFilterClass()}`}
+          className={`relative w-[360px] h-[360px] rounded-full overflow-hidden ${getFilterClass()} ${
+            isDragging ? "" : "transition-transform duration-150"
+          }`}
           style={{
-            transform: `scale(${zoomScale})`,
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             background: "radial-gradient(circle, #3D140B 0%, #240B06 65%, #100403 100%)",
             boxShadow: "inset 0 0 60px rgba(0,0,0,0.85)",
+            willChange: "transform",
           }}
         >
           {/* Simulated Retinal Blood Vessels */}
@@ -350,24 +399,76 @@ function RetinalViewport({
             )}
           </svg>
         </div>
+
+        {/* Per-viewport navigation controls */}
+        <div
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerMove={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          title="Rueda: zoom · Arrastrar: desplazar"
+          className="absolute bottom-2.5 right-2.5 flex items-center gap-0.5 rounded border border-cockpit-border bg-cockpit-bg/90 px-1 py-0.5 backdrop-blur-sm"
+        >
+          <button
+            onClick={() => zoomBy(-ZOOM_STEP)}
+            aria-label={`Reducir zoom del ${eyeLabel}`}
+            className="h-5 w-5 rounded text-cockpit-text text-xs leading-none hover:bg-cockpit-subtle"
+          >
+            −
+          </button>
+          <span className="w-10 text-center font-mono text-[10px] text-cockpit-text-muted tabular-nums">
+            {(zoom * 100).toFixed(0)}%
+          </span>
+          <button
+            onClick={() => zoomBy(ZOOM_STEP)}
+            aria-label={`Aumentar zoom del ${eyeLabel}`}
+            className="h-5 w-5 rounded text-cockpit-text text-xs leading-none hover:bg-cockpit-subtle"
+          >
+            +
+          </button>
+          <div className="mx-0.5 h-3 w-[1px] bg-cockpit-border" />
+          <button
+            onClick={resetViewport}
+            aria-label={`Restablecer vista del ${eyeLabel}`}
+            className="h-5 rounded px-1.5 font-mono text-[10px] text-cockpit-text-muted hover:bg-cockpit-subtle hover:text-cockpit-text"
+          >
+            1:1
+          </button>
+        </div>
       </div>
 
-      {/* Clean Structured Footer */}
+      {/* Structured Footer */}
       <div className="h-10 px-4 bg-cockpit-surface border-t border-cockpit-border flex items-center justify-between text-xs">
         <div className="flex items-center gap-2">
           <span className="font-bold text-cockpit-text-muted text-[11px]">vCDR:</span>
           <span className={`font-mono font-bold text-[13px] tabular-nums ${getTriageColor()}`}>
-            {isReviewRequired ? "--" : data.cdr_vertical != null ? data.cdr_vertical.toFixed(2) : "--"}
+            {isReviewRequired
+              ? "--"
+              : data.cdr_vertical != null
+              ? data.cdr_vertical.toFixed(2)
+              : "--"}
           </span>
           <span className="text-[11px] text-cockpit-text-dim">
-            · {isReviewRequired ? "Baja fiabilidad" : clinicalPresentation === "Normal" ? "Fisiológico" : "Excavación límite"}
+            ·{" "}
+            {isReviewRequired
+              ? "Baja fiabilidad"
+              : clinicalPresentation === "Normal"
+              ? "Fisiológico"
+              : "Excavación límite"}
           </span>
         </div>
 
         <div className="flex items-center gap-2 text-cockpit-text-muted text-[11px] font-mono tabular-nums">
-          <span>Copa: {data.calipers?.cup_height_mm ? `${data.calipers.cup_height_mm.toFixed(2)} mm` : "--"}</span>
+          <span>
+            Copa:{" "}
+            {data.calipers?.cup_height_mm ? `${data.calipers.cup_height_mm.toFixed(2)} mm` : "--"}
+          </span>
           <span className="text-cockpit-text-dim">·</span>
-          <span>Disco: {data.calipers?.disc_height_mm ? `${data.calipers.disc_height_mm.toFixed(2)} mm` : "--"}</span>
+          <span>
+            Disco:{" "}
+            {data.calipers?.disc_height_mm
+              ? `${data.calipers.disc_height_mm.toFixed(2)} mm`
+              : "--"}
+          </span>
         </div>
       </div>
     </div>

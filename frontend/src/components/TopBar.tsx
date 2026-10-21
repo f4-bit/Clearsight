@@ -1,21 +1,16 @@
 "use client";
 
 import React from "react";
-import { Link2 } from "lucide-react";
 import { BilateralStudy } from "@/types/clinical";
 
 interface TopBarProps {
   study: BilateralStudy;
-  isSynced: boolean;
-  onToggleSync: () => void;
   onExportReport?: () => void;
   reportExportPending?: boolean;
 }
 
 export function TopBar({
   study,
-  isSynced,
-  onToggleSync,
   onExportReport,
   reportExportPending = false,
 }: TopBarProps) {
@@ -35,7 +30,8 @@ export function TopBar({
             ID: #{study.patient_id}
           </span>
           <span className="text-cockpit-text-dim">
-            {study.clinical_features.Age} años · {study.clinical_features.Gender === 1 ? "Masculino" : "Femenino"} · Estudio Bilateral
+            {study.clinical_features.Age} años ·{" "}
+            {study.clinical_features.Gender === 1 ? "Masculino" : "Femenino"} · Estudio Bilateral
           </span>
           <span className="text-cockpit-text-dim font-mono text-[11px]">
             {new Date(study.created_at).toLocaleTimeString("es-ES", { timeZone: "UTC" })} UTC
@@ -45,7 +41,7 @@ export function TopBar({
 
       {/* Right: Global Status & Actions */}
       <div className="flex items-center gap-3">
-        {/* Consensus Triage Pill (Sober dark amber badge from Pencil design) */}
+        {/* Consensus Triage Pill (sober dark amber badge) */}
         <div className="flex items-center gap-2 px-2.5 py-1 rounded bg-[#17140C] border border-[#3B2E15] text-xs font-medium text-[#D4973B]">
           <span className="h-1.5 w-1.5 rounded-full bg-[#D4973B]" />
           <span>
@@ -54,21 +50,6 @@ export function TopBar({
               : `Sospecha de Glaucoma (${(study.consensus_confidence * 100).toFixed(0)}% probabilidad)`}
           </span>
         </div>
-
-        {/* Sync Viewports Toggle */}
-        <button
-          onClick={onToggleSync}
-          aria-pressed={isSynced}
-          aria-label="Sincronizar viewports retinianos"
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors border ${
-            isSynced
-              ? "bg-[#1E1E24] border-[#3F3F46] text-white shadow-sm font-medium"
-              : "bg-transparent border-cockpit-border text-cockpit-text-dim hover:text-cockpit-text"
-          }`}
-        >
-          <Link2 className={`h-3.5 w-3.5 ${isSynced ? "text-clinical-sky" : "text-cockpit-text-dim"}`} />
-          <span>{isSynced ? "Viewports Sincronizados" : "Viewports Independientes"}</span>
-        </button>
 
         {/* Export PDF Report Button */}
         <button
