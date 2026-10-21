@@ -442,7 +442,7 @@ export function TelemetrySidebar({
                     : "bg-cockpit-panel border-cockpit-border text-cockpit-text-muted hover:text-cockpit-text"
                 }`}
               >
-                {selectedClass === btn.id ? `✓ ${btn.label}` : btn.label}
+                {btn.label}
               </button>
             ))}
           </div>
@@ -452,7 +452,7 @@ export function TelemetrySidebar({
               selectedClass === modelPredictedClass ? "text-clinical-green" : "text-clinical-gold"
             }`}
           >
-            <span>{selectedClass === modelPredictedClass ? "✓" : "⚠"}</span>
+            {selectedClass !== modelPredictedClass && <span>⚠</span>}
             <span>
               {selectedClass === modelPredictedClass
                 ? "Criterio clínico concordante con la predicción del modelo."
@@ -516,7 +516,7 @@ export function TelemetrySidebar({
               }`}
             >
               {isSubmitted || lastFeedback != null
-                ? "✓ Diagnóstico Firmado"
+                ? "Diagnóstico Firmado"
                 : "Guardar y Firmar Diagnóstico"}
             </button>
           </>

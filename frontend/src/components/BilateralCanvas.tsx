@@ -84,7 +84,6 @@ export function BilateralCanvas({ od, os }: BilateralCanvasProps) {
                   : "bg-transparent border-cockpit-border text-cockpit-text-dim hover:text-cockpit-text"
               }`}
             >
-              {layer.active ? "✓ " : ""}
               {layer.label}
             </button>
           ))}
