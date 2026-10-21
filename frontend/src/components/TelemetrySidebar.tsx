@@ -137,10 +137,8 @@ export function TelemetrySidebar({
     LABEL_TO_CLASS[study.od.label ?? "Suspicious_Glaucoma"] ?? 2;
 
   const [selectedClass, setSelectedClass] = useState<DiagnosticClass>(modelPredictedClass);
-  const [doctorNotes, setDoctorNotes] = useState<string>(
-    "Copa aumentada en OD con adelgazamiento neurorretiniano inferior. Solicitar campo visual Humphrey y OCT de CFNR."
-  );
-  const [isGoldStandard, setIsGoldStandard] = useState<boolean>(true);
+  const [doctorNotes, setDoctorNotes] = useState<string>("");
+  const [isGoldStandard, setIsGoldStandard] = useState<boolean>(false);
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
 
   const biomarkerGroups = useMemo(
