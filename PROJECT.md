@@ -59,10 +59,11 @@ El sistema es una plataforma de apoyo al diagnóstico oftalmológico diseñada p
 
 * **Pila recomendada:** Next.js / React con Tailwind CSS y componentes sobrios (ej. Shadcn UI).
 * **Requisitos funcionales:**
-* Carga y validación en cliente de archivos de imagen (formatos, dimensiones mínimas, calidad).
-* Formulario clínico compacto: edad, presión intraocular (PIO), excavación papilar estimada y antecedentes familiares.
-* Visor bilateral interactivo con control deslizante de opacidad para superponer el mapa Grad-CAM sobre la retina original.
-* Módulo de validación diagnóstica con opciones: *Confirmar diagnóstico del modelo*, *Rectificar a otra clase* o *Marcar como no concluyente*, junto con un campo de observaciones clínicas.
+* Carga y validación en cliente de archivos de imagen (formatos, dimensiones mínimas de 512 px sobre el lado corto, peso).
+* Formulario clínico con las once variables que consume el modelo, exactamente las declaradas en `ml/service/schemas.py` (`ClinicalFeatures`): `Age`, `Gender`, `dioptre_1`, `dioptre_2`, `astigmatism`, `Phakic/Pseudophakic`, `Pneumatic`, `Perkins`, `Pachymetry`, `Axial_Length`, `VF_DM`. Todas numéricas y obligatorias: el contrato usa `extra="forbid"`, así que no se admiten campos adicionales, renombrados ni omitidos.
+* No se capturan datos clínicos fuera de esas once variables. Un campo que no exista en `ClinicalFeatures` no se pide en la interfaz, para no prometer datos que el sistema no puede sostener. La excavación que reporta el cockpit proviene de la segmentación, no de una estimación manual.
+* Visor bilateral interactivo con control deslizante de opacidad para superponer el mapa Grad-CAM sobre la retina original. OD se renderiza a la izquierda y OS a la derecha, sin espejado.
+* Módulo de validación diagnóstica con opciones: *Confirmar diagnóstico del modelo*, *Rectificar a otra clase* o *Marcar como no concluyente*, junto con un campo de observaciones clínicas. La opción *no concluyente* exige que `validated_class` admita `null`; el contrato actual lo declara obligatorio entre 0 y 2 y debe corregirse.
 
 
 
@@ -90,10 +91,19 @@ El sistema es una plataforma de apoyo al diagnóstico oftalmológico diseñada p
 
 * **Base de Datos Relacional (PostgreSQL):**
 * `patients`: `id (UUID)`, `age`, `gender`, `clinical_history_flags (JSONB)`.
-* `consultations`: `id (UUID)`, `patient_id`, `doctor_id`, `created_at`, `status`.
+* `consultations`: `id (UUID)`, `patient_id`, `doctor_id`, `created_at`, `status`, `clinical_features (JSONB)`.
 * `images`: `id (UUID)`, `consultation_id`, `eye_side (OD/OS)`, `storage_path`, `hash_md5`.
-* `inferences`: `id (UUID)`, `image_id`, `predicted_class`, `confidence`, `probabilities (JSONB)`, `gradcam_path`, `model_version`.
-* `clinical_feedback`: `id (UUID)`, `inference_id`, `doctor_id`, `validated_class`, `agreement (BOOLEAN)`, `doctor_notes`, `is_gold_standard (BOOLEAN)`.
+* `inferences`: `id (UUID)`, `image_id`, `job_id`, `predicted_class`, `confidence`, `probabilities (JSONB)`, `cdr`, `cdr_vertical`, `quality (JSONB)`, `artifacts (JSONB)`, `elapsed_seconds`, `gradcam_path`, `model_version`.
+* `clinical_feedback`: `id (UUID)`, `inference_id`, `doctor_id`, `validated_class (NULL = no concluyente)`, `agreement (BOOLEAN, NULL = sin comparación)`, `doctor_notes`, `is_gold_standard (BOOLEAN)`.
+
+* **Vocabulario de estado (único, no libre):** `consultations.status` debe usar el mismo enum que el servicio de inferencia (`ml/service/schemas.py` → `JobStatus`): `QUEUED`, `DOWNLOADING`, `LOCALIZING`, `SEGMENTING`, `CLASSIFYING`, `COMPLETED`, `REVIEW_REQUIRED`, `FAILED`. Hoy `ConsultationCreate.status` es un string libre con valor por defecto `PENDIENTE`, lo que rompe la trazabilidad de la cola.
+
+* **Contratos de integración (fuente de verdad: `ml/service/schemas.py`):**
+* El frontend nunca invoca el servicio de ML. Envía al gateway, y el gateway reenvía con `Authorization: Bearer <ML_API_TOKEN>`.
+* Alta asíncrona: `POST /v1/inferences` responde `202` con `JobAccepted` (`inference_id`, `job_id`, `status`).
+* Progreso: `GET /v1/inferences/{job_id}` devuelve `JobResponse` (`status`, `stage`, `message`, `result`). El frontend hace polling sobre `status` y no interpreta `stage` como enum.
+* Cada ojo es una inferencia independiente: `InferenceRequest.eye_side` es `OD` u `OS`, nunca ambos.
+* `InferenceResult` es la forma exacta del resultado: `label`, `confidence`, `probabilities`, `model_predictions`, `cdr`, `cdr_vertical`, `quality`, `artifacts`, `model_versions`, `elapsed_seconds`. El frontend no debe derivar ni completar campos ausentes.
 
 
 
@@ -102,10 +112,10 @@ El sistema es una plataforma de apoyo al diagnóstico oftalmológico diseñada p
 * **Pila:** Celery Worker con soporte de ONNX Runtime (CPU o CUDA Execution Provider).
 * **Estrategia de Optimización:**
 * **Conversión a ONNX:** Exportar los modelos de visión desde PyTorch/TensorFlow a formato Open Neural Network Exchange (`.onnx`) con precisión FP16.
-* **Batching Bilateral:** Si el médico envía ambos ojos, se forma un tensor conjunto de dimensión $[2, 3, H, W]$ para procesar ambos hemisferios oculares en un único pase hacia adelante.
-* **Pipeline Híbrido:**
-1. Red Convolucional / Vision Transformer --> Extrae el vector de características (*embeddings*) del fondo de ojo.
-2. Clasificador Tabular (Random Forest / XGBoost / MLP) --> Concatena embeddings + variables clínicas --> Emite probabilidad final.
+* **Ejecución por ojo:** cada ojo es una inferencia independiente (`eye_side` = `OD` | `OS`) con su propio `job_id`. La agregación bilateral (consenso OD/OS) ocurre al consolidar resultados, no como un tensor conjunto `[2, 3, H, W]` en un único pase hacia adelante.
+* **Dos CDR distintos, nunca intercambiables:** `cdr = sqrt(area_cup / area_disc)` alimenta al modelo como variable de entrada; `cdr_vertical = altura_cup / altura_disc` es la métrica de reporte clínico. Ambos viajan en `InferenceResult`.
+* **Compuerta de calidad:** si no se detectan contornos válidos de disco y copa, si `Area(cup) > Area(disc)`, si `cdr` cae fuera de `[0, 1]` o si la resolución es insuficiente, el job termina en `REVIEW_REQUIRED` y la clasificación automática se suprime. La UI muestra la advertencia y bloquea el commit de reentrenamiento hasta que el médico la reconozca.
+* **Pipeline multimodal:** dos backbones con vástago de 5 canales (`[R, G, B, R_CLAHE, G_CLAHE]`) — ResNet-50 y EfficientNet-B3 — sobre el recorte del disco óptico reescalado a 384 × 384. Cada backbone concatena sus *embeddings* con `[cdr] + ClinicalFeatures` en una cabeza MLP. La salida final es el promedio ponderado 50/50 de las softmax de ambos modelos.
 
 
 
