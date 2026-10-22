@@ -8,7 +8,7 @@ interface BilateralCanvasProps {
   os: InferenceResult;
 }
 
-export type FilterMode = "rgb" | "red_free" | "clahe";
+export type FilterMode = "rgb" | "red_free" | "contrast";
 
 const MIN_ZOOM = 0.75;
 const MAX_ZOOM = 3;
@@ -30,6 +30,31 @@ export function BilateralCanvas({ od, os }: BilateralCanvasProps) {
 
   return (
     <div className="flex flex-col flex-1 h-full min-h-0 bg-cockpit-bg p-3.5 gap-3">
+      {/*
+        Red-free ("aneritro") rendering: isolates the retinal green channel and
+        converts it to grayscale, which is the channel that carries the RNFL
+        contrast. The gamma transfer only lifts the display range of an
+        inherently dark channel; it does not alter relative contrast.
+      */}
+      <svg aria-hidden="true" focusable="false" className="absolute h-0 w-0 overflow-hidden">
+        <defs>
+          <filter id="cs-aneritro" colorInterpolationFilters="sRGB">
+            <feColorMatrix
+              type="matrix"
+              values="0 1 0 0 0
+                      0 1 0 0 0
+                      0 1 0 0 0
+                      0 0 0 1 0"
+            />
+            <feComponentTransfer>
+              <feFuncR type="gamma" amplitude="1" exponent="0.5" offset="0" />
+              <feFuncG type="gamma" amplitude="1" exponent="0.5" offset="0" />
+              <feFuncB type="gamma" amplitude="1" exponent="0.5" offset="0" />
+            </feComponentTransfer>
+          </filter>
+        </defs>
+      </svg>
+
       {/* Unified Toolbar */}
       <div className="min-h-9 w-full bg-cockpit-card border border-cockpit-border rounded px-3 py-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
         {/* Left: Render Filters */}
@@ -42,7 +67,7 @@ export function BilateralCanvas({ od, os }: BilateralCanvasProps) {
               [
                 ["rgb", "Color original"],
                 ["red_free", "Aneritro (RNFL)"],
-                ["clahe", "Realce de contraste"],
+                ["contrast", "Realce de contraste"],
               ] as const
             ).map(([mode, label]) => (
               <button
@@ -182,6 +207,8 @@ function RetinalViewport({
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [gradCamFailed, setGradCamFailed] = useState<boolean>(false);
+  const gradCamRef = useRef<HTMLImageElement | null>(null);
 
   const zoomBy = useCallback((delta: number) => {
     setZoom((prev) => clampZoom(prev + delta));
@@ -238,16 +265,47 @@ function RetinalViewport({
     return "text-clinical-green";
   };
 
-  const getFilterClass = () => {
-    switch (filterMode) {
-      case "red_free":
-        return "hue-rotate-90 saturate-150 contrast-125";
-      case "clahe":
-        return "contrast-150 brightness-110 saturate-125";
-      default:
-        return "";
+  // Applied to the retinal image layer only. Re-filtering the overlay layer
+  // would shift the diagnostic contour colours and misrepresent the study.
+  const retinalFilter =
+    filterMode === "red_free"
+      ? "url(#cs-aneritro)"
+      : filterMode === "contrast"
+      ? "contrast(1.35) brightness(1.08) saturate(1.2)"
+      : undefined;
+
+  const gradCamUrl = data.artifacts.gradcam_url;
+  const heatmapVisible = showGradCam && Boolean(gradCamUrl) && !gradCamFailed;
+
+  // An image that fails before hydration never fires React's onError, so the
+  // broken artefact would otherwise stay in the DOM with its alt text visible.
+  useEffect(() => {
+    const node = gradCamRef.current;
+    if (node && node.complete && node.naturalWidth === 0) {
+      setGradCamFailed(true);
     }
-  };
+  }, [gradCamUrl, showGradCam, heatmapVisible]);
+
+  // Contour geometry comes from the segmentation outputs in the contract: cup
+  // and disc heights give the vertical ratio (the reported vCDR), and the two
+  // CDR metrics give the horizontal ratio through the area relation. The drawn
+  // cup therefore tracks the measurement instead of a fixed sketch.
+  const calipers = data.calipers;
+  const discRx = 58;
+  const discRy = 65;
+  const verticalRatio =
+    calipers && calipers.disc_height_mm > 0
+      ? Math.min(1, calipers.cup_height_mm / calipers.disc_height_mm)
+      : null;
+  const areaRatio =
+    data.cdr != null && data.cdr_vertical != null && data.cdr_vertical > 0
+      ? (data.cdr * data.cdr) / data.cdr_vertical
+      : null;
+  const horizontalRatio =
+    areaRatio != null && areaRatio > 0 && areaRatio <= 1 ? areaRatio : verticalRatio;
+  const canDrawDisc = showDisc && data.quality.disc_detected && verticalRatio != null;
+  const canDrawCup =
+    showCup && data.quality.cup_detected && verticalRatio != null && horizontalRatio != null;
 
   return (
     <div className="flex flex-col h-full bg-cockpit-card border border-cockpit-border rounded-md overflow-hidden">
@@ -303,73 +361,77 @@ function RetinalViewport({
           {isOD ? "N" : "T"}
         </span>
 
-        {/* Retinal Simulation Sphere */}
+        {/* Retinal Field */}
         <div
-          className={`relative w-[360px] h-[360px] rounded-full overflow-hidden ${getFilterClass()} ${
+          className={`relative w-[360px] h-[360px] rounded-full overflow-hidden ${
             isDragging ? "" : "transition-transform duration-150"
           }`}
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-            background: "radial-gradient(circle, #3D140B 0%, #240B06 65%, #100403 100%)",
             boxShadow: "inset 0 0 60px rgba(0,0,0,0.85)",
             willChange: "transform",
           }}
         >
-          {/* Simulated Retinal Blood Vessels */}
-          <svg className="absolute inset-0 w-full h-full opacity-40 pointer-events-none">
-            <path
-              d="M 180 180 Q 200 120 260 80 Q 220 50 210 20"
-              stroke="#6B1D11"
-              strokeWidth="2.5"
-              fill="none"
-            />
-            <path
-              d="M 180 180 Q 150 110 110 70 Q 90 40 70 20"
-              stroke="#6B1D11"
-              strokeWidth="2"
-              fill="none"
-            />
-            <path
-              d="M 180 180 Q 210 240 250 290 Q 280 320 300 350"
-              stroke="#7A1F13"
-              strokeWidth="3"
-              fill="none"
-            />
-            <path
-              d="M 180 180 Q 140 230 110 280 Q 80 320 60 350"
-              stroke="#6B1D11"
-              strokeWidth="2"
-              fill="none"
-            />
-          </svg>
+          {/* Retinal image layer — the only layer the render filter touches */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background: "radial-gradient(circle, #3D140B 0%, #240B06 65%, #100403 100%)",
+              filter: retinalFilter,
+            }}
+          >
+            {/* Simulated Retinal Blood Vessels */}
+            <svg className="absolute inset-0 w-full h-full opacity-40 pointer-events-none">
+              <path
+                d="M 180 180 Q 200 120 260 80 Q 220 50 210 20"
+                stroke="#6B1D11"
+                strokeWidth="2.5"
+                fill="none"
+              />
+              <path
+                d="M 180 180 Q 150 110 110 70 Q 90 40 70 20"
+                stroke="#6B1D11"
+                strokeWidth="2"
+                fill="none"
+              />
+              <path
+                d="M 180 180 Q 210 240 250 290 Q 280 320 300 350"
+                stroke="#7A1F13"
+                strokeWidth="3"
+                fill="none"
+              />
+              <path
+                d="M 180 180 Q 140 230 110 280 Q 80 320 60 350"
+                stroke="#6B1D11"
+                strokeWidth="2"
+                fill="none"
+              />
+            </svg>
+          </div>
 
-          {/* Grad-CAM Thermal Heatmap Layer */}
-          {showGradCam && data.artifacts.gradcam_url && (
-            <div
-              className="absolute pointer-events-none transition-opacity duration-150"
-              style={{
-                top: isOD ? "175px" : "185px",
-                left: isOD ? "135px" : "175px",
-                width: "115px",
-                height: "95px",
-                borderRadius: "50%",
-                background: isOD
-                  ? "radial-gradient(circle, rgba(225,29,72,0.95) 0%, rgba(245,158,11,0.65) 55%, rgba(6,182,212,0) 100%)"
-                  : "radial-gradient(circle, rgba(56,189,248,0.7) 0%, rgba(16,185,129,0.3) 50%, rgba(0,0,0,0) 100%)",
-                filter: "blur(14px)",
-                opacity: gradCamOpacity / 100,
-              }}
+          {/* Grad-CAM layer: the real activation artifact from the inference
+              service. Nothing is drawn when the artifact is absent or fails to
+              load — a synthetic heatmap would imply evidence the model never
+              produced. */}
+          {heatmapVisible && (
+            <img
+              ref={gradCamRef}
+              src={gradCamUrl}
+              alt={`Mapa de activación del modelo para el ${eyeLabel}`}
+              onError={() => setGradCamFailed(true)}
+              className="absolute inset-0 h-full w-full object-cover pointer-events-none transition-opacity duration-150"
+              style={{ mixBlendMode: "screen", opacity: gradCamOpacity / 100 }}
             />
           )}
 
           {/* SVG Vector Overlays */}
           <svg className="absolute inset-0 w-full h-full pointer-events-none">
-            {showDisc && (
+            {canDrawDisc && (
               <ellipse
                 cx="180"
                 cy="180"
-                rx={isOD ? "55" : "58"}
-                ry="65"
+                rx={discRx}
+                ry={discRy}
                 fill="rgba(180, 83, 9, 0.12)"
                 stroke="#38BDF8"
                 strokeWidth="1.5"
@@ -377,12 +439,12 @@ function RetinalViewport({
               />
             )}
 
-            {showCup && (
+            {canDrawCup && verticalRatio != null && horizontalRatio != null && (
               <ellipse
                 cx="180"
-                cy={isOD ? "184" : "180"}
-                rx={isOD ? "38" : "24"}
-                ry={isOD ? "46" : "27"}
+                cy="180"
+                rx={discRx * horizontalRatio}
+                ry={discRy * verticalRatio}
                 fill="rgba(254, 240, 138, 0.16)"
                 stroke="#F59E0B"
                 strokeWidth="1.5"
