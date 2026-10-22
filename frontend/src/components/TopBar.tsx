@@ -27,7 +27,7 @@ export function TopBar({
 
         <div className="flex items-center gap-3 text-xs">
           <span className="font-mono font-semibold text-cockpit-text-muted">
-            ID: #{study.patient_id}
+            ID: #{study.patient_id.slice(0, 8).toUpperCase()}
           </span>
           <span className="text-cockpit-text-dim">
             {study.clinical_features.Age} años ·{" "}

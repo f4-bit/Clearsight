@@ -2,7 +2,7 @@ import { BilateralStudy } from "@/types/clinical";
 
 export const MOCK_STUDY: BilateralStudy = {
   consultation_id: "c48f2a1b-93d2-4e89-a5c3-198f2b7a4e01",
-  patient_id: "94E2-8B1A",
+  patient_id: "9b3c7e14-6a2f-4d81-b0c7-58e1f2a9d364",
   doctor_id: "d19e4a3b-28f0-4a7b-8911-39bc17f8a923",
   doctor_name: "Dr. Arismendi",
   created_at: "2026-10-14T16:42:10Z",

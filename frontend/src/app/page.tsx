@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { TopBar } from "@/components/TopBar";
 import { BilateralCanvas } from "@/components/BilateralCanvas";
 import { TelemetrySidebar } from "@/components/TelemetrySidebar";
@@ -10,11 +10,20 @@ import { FeedbackCreate, FeedbackRead } from "@/types/clinical";
 export default function ClinicalCockpitPage() {
   const [reportExportPending, setReportExportPending] = useState(false);
   const [lastSubmittedFeedback, setLastSubmittedFeedback] = useState<FeedbackRead | null>(null);
+  const exportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
+    };
+  }, []);
 
   const handleExportReport = () => {
+    if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
     setReportExportPending(true);
-    setTimeout(() => {
+    exportTimerRef.current = setTimeout(() => {
       setReportExportPending(false);
+      exportTimerRef.current = null;
     }, 2500);
   };
 
@@ -28,7 +37,7 @@ export default function ClinicalCockpitPage() {
   };
 
   return (
-    <main className="h-screen w-screen flex flex-col bg-cockpit-bg text-cockpit-text overflow-hidden select-none">
+    <main className="h-screen w-screen flex flex-col bg-cockpit-bg text-cockpit-text overflow-hidden">
       {/* 1. Top Instrument Bar */}
       <TopBar
         study={MOCK_STUDY}
