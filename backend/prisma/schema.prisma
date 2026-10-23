@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EyeSide {
+  OD
+  OS
+}
+
+enum Role {
+  OPHTHALMOLOGIST
+  RESEARCHER
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         Role     @default(OPHTHALMOLOGIST)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("users")
+}
+
+model Patient {
+  id                   String          @id @default(uuid()) @db.Uuid
+  externalCode         String?         @map("external_code") @db.VarChar(64)
+  age                  Int?
+  gender               String?         @db.VarChar(16)
+  clinicalHistoryFlags Json            @default("{}") @map("clinical_history_flags")
+  clinicalData         Json            @default("{}") @map("clinical_data")
+  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  consultations        Consultation[]
+
+  @@index([externalCode], map: "idx_patients_external_code")
+  @@map("patients")
+}
+
+model Consultation {
+  id               String             @id @default(uuid()) @db.Uuid
+  patientId        String             @map("patient_id") @db.Uuid
+  doctorId         String             @map("doctor_id") @db.Uuid
+  status           String             @default("PENDIENTE") @db.VarChar(32)
+  clinicalData     Json               @default("{}") @map("clinical_data")
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  patient          Patient            @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  images           Image[]
+  clinicalFeedback ClinicalFeedback[]
+
+  @@index([patientId], map: "idx_consultations_patient_id")
+  @@index([doctorId], map: "idx_consultations_doctor_id")
+  @@index([status], map: "idx_consultations_status")
+  @@map("consultations")
+}
+
+model Image {
+  id             String       @id @default(uuid()) @db.Uuid
+  consultationId String       @map("consultation_id") @db.Uuid
+  eyeSide        EyeSide      @map("eye_side")
+  storagePath    String       @map("storage_path") @db.Text
+  hashMd5        String?      @map("hash_md5") @db.VarChar(32)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  inferences     Inference[]
+
+  @@index([consultationId], map: "idx_images_consultation_id")
+  @@index([hashMd5], map: "idx_images_hash_md5")
+  @@map("images")
+}
+
+model Inference {
+  id               String             @id @default(uuid()) @db.Uuid
+  imageId          String             @map("image_id") @db.Uuid
+  predictedClass   Int?               @map("predicted_class")
+  confidence       Float?
+  probabilities    Json               @default("{}")
+  gradcamPath      String?            @map("gradcam_path") @db.Text
+  modelVersion     String?            @map("model_version") @db.VarChar(128)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  image            Image              @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  clinicalFeedback ClinicalFeedback[]
+
+  @@index([imageId], map: "idx_inferences_image_id")
+  @@index([predictedClass], map: "idx_inferences_predicted_class")
+  @@map("inferences")
+}
+
+model ClinicalFeedback {
+  id             String       @id @default(uuid()) @db.Uuid
+  consultationId String       @map("consultation_id") @db.Uuid
+  inferenceId    String       @map("inference_id") @db.Uuid
+  doctorId       String       @map("doctor_id") @db.Uuid
+  predictedClass Int?         @map("predicted_class")
+  validatedClass Int          @map("validated_class")
+  confidence     Float?
+  agreement      Boolean?
+  doctorNotes    String?      @map("doctor_notes") @db.Text
+  isGoldStandard Boolean      @default(false) @map("is_gold_standard")
+  clinicalData   Json         @default("{}") @map("clinical_data")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  inference      Inference    @relation(fields: [inferenceId], references: [id], onDelete: Cascade)
+
+  @@index([consultationId], map: "idx_clinical_feedback_consultation_id")
+  @@index([inferenceId], map: "idx_clinical_feedback_inference_id")
+  @@index([doctorId], map: "idx_clinical_feedback_doctor_id")
+  @@index([isGoldStandard], map: "idx_clinical_feedback_gold_standard")
+  @@map("clinical_feedback")
+}

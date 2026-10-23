@@ -1,0 +1,68 @@
+import { z } from "zod";
+export declare const clinicalFeaturesSchema: z.ZodEffects<z.ZodObject<{
+    Age: z.ZodNumber;
+    Gender: z.ZodNumber;
+    dioptre_1: z.ZodNumber;
+    dioptre_2: z.ZodNumber;
+    astigmatism: z.ZodNumber;
+    "Phakic/Pseudophakic": z.ZodOptional<z.ZodNumber>;
+    Phakic_Pseudophakic: z.ZodOptional<z.ZodNumber>;
+    Pneumatic: z.ZodNumber;
+    Perkins: z.ZodNumber;
+    Pachymetry: z.ZodNumber;
+    Axial_Length: z.ZodNumber;
+    VF_DM: z.ZodNumber;
+}, "strip", z.ZodTypeAny, {
+    Age: number;
+    Gender: number;
+    dioptre_1: number;
+    dioptre_2: number;
+    astigmatism: number;
+    Pneumatic: number;
+    Perkins: number;
+    Pachymetry: number;
+    Axial_Length: number;
+    VF_DM: number;
+    "Phakic/Pseudophakic"?: number | undefined;
+    Phakic_Pseudophakic?: number | undefined;
+}, {
+    Age: number;
+    Gender: number;
+    dioptre_1: number;
+    dioptre_2: number;
+    astigmatism: number;
+    Pneumatic: number;
+    Perkins: number;
+    Pachymetry: number;
+    Axial_Length: number;
+    VF_DM: number;
+    "Phakic/Pseudophakic"?: number | undefined;
+    Phakic_Pseudophakic?: number | undefined;
+}>, {
+    "Phakic/Pseudophakic": number;
+    Phakic_Pseudophakic: number;
+    Age: number;
+    Gender: number;
+    dioptre_1: number;
+    dioptre_2: number;
+    astigmatism: number;
+    Pneumatic: number;
+    Perkins: number;
+    Pachymetry: number;
+    Axial_Length: number;
+    VF_DM: number;
+}, {
+    Age: number;
+    Gender: number;
+    dioptre_1: number;
+    dioptre_2: number;
+    astigmatism: number;
+    Pneumatic: number;
+    Perkins: number;
+    Pachymetry: number;
+    Axial_Length: number;
+    VF_DM: number;
+    "Phakic/Pseudophakic"?: number | undefined;
+    Phakic_Pseudophakic?: number | undefined;
+}>;
+export type ClinicalFeatures = z.infer<typeof clinicalFeaturesSchema>;

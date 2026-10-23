@@ -13,6 +13,8 @@ x-backend-environment: &backend-environment
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   MINIO_SECURE: "false"
   JWT_SECRET: ${JWT_SECRET:-replace-me}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-clearsight}:${POSTGRES_PASSWORD:-clearsight}@postgres:5432/${POSTGRES_DB:-clearsight}
+  ML_SERVICE_URL: http://ml-service:8000
 
 services:
   postgres:
@@ -128,7 +130,7 @@ services:
       context: .
       dockerfile: docker/worker.Dockerfile
     restart: unless-stopped
-    command: celery -A backend.app.workers.celery_app worker --loglevel=info
+    command: npm run worker
     environment: *backend-environment
     depends_on:
       postgres:
