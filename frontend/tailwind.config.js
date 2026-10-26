@@ -28,6 +28,8 @@ module.exports = {
           "green-dim": "#153B25",
           red: "#D9465A",
           sky: "#38BDF8",
+          "action-light": "#EDEDEF",
+          "action-on-light": "#0A0A0C",
         },
       },
       fontFamily: {
