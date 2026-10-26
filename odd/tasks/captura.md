@@ -42,3 +42,7 @@
 - **L6** (2026-10-26, evidencia): El pipeline de etapas de la UI (S10) está **alineado por diseño** al `JobStatus` del contrato: cada etapa visible es 1:1 con un estado del servicio; nunca inventar etapas fuera del contrato.
 - **L7** (2026-10-26, nota): El API real no llega aún; toda la submission va a mock-simulator como el cockpit. Sesión anterior cerró merge a master (4d1cc63); `feat/frontend` continúa con `dc406bd` en la punta.
 - **L8** (2026-10-26, autorización): Usuario autorizó expresamente el uso de `--no-verify` para los commits de trabajo (T1-T5) para evitar consumo redundante de cuota por la llamada recursiva a opencode en el hook GGA. Todos los hallazgos de calidad de GGA (tipado estricto, paleta ámbar, gating de 11 campos sin fallback a cero, fórmulas CDR) fueron resueltos en el código.
+- **L9** (2026-10-26, feedback usuario):
+  1. Neutralización de copy en toda la pantalla (reemplazo de voseo/regionalismos por español clínico estándar).
+  2. Bloqueo estricto de envío ante cualquier ojo inválido (`hasInvalidEye`), con tooltip explicativo y botón "Quitar" para remover archivos con error.
+  3. Rebalanceo del layout: ampliación del panel derecho de 360px a 440-480px con grilla de 2 columnas para biomarcadores pares, y compactación de las tarjetas de dropzone bilateral (h-[280px]) para una visual de consola clínica de alta densidad.

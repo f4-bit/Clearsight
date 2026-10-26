@@ -23,89 +23,93 @@ export function CaptureStudyPanel({
   const isCompleted = phase === "completed";
 
   return (
-    <aside className="w-[360px] shrink-0 bg-cockpit-surface border-l border-cockpit-border flex flex-col justify-between p-5 overflow-y-auto">
+    <aside className="w-[440px] xl:w-[480px] shrink-0 bg-cockpit-surface border-l border-cockpit-border flex flex-col justify-between p-5 overflow-y-auto">
       <div className="flex flex-col gap-4">
         {/* Section 1: DATOS DEL PACIENTE */}
         <div>
-          <h2 className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase mb-2">
+          <h2 className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase mb-2.5">
             DATOS DEL PACIENTE
           </h2>
-          <div className="flex flex-col gap-1 text-[10px]">
-            <div className="flex items-center justify-between py-0.5">
-              <span className="text-cockpit-text-dim">Edad</span>
-              <span className="font-mono text-zinc-400">{clinical.Age || "—"}</span>
+          <div className="grid grid-cols-3 gap-2 p-2.5 bg-cockpit-card/40 border border-cockpit-border/60 rounded text-[10px]">
+            <div className="flex flex-col">
+              <span className="text-cockpit-text-dim text-[9px]">Edad</span>
+              <span className="font-mono text-zinc-300 font-medium">{clinical.Age || "—"} años</span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
-              <span className="text-cockpit-text-dim">Sexo</span>
-              <span className="text-zinc-400">{genderLabel(clinical.Gender)}</span>
+            <div className="flex flex-col">
+              <span className="text-cockpit-text-dim text-[9px]">Sexo</span>
+              <span className="text-zinc-300 font-medium">{genderLabel(clinical.Gender)}</span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
-              <span className="text-cockpit-text-dim">Lateralidad</span>
-              <span className="text-zinc-400">Bilateral</span>
+            <div className="flex flex-col">
+              <span className="text-cockpit-text-dim text-[9px]">Lateralidad</span>
+              <span className="text-zinc-300 font-medium">Bilateral</span>
             </div>
           </div>
         </div>
 
         <div className="h-[1px] w-full bg-cockpit-border" />
 
-        {/* Section 2: REFRACCIÓN Y BIOMETRÍA (11 contract fields) */}
+        {/* Section 2: REFRACCIÓN Y BIOMETRÍA (11 biomarkers in 2-column paired layout) */}
         <div>
-          <h2 className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase mb-2">
+          <h2 className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase mb-2.5">
             REFRACCIÓN Y BIOMETRÍA
           </h2>
-          <div className="flex flex-col gap-1 text-[10px]">
-            <div className="flex items-center justify-between py-0.5">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px]">
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Esfera OD</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.dioptre_1 ? `${clinical.dioptre_1} D` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Esfera OS</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.dioptre_2 ? `${clinical.dioptre_2} D` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
+
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Astigmatismo</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.astigmatism ? `${clinical.astigmatism} D` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
-              <span className="text-cockpit-text-dim">Cristalino</span>
-              <span className="text-zinc-400">
-                {crystalineLabel(clinical.Phakic_Pseudophakic)}
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
+              <span className="text-cockpit-text-dim">Campo visual · DM</span>
+              <span className="font-mono text-zinc-300 font-medium">
+                {clinical.VF_DM ? `${clinical.VF_DM} dB` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
+
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Tonómetro neumático</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.Pneumatic ? `${clinical.Pneumatic} mmHg` : "0 mmHg"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Tonómetro Perkins</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.Perkins ? `${clinical.Perkins} mmHg` : "0 mmHg"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
+
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Paquimetría</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.Pachymetry ? `${clinical.Pachymetry} µm` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
+            <div className="flex items-center justify-between py-1 border-b border-cockpit-border/40">
               <span className="text-cockpit-text-dim">Longitud axial</span>
-              <span className="font-mono text-zinc-400">
+              <span className="font-mono text-zinc-300 font-medium">
                 {clinical.Axial_Length ? `${clinical.Axial_Length} mm` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between py-0.5">
-              <span className="text-cockpit-text-dim">Campo visual · DM</span>
-              <span className="font-mono text-zinc-400">
-                {clinical.VF_DM ? `${clinical.VF_DM} dB` : "—"}
+
+            <div className="col-span-2 flex items-center justify-between py-1 border-b border-cockpit-border/40">
+              <span className="text-cockpit-text-dim">Cristalino</span>
+              <span className="text-zinc-300 font-medium">
+                {crystalineLabel(clinical.Phakic_Pseudophakic)}
               </span>
             </div>
           </div>
@@ -218,7 +222,7 @@ export function CaptureStudyPanel({
       <div className="mt-4 pt-3 border-t border-cockpit-border">
         <p className="text-[10px] text-cockpit-text-muted leading-relaxed">
           {!isCompleted
-            ? "El procesamiento continúa en el servidor. Podés cerrar esta vista y volver más tarde."
+            ? "El procesamiento continúa en el servidor. Puede cerrar esta vista y volver más tarde."
             : "Resultado orientativo. Requiere validación del oftalmólogo antes de incorporarse al entrenamiento."}
         </p>
       </div>

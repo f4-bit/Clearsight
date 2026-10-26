@@ -25,6 +25,7 @@ import {
   CAPTURE_EYE_ORDER,
   clinicalValuesAreValid,
   CONSENSUS_LABEL_ES,
+  slotHasValidationError,
   slotIsEyeValid,
   type CaptureClinicalValues,
   type CaptureEyeSlot,
@@ -64,6 +65,16 @@ export default function CapturePage() {
     [eyeSlots],
   );
 
+  /** True if any loaded asset failed validation (blocks submission until corrected or cleared). */
+  const hasInvalidEye = useMemo(
+    () =>
+      CAPTURE_EYE_ORDER.some((side) => {
+        const slot = eyeSlots[side];
+        return slotHasValidationError(slot);
+      }),
+    [eyeSlots],
+  );
+
   /** Submit gate: every contract biomarker must be present and parseable. */
   const clinicalReady = useMemo(
     () => clinicalValuesAreValid(clinical),
@@ -99,7 +110,7 @@ export default function CapturePage() {
   };
 
   const handleSubmitStudy = () => {
-    if (validEyeCount === 0 || !clinicalReady) return;
+    if (validEyeCount === 0 || hasInvalidEye || !clinicalReady) return;
     const submittedAt = new Date().toISOString();
     setStudyId(MOCK_SUBMITTED_STUDY_ID);
     setSubmittedAtIso(submittedAt);
@@ -176,6 +187,12 @@ export default function CapturePage() {
               onEyeSlotChange={(side, slot) =>
                 setEyeSlots((prev) => ({ ...prev, [side]: slot }))
               }
+              onEyeSlotClear={(side) =>
+                setEyeSlots((prev) => ({
+                  ...prev,
+                  [side]: { asset: null, validation: null },
+                }))
+              }
             />
             <CaptureClinicalForm
               values={clinical}
@@ -218,9 +235,11 @@ export default function CapturePage() {
       <footer className="h-12 w-full bg-cockpit-surface border-t border-cockpit-border px-5 flex items-center justify-between">
         <span className="text-[11px] text-cockpit-text-muted">
           {phase === "draft" &&
-            "Se requiere al menos un ojo. El estudio entra en la cola al enviarse y podés seguir trabajando."}
+            (hasInvalidEye
+              ? "Atención: una de las imágenes presenta un error de validación. Corríjala o quítela para enviar el estudio."
+              : "Se requiere al menos un ojo. El estudio entra en la cola al enviarse y puede continuar trabajando.")}
           {phase === "processing" &&
-            `Tiempo estimado restante: ${remainingSeconds} s · El estudio queda en la cola si salís de esta pantalla.`}
+            `Tiempo estimado restante: ${remainingSeconds} s · El estudio permanece en la cola si sale de esta pantalla.`}
           {phase === "completed" &&
             "El estudio queda disponible en el historial y en la cola de validación."}
         </span>
@@ -236,13 +255,15 @@ export default function CapturePage() {
               </button>
               <button
                 onClick={handleSubmitStudy}
-                disabled={validEyeCount === 0 || !clinicalReady}
+                disabled={validEyeCount === 0 || hasInvalidEye || !clinicalReady}
                 title={
-                  validEyeCount === 0
-                    ? "Se requiere al menos un ojo"
-                    : !clinicalReady
-                      ? "Completá los 11 campos del modelo"
-                      : undefined
+                  hasInvalidEye
+                    ? "Corrija o elimine la imagen con error antes de enviar el estudio"
+                    : validEyeCount === 0
+                      ? "Se requiere al menos un ojo válido"
+                      : !clinicalReady
+                        ? "Complete los 11 campos del modelo"
+                        : undefined
                 }
                 className="px-3 py-1 rounded text-[11px] font-semibold bg-clinical-action-light hover:bg-white text-clinical-action-on-light transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >

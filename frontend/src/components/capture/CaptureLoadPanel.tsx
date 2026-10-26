@@ -3,7 +3,6 @@
 import React, { useRef } from "react";
 import type { EyeSide } from "@/types/clinical";
 import {
-  CAPTURE_ACCEPTED_FORMATS,
   CAPTURE_EYE_LABELS,
   CAPTURE_EYE_ORDER,
   CAPTURE_MAX_FILE_BYTES,
@@ -19,6 +18,7 @@ import {
 interface CaptureLoadPanelProps {
   eyeSlots: Record<EyeSide, CaptureEyeSlot>;
   onEyeSlotChange: (side: EyeSide, slot: CaptureEyeSlot) => void;
+  onEyeSlotClear: (side: EyeSide) => void;
 }
 
 function detectFormat(file: File): CaptureAcceptedFormat | null {
@@ -35,6 +35,7 @@ function detectFormat(file: File): CaptureAcceptedFormat | null {
 export function CaptureLoadPanel({
   eyeSlots,
   onEyeSlotChange,
+  onEyeSlotClear,
 }: CaptureLoadPanelProps) {
   const odFileInputRef = useRef<HTMLInputElement>(null);
   const osFileInputRef = useRef<HTMLInputElement>(null);
@@ -108,7 +109,7 @@ export function CaptureLoadPanel({
   return (
     <div className="flex-1 flex flex-col min-w-0 p-5 overflow-y-auto">
       {/* Header bar matching Frame g1U4Y */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3 shrink-0">
         <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
           CARGA DE RETINOGRAFÍAS
         </span>
@@ -118,7 +119,7 @@ export function CaptureLoadPanel({
       </div>
 
       {/* Bilateral Retinal Dropzones: OD on the LEFT, OS on the RIGHT (AGENTS.md §3.2) */}
-      <div className="flex-1 grid grid-cols-2 gap-4 min-h-[580px]">
+      <div className="grid grid-cols-2 gap-4 flex-1 items-start">
         {CAPTURE_EYE_ORDER.map((side) => {
           const slot = eyeSlots[side];
           const isLoaded = slot.asset !== null && slot.validation !== null;
@@ -133,7 +134,7 @@ export function CaptureLoadPanel({
           return (
             <div
               key={side}
-              className="flex flex-col bg-cockpit-card border border-cockpit-border rounded-md p-3"
+              className="flex flex-col bg-cockpit-card border border-cockpit-border rounded-md p-3.5"
             >
               {/* Hidden file input */}
               <input
@@ -149,7 +150,7 @@ export function CaptureLoadPanel({
               />
 
               {/* Card Header */}
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-2.5 shrink-0">
                 <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
                   {CAPTURE_EYE_LABELS[side]}
                 </span>
@@ -167,7 +168,7 @@ export function CaptureLoadPanel({
                         isAllValid ? "bg-clinical-green" : "bg-clinical-red"
                       }`}
                     />
-                    <span>{isAllValid ? "CARGADO" : "INVÁLIDO"}</span>
+                    <span>{isAllValid ? "CARGADO" : "ERROR DE IMAGEN"}</span>
                   </div>
                 ) : (
                   <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-cockpit-subtle border border-[#27272A] text-[9px] font-semibold text-zinc-400">
@@ -181,12 +182,12 @@ export function CaptureLoadPanel({
               <div
                 onDrop={(e) => handleDrop(side, e)}
                 onDragOver={handleDragOver}
-                className="flex-1 flex flex-col justify-between bg-cockpit-bg border border-cockpit-border rounded min-h-[420px] overflow-hidden"
+                className="h-[280px] flex flex-col justify-between bg-cockpit-bg border border-cockpit-border rounded overflow-hidden"
               >
                 {isLoaded && slot.asset ? (
                   <>
                     {/* Retinal Canvas */}
-                    <div className="flex-1 flex items-center justify-center bg-[#08080A] relative overflow-hidden p-4">
+                    <div className="flex-1 flex items-center justify-center bg-[#08080A] relative overflow-hidden p-3">
                       {slot.asset.previewUrl ? (
                         <img
                           src={slot.asset.previewUrl}
@@ -196,7 +197,7 @@ export function CaptureLoadPanel({
                       ) : (
                         /* Anatomical fundus radial ellipse matching cockpit grammar (S14) */
                         <div
-                          className="w-[340px] h-[340px] rounded-full shadow-2xl relative flex items-center justify-center"
+                          className="w-[220px] h-[220px] rounded-full shadow-2xl relative flex items-center justify-center"
                           style={{
                             background:
                               "radial-gradient(circle at 45% 50%, #4A1B0E 0%, #301007 35%, #180603 65%, #0B0302 85%, #08080A 100%)",
@@ -204,36 +205,46 @@ export function CaptureLoadPanel({
                         >
                           {/* Inner optic disc representation */}
                           <div
-                            className={`w-14 h-16 rounded-full absolute opacity-90 shadow-inner ${
-                              side === "OD" ? "left-[85px]" : "right-[85px]"
+                            className={`w-10 h-12 rounded-full absolute opacity-90 shadow-inner ${
+                              side === "OD" ? "left-[50px]" : "right-[50px]"
                             }`}
                             style={{
                               background:
                                 "radial-gradient(circle at 40% 45%, #F5CE7A 0%, #D89838 50%, #854817 90%)",
-                              filter: "blur(1px)",
+                              filter: "blur(0.5px)",
                             }}
                           >
-                            <div className="w-6 h-8 rounded-full bg-[#FFE4A0] opacity-80 m-auto mt-3 blur-[0.5px]" />
+                            <div className="w-4 h-6 rounded-full bg-[#FFE4A0] opacity-80 m-auto mt-2 blur-[0.5px]" />
                           </div>
                         </div>
                       )}
                     </div>
 
                     {/* File Meta Row */}
-                    <div className="h-9 px-3 bg-cockpit-surface border-t border-cockpit-border flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-[10px] font-mono text-cockpit-text truncate max-w-[70%]">
+                    <div className="h-9 px-3 bg-cockpit-surface border-t border-cockpit-border flex items-center justify-between shrink-0">
+                      <div className="flex items-center gap-2 text-[10px] font-mono text-cockpit-text truncate max-w-[65%]">
                         <span className="truncate">{slot.asset.fileName}</span>
                         <span className="text-cockpit-text-dim shrink-0">
                           {formatDimension(slot.asset)} · {formatFileSize(slot.asset.bytes)}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="text-[10px] text-clinical-sky hover:underline font-medium shrink-0"
-                      >
-                        Reemplazar
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="text-[10px] text-clinical-sky hover:underline font-medium"
+                        >
+                          Reemplazar
+                        </button>
+                        <span className="text-cockpit-border">·</span>
+                        <button
+                          type="button"
+                          onClick={() => onEyeSlotClear(side)}
+                          className="text-[10px] text-zinc-400 hover:text-clinical-red transition-colors"
+                        >
+                          Quitar
+                        </button>
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -242,9 +253,9 @@ export function CaptureLoadPanel({
                     onClick={() => fileInputRef.current?.click()}
                     className="flex-1 flex flex-col items-center justify-center cursor-pointer p-6 hover:bg-cockpit-card/40 transition-colors"
                   >
-                    <div className="w-10 h-10 rounded-full bg-cockpit-subtle border border-cockpit-border flex items-center justify-center mb-3 text-cockpit-text-muted">
+                    <div className="w-9 h-9 rounded-full bg-cockpit-subtle border border-cockpit-border flex items-center justify-center mb-2.5 text-cockpit-text-muted">
                       <svg
-                        className="w-5 h-5 text-cockpit-text-dim"
+                        className="w-4 h-4 text-cockpit-text-dim"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
@@ -257,10 +268,10 @@ export function CaptureLoadPanel({
                         />
                       </svg>
                     </div>
-                    <span className="text-[11px] text-cockpit-text-muted mb-1 text-center font-medium">
-                      Arrastrá o seleccioná la retinografía
+                    <span className="text-[11px] text-cockpit-text-muted mb-0.5 text-center font-medium">
+                      Arrastre o seleccione la retinografía
                     </span>
-                    <span className="text-[10px] text-cockpit-text-dim mb-4 text-center">
+                    <span className="text-[10px] text-cockpit-text-dim mb-3 text-center">
                       JPG o PNG · desde 512 px
                     </span>
                     <button
@@ -274,7 +285,7 @@ export function CaptureLoadPanel({
               </div>
 
               {/* Card Validations Footer */}
-              <div className="mt-3 pt-2 border-t border-cockpit-border flex flex-col gap-1.5 text-[10px]">
+              <div className="mt-3 pt-2 border-t border-cockpit-border flex flex-col gap-1.5 text-[10px] shrink-0">
                 {isLoaded && slot.validation ? (
                   <>
                     <div className="flex items-center gap-2">
@@ -285,7 +296,7 @@ export function CaptureLoadPanel({
                       />
                       <span
                         className={
-                          slot.validation.formatOk ? "text-cockpit-text-muted" : "text-clinical-red"
+                          slot.validation.formatOk ? "text-cockpit-text-muted" : "text-clinical-red font-medium"
                         }
                       >
                         {slot.validation.formatOk
@@ -306,7 +317,7 @@ export function CaptureLoadPanel({
                         className={
                           slot.validation.resolutionOk
                             ? "text-cockpit-text-muted"
-                            : "text-clinical-red"
+                            : "text-clinical-red font-medium"
                         }
                       >
                         {slot.validation.resolutionOk
@@ -326,7 +337,7 @@ export function CaptureLoadPanel({
                       />
                       <span
                         className={
-                          slot.validation.sizeOk ? "text-cockpit-text-muted" : "text-clinical-red"
+                          slot.validation.sizeOk ? "text-cockpit-text-muted" : "text-clinical-red font-medium"
                         }
                       >
                         {slot.validation.sizeOk

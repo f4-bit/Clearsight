@@ -63,6 +63,16 @@ export function slotIsEyeValid(slot: CaptureEyeSlot): boolean {
   );
 }
 
+/** Returns true if an asset is present but failed any quality/format validation. */
+export function slotHasValidationError(slot: CaptureEyeSlot): boolean {
+  if (slot.asset === null || slot.validation === null) return false;
+  return (
+    !slot.validation.formatOk ||
+    !slot.validation.resolutionOk ||
+    !slot.validation.sizeOk
+  );
+}
+
 /** Form draft state: string values so inputs can stay incomplete. */
 export type CaptureClinicalValues = Record<keyof ClinicalFeatures, string>;
 
