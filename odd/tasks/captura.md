@@ -30,7 +30,7 @@
 - **T2** [completed: b1d6a06] — Estado 1 Carga: zonas bilaterales con estado por ojo (S1), dropzones con validaciones client-side (S3), fila de archivo (S4), formulario con mapeo de contrato de S6 (Tonómetro en dos filas por L2), completitud N/11 (S7), footer con Enviar habilitado si ≥1 ojo (S8). Verificación: build + visual. `S1,S2,S3,S4,S5,S6,S7,S8`
 - **T3** [completed: 49324be] — Estado 2 Procesando: panel de progreso con track 3px, miniaturas, pipeline de 7 etapas con estado por etapa (S9,S10), barra superior con texto de etapa (S11). Verificación: build + visual. `S9,S10,S11`
 - **T4** [completed: a748230] — Estado 3 Completado: miniaturas con vCDR, banner de consenso + distribución 3 barras triage, footer de acciones (Nuevo estudio resetea a carga limpia; Ver estudio en el cockpit navega a `/`). Verificación: build + visual. `S11,S12`
-- **T5** — Entrada desde cockpit: añadir botón `"Nueva captura"` al TopBar del cockpit (navega a `/capture`). Verificación: build + visual en `/`. `S15`
+- **T5** [completed: 9826655] — Entrada desde cockpit: añadir botón `"Nueva captura"` al TopBar del cockpit (navega a `/capture`). Verificación: build + visual en `/`. `S15`
 
 ## Bitácora
 
