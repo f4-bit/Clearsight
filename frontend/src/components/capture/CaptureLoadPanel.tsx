@@ -107,7 +107,7 @@ export function CaptureLoadPanel({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 p-5 overflow-y-auto">
+    <div className="flex-1 h-full min-w-0 flex flex-col p-5 overflow-hidden">
       {/* Header bar matching Frame g1U4Y */}
       <div className="flex items-center justify-between mb-3 shrink-0">
         <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
@@ -119,7 +119,7 @@ export function CaptureLoadPanel({
       </div>
 
       {/* Bilateral Retinal Dropzones: OD on the LEFT, OS on the RIGHT (AGENTS.md §3.2) */}
-      <div className="grid grid-cols-2 gap-4 flex-1 items-start">
+      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0 h-full">
         {CAPTURE_EYE_ORDER.map((side) => {
           const slot = eyeSlots[side];
           const isLoaded = slot.asset !== null && slot.validation !== null;
@@ -134,7 +134,7 @@ export function CaptureLoadPanel({
           return (
             <div
               key={side}
-              className="flex flex-col bg-cockpit-card border border-cockpit-border rounded-md p-3.5"
+              className="flex flex-col h-full min-h-0 bg-cockpit-card border border-cockpit-border rounded-md p-3.5 overflow-hidden"
             >
               {/* Hidden file input */}
               <input
@@ -178,16 +178,16 @@ export function CaptureLoadPanel({
                 )}
               </div>
 
-              {/* Card Body: Retinal Viewport (Loaded) OR Dropzone (Empty) */}
+              {/* Card Body: Retinal Viewport (Loaded) OR Dropzone (Empty) - fills all vertical space */}
               <div
                 onDrop={(e) => handleDrop(side, e)}
                 onDragOver={handleDragOver}
-                className="h-[280px] flex flex-col justify-between bg-cockpit-bg border border-cockpit-border rounded overflow-hidden"
+                className="flex-1 min-h-0 flex flex-col justify-between bg-cockpit-bg border border-cockpit-border rounded overflow-hidden"
               >
                 {isLoaded && slot.asset ? (
                   <>
-                    {/* Retinal Canvas */}
-                    <div className="flex-1 flex items-center justify-center bg-[#08080A] relative overflow-hidden p-3">
+                    {/* Retinal Canvas Stage */}
+                    <div className="flex-1 min-h-0 flex items-center justify-center bg-[#08080A] relative overflow-hidden p-4">
                       {slot.asset.previewUrl ? (
                         <img
                           src={slot.asset.previewUrl}
@@ -197,7 +197,7 @@ export function CaptureLoadPanel({
                       ) : (
                         /* Anatomical fundus radial ellipse matching cockpit grammar (S14) */
                         <div
-                          className="w-[220px] h-[220px] rounded-full shadow-2xl relative flex items-center justify-center"
+                          className="w-[300px] h-[300px] max-w-[85%] max-h-[85%] aspect-square rounded-full shadow-2xl relative flex items-center justify-center"
                           style={{
                             background:
                               "radial-gradient(circle at 45% 50%, #4A1B0E 0%, #301007 35%, #180603 65%, #0B0302 85%, #08080A 100%)",
@@ -205,8 +205,8 @@ export function CaptureLoadPanel({
                         >
                           {/* Inner optic disc representation */}
                           <div
-                            className={`w-10 h-12 rounded-full absolute opacity-90 shadow-inner ${
-                              side === "OD" ? "left-[50px]" : "right-[50px]"
+                            className={`w-12 h-14 rounded-full absolute opacity-90 shadow-inner ${
+                              side === "OD" ? "left-[70px]" : "right-[70px]"
                             }`}
                             style={{
                               background:
@@ -214,7 +214,7 @@ export function CaptureLoadPanel({
                               filter: "blur(0.5px)",
                             }}
                           >
-                            <div className="w-4 h-6 rounded-full bg-[#FFE4A0] opacity-80 m-auto mt-2 blur-[0.5px]" />
+                            <div className="w-5 h-7 rounded-full bg-[#FFE4A0] opacity-80 m-auto mt-2 blur-[0.5px]" />
                           </div>
                         </div>
                       )}
@@ -248,14 +248,14 @@ export function CaptureLoadPanel({
                     </div>
                   </>
                 ) : (
-                  /* Empty Dropzone State */
+                  /* Empty Dropzone State - fills vertical space and centers cleanly */
                   <div
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex-1 flex flex-col items-center justify-center cursor-pointer p-6 hover:bg-cockpit-card/40 transition-colors"
+                    className="flex-1 min-h-0 flex flex-col items-center justify-center cursor-pointer p-6 hover:bg-cockpit-card/40 transition-colors"
                   >
-                    <div className="w-9 h-9 rounded-full bg-cockpit-subtle border border-cockpit-border flex items-center justify-center mb-2.5 text-cockpit-text-muted">
+                    <div className="w-12 h-12 rounded-full bg-cockpit-subtle border border-cockpit-border flex items-center justify-center mb-3 text-cockpit-text-muted">
                       <svg
-                        className="w-4 h-4 text-cockpit-text-dim"
+                        className="w-6 h-6 text-cockpit-text-dim"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
@@ -268,15 +268,15 @@ export function CaptureLoadPanel({
                         />
                       </svg>
                     </div>
-                    <span className="text-[11px] text-cockpit-text-muted mb-0.5 text-center font-medium">
+                    <span className="text-xs text-cockpit-text-muted mb-1 text-center font-medium">
                       Arrastre o seleccione la retinografía
                     </span>
-                    <span className="text-[10px] text-cockpit-text-dim mb-3 text-center">
-                      JPG o PNG · desde 512 px
+                    <span className="text-[10px] text-cockpit-text-dim mb-4 text-center">
+                      JPG o PNG · resolución mínima 512 px
                     </span>
                     <button
                       type="button"
-                      className="px-3 py-1 rounded bg-cockpit-subtle border border-[#27272A] text-[10px] font-medium text-cockpit-text hover:bg-cockpit-panel transition-colors"
+                      className="px-3.5 py-1.5 rounded bg-cockpit-subtle border border-[#27272A] text-[11px] font-medium text-cockpit-text hover:bg-cockpit-panel transition-colors"
                     >
                       Elegir archivo
                     </button>
@@ -285,7 +285,7 @@ export function CaptureLoadPanel({
               </div>
 
               {/* Card Validations Footer */}
-              <div className="mt-3 pt-2 border-t border-cockpit-border flex flex-col gap-1.5 text-[10px] shrink-0">
+              <div className="mt-3 pt-2.5 border-t border-cockpit-border flex flex-col gap-1.5 text-[10px] shrink-0">
                 {isLoaded && slot.validation ? (
                   <>
                     <div className="flex items-center gap-2">

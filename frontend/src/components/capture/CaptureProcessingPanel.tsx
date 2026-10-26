@@ -58,9 +58,9 @@ export function CaptureProcessingPanel({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 p-5 overflow-y-auto">
+    <div className="flex-1 h-full min-w-0 flex flex-col p-5 overflow-hidden">
       {/* Header bar matching Frame bMne9 */}
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2 shrink-0">
         <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
           ESTADO DEL ESTUDIO
         </span>
@@ -70,7 +70,7 @@ export function CaptureProcessingPanel({
       </div>
 
       {/* Progress track (3px, gold fill over #1C1C22) */}
-      <div className="h-[3px] w-full bg-cockpit-border rounded-full overflow-hidden mb-5">
+      <div className="h-[3px] w-full bg-cockpit-border rounded-full overflow-hidden mb-4 shrink-0">
         <div
           className="h-full bg-clinical-gold transition-all duration-300"
           style={{ width: `${progressPercent}%` }}
@@ -78,7 +78,7 @@ export function CaptureProcessingPanel({
       </div>
 
       {/* Miniaturas OD / OS */}
-      <div className="grid grid-cols-2 gap-4 mb-6">
+      <div className="grid grid-cols-2 gap-4 mb-4 flex-1 min-h-[200px]">
         {CAPTURE_EYE_ORDER.map((side) => {
           const slot = eyeSlots[side];
           const badge = snapshot.eyeBadges[side];
@@ -87,9 +87,9 @@ export function CaptureProcessingPanel({
           return (
             <div
               key={side}
-              className="flex flex-col bg-cockpit-card border border-cockpit-border rounded-md p-3"
+              className="flex flex-col h-full bg-cockpit-card border border-cockpit-border rounded-md p-3 overflow-hidden"
             >
-              <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center justify-between mb-2 shrink-0">
                 <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
                   {CAPTURE_EYE_LABELS[side]}
                 </span>
@@ -102,7 +102,7 @@ export function CaptureProcessingPanel({
               </div>
 
               {/* Viewport canvas */}
-              <div className="h-[180px] bg-[#08080A] border border-cockpit-border rounded flex items-center justify-center overflow-hidden relative">
+              <div className="flex-1 min-h-[140px] bg-[#08080A] border border-cockpit-border rounded flex items-center justify-center overflow-hidden relative">
                 {slot.asset?.previewUrl ? (
                   <img
                     src={slot.asset.previewUrl}

@@ -25,9 +25,9 @@ export function CaptureCompletedPanel({
   completedAtIso,
 }: CaptureCompletedPanelProps) {
   return (
-    <div className="flex-1 flex flex-col min-w-0 p-5 overflow-y-auto">
+    <div className="flex-1 h-full min-w-0 flex flex-col p-5 overflow-hidden">
       {/* Header bar matching Frame ZKc1O */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3 shrink-0">
         <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
           ESTUDIO COMPLETADO
         </span>
@@ -37,8 +37,8 @@ export function CaptureCompletedPanel({
         </span>
       </div>
 
-      {/* Miniaturas OD / OS with vCDR footers */}
-      <div className="grid grid-cols-2 gap-4 mb-5 flex-1 min-h-[360px]">
+      {/* Miniaturas OD / OS with vCDR footers - fills available vertical space */}
+      <div className="grid grid-cols-2 gap-4 mb-4 flex-1 min-h-0">
         {CAPTURE_EYE_ORDER.map((side) => {
           const slot = eyeSlots[side];
           const result = results[side];
@@ -47,10 +47,10 @@ export function CaptureCompletedPanel({
           return (
             <div
               key={side}
-              className="flex flex-col bg-cockpit-card border border-cockpit-border rounded-md p-3"
+              className="flex flex-col h-full min-h-0 bg-cockpit-card border border-cockpit-border rounded-md p-3.5 overflow-hidden"
             >
               {/* Card Header */}
-              <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center justify-between mb-2 shrink-0">
                 <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
                   {CAPTURE_EYE_LABELS[side]}
                 </span>
@@ -61,7 +61,7 @@ export function CaptureCompletedPanel({
               </div>
 
               {/* Viewport canvas */}
-              <div className="flex-1 bg-[#08080A] border border-cockpit-border rounded flex items-center justify-center overflow-hidden relative min-h-[220px]">
+              <div className="flex-1 min-h-0 bg-[#08080A] border border-cockpit-border rounded flex items-center justify-center overflow-hidden relative">
                 {slot.asset?.previewUrl ? (
                   <img
                     src={slot.asset.previewUrl}
@@ -70,15 +70,15 @@ export function CaptureCompletedPanel({
                   />
                 ) : (
                   <div
-                    className="w-36 h-36 rounded-full shadow-lg relative flex items-center justify-center"
+                    className="w-[280px] h-[280px] max-w-[85%] max-h-[85%] aspect-square rounded-full shadow-lg relative flex items-center justify-center"
                     style={{
                       background:
                         "radial-gradient(circle at 45% 50%, #4A1B0E 0%, #301007 35%, #180603 65%, #0B0302 85%, #08080A 100%)",
                     }}
                   >
                     <div
-                      className={`w-7 h-8 rounded-full absolute opacity-90 ${
-                        side === "OD" ? "left-8" : "right-8"
+                      className={`w-10 h-12 rounded-full absolute opacity-90 ${
+                        side === "OD" ? "left-[60px]" : "right-[60px]"
                       }`}
                       style={{
                         background:
@@ -90,7 +90,7 @@ export function CaptureCompletedPanel({
               </div>
 
               {/* Card Footer: vCDR label and value */}
-              <div className="h-8 px-1 mt-2 flex items-center justify-between text-[11px] border-t border-cockpit-border/60">
+              <div className="h-8 px-1 mt-2 shrink-0 flex items-center justify-between text-[11px] border-t border-cockpit-border/60">
                 <span className="text-[9px] font-bold text-cockpit-text-dim uppercase tracking-wider">
                   vCDR
                 </span>
@@ -104,7 +104,7 @@ export function CaptureCompletedPanel({
       </div>
 
       {/* Bilateral Consensus Box matching Frame ZKc1O */}
-      <div className="p-4 bg-cockpit-panel border border-cockpit-border-subtle rounded-md flex flex-col gap-1.5">
+      <div className="p-4 bg-cockpit-panel border border-cockpit-border-subtle rounded-md flex flex-col gap-1.5 shrink-0">
         <span className="text-[9px] font-bold tracking-wider text-cockpit-text-dim uppercase">
           CONSENSO BILATERAL
         </span>
