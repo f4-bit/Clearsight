@@ -6,6 +6,7 @@ import { CaptureTopBar } from "@/components/capture/CaptureTopBar";
 import { CaptureLoadPanel } from "@/components/capture/CaptureLoadPanel";
 import { CaptureClinicalForm } from "@/components/capture/CaptureClinicalForm";
 import { CaptureProcessingPanel } from "@/components/capture/CaptureProcessingPanel";
+import { CaptureCompletedPanel } from "@/components/capture/CaptureCompletedPanel";
 import { CaptureStudyPanel } from "@/components/capture/CaptureStudyPanel";
 import {
   captureProcessingSnapshot,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/capture/mockStudy";
 import {
   createMockClinicalValues,
+  createMockCompletedResults,
   createMockEyeSlots,
   genderLabel,
   MOCK_CONSENSUS,
@@ -48,7 +50,10 @@ export default function CapturePage() {
     createMockClinicalValues(),
   );
   const [snapshot, setSnapshot] = useState<CaptureProcessingSnapshot | null>(null);
+  const [completedAtIso, setCompletedAtIso] = useState<string | null>(null);
   const completionHandledRef = useRef(false);
+
+  const completedResults = useMemo(() => createMockCompletedResults(), []);
 
   const validEyeCount = useMemo(
     () =>
@@ -79,6 +84,7 @@ export default function CapturePage() {
 
       if (nextSnapshot.finished && !completionHandledRef.current) {
         completionHandledRef.current = true;
+        setCompletedAtIso(new Date().toISOString());
         setPhase("completed");
         window.clearInterval(tick);
       }
@@ -106,6 +112,7 @@ export default function CapturePage() {
     setSnapshot(null);
     setSubmittedAtIso(null);
     setStudyId(null);
+    setCompletedAtIso(null);
     setPhase("draft");
   };
 
@@ -120,6 +127,7 @@ export default function CapturePage() {
     setSubmittedAtIso(null);
     setStudyId(null);
     setSnapshot(null);
+    setCompletedAtIso(null);
     setPhase("draft");
   };
 
@@ -189,14 +197,20 @@ export default function CapturePage() {
             />
           </>
         ) : (
-          <section className="flex-1 min-w-0 flex flex-col px-5 py-4 overflow-hidden">
-            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
-              <span>Estudio completado</span>
-              <span className="font-normal font-mono">
-                Finalizado {MOCK_CONSENSUS.elapsedSeconds.toFixed(1)} s
-              </span>
-            </div>
-          </section>
+          <>
+            <CaptureCompletedPanel
+              eyeSlots={eyeSlots}
+              results={completedResults}
+              completedAtIso={
+                completedAtIso ?? submittedAtIso ?? new Date().toISOString()
+              }
+            />
+            <CaptureStudyPanel
+              phase="completed"
+              clinical={clinical}
+              eyeSlots={eyeSlots}
+            />
+          </>
         )}
       </div>
 
