@@ -46,3 +46,4 @@
   1. Neutralización de copy en toda la pantalla (reemplazo de voseo/regionalismos por español clínico estándar).
   2. Bloqueo estricto de envío ante cualquier ojo inválido (`hasInvalidEye`), con tooltip explicativo y botón "Quitar" para remover archivos con error.
   3. Rebalanceo del layout: ampliación del panel derecho de 360px a 440-480px con grilla de 2 columnas para biomarcadores pares, y compactación de las tarjetas de dropzone bilateral (h-[280px]) para una visual de consola clínica de alta densidad.
+- **L10** (2026-10-26, corrección de proporciones verticales): Se corrigió el recorte vertical de las cajas de carga. Se eliminó la altura fija (`h-[280px]`) y se restauró la jerarquía `flex-1 min-h-0 h-full` para que las zonas bilaterales aprovechen el 100% de la altura vertical disponible de la pantalla, manteniendo el panel derecho en `w-[400px] xl:w-[440px]` con filas completas de instrumento técnico. Commit `584df96`.
