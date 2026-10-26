@@ -3,6 +3,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CaptureTopBar } from "@/components/capture/CaptureTopBar";
+import { CaptureLoadPanel } from "@/components/capture/CaptureLoadPanel";
+import { CaptureClinicalForm } from "@/components/capture/CaptureClinicalForm";
 import {
   captureProcessingSnapshot,
   clampElapsed,
@@ -26,11 +28,11 @@ import {
   type CaptureProcessingSnapshot,
 } from "@/types/capture";
 
-type CaptureEyeSlotsBySide = Record<"OD" | "OS", CaptureEyeSlot>;
-
 function utcTimeLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString("es-ES", { timeZone: "UTC" });
 }
+
+type CaptureEyeSlotsBySide = Record<"OD" | "OS", CaptureEyeSlot>;
 
 export default function CapturePage() {
   const router = useRouter();
@@ -128,7 +130,7 @@ export default function CapturePage() {
     phase === "draft"
       ? `${validEyeCount} de 2 ojos cargados`
       : phase === "processing"
-        ? `Procesando Â· ${snapshot?.activeStageLabel ?? "iniciando"}`
+        ? `Procesando · ${snapshot?.activeStageLabel ?? "iniciando"}`
         : `${CONSENSUS_LABEL_ES[MOCK_CONSENSUS.label]} (${(MOCK_CONSENSUS.confidence * 100).toFixed(0)}% probabilidad)`;
 
   return (
@@ -138,7 +140,7 @@ export default function CapturePage() {
         studyIdLabel={studyId ?? "PENDIENTE"}
         scopeLabel={
           studyId
-            ? `${clinical.Age} aÃ±os Â· ${genderLabel(clinical.Gender)} Â· Bilateral`
+            ? `${clinical.Age} años · ${genderLabel(clinical.Gender)} · Bilateral`
             : "Carga bilateral"
         }
         timeLabel={utcTimeLabel(submittedAtIso ?? new Date().toISOString())}
@@ -157,49 +159,60 @@ export default function CapturePage() {
 
       {/* Main workspace: per-phase body on the left, summary panel on the right */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        <section className="flex-1 min-w-0 flex flex-col px-5 py-4 overflow-hidden">
-          {phase === "draft" && (
-            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
-              <span>Carga de retinografÃ­as</span>
-              <span className="font-normal">Un ojo por estudio Â· mÃ­nimo 512 px</span>
-            </div>
-          )}
-          {phase === "processing" && (
-            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
-              <span>Estado del estudio</span>
-              <span className="font-normal font-mono">
-                Transcurrido {(snapshot?.elapsedSeconds ?? 0).toFixed(0)} s Â·{" "}
-                restante {remainingSeconds} s
-              </span>
-            </div>
-          )}
-          {phase === "completed" && (
-            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
-              <span>Estudio completado</span>
-              <span className="font-normal font-mono">
-              Finalizado {MOCK_CONSENSUS.elapsedSeconds.toFixed(1)} s
-            </span>
-            </div>
-          )}
-        </section>
+        {phase === "draft" ? (
+          <>
+            <CaptureLoadPanel
+              eyeSlots={eyeSlots}
+              onEyeSlotChange={(side, slot) =>
+                setEyeSlots((prev) => ({ ...prev, [side]: slot }))
+              }
+            />
+            <CaptureClinicalForm
+              values={clinical}
+              onChange={(field, value) =>
+                setClinical((prev) => ({ ...prev, [field]: value }))
+              }
+            />
+          </>
+        ) : (
+          <section className="flex-1 min-w-0 flex flex-col px-5 py-4 overflow-hidden">
+            {phase === "processing" && (
+              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
+                <span>Estado del estudio</span>
+                <span className="font-normal font-mono">
+                  Transcurrido {(snapshot?.elapsedSeconds ?? 0).toFixed(0)} s ·{" "}
+                  restante {remainingSeconds} s
+                </span>
+              </div>
+            )}
+            {phase === "completed" && (
+              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
+                <span>Estudio completado</span>
+                <span className="font-normal font-mono">
+                  Finalizado {MOCK_CONSENSUS.elapsedSeconds.toFixed(1)} s
+                </span>
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {/* Footer action bar */}
       <footer className="h-12 w-full bg-cockpit-surface border-t border-cockpit-border px-5 flex items-center justify-between">
         <span className="text-[11px] text-cockpit-text-muted">
           {phase === "draft" &&
-            "Se requiere al menos un ojo. El estudio entra en la cola al enviarse y podÃ©s seguir trabajando."}
+            "Se requiere al menos un ojo. El estudio entra en la cola al enviarse y podés seguir trabajando."}
           {phase === "processing" &&
-            `Tiempo estimado restante: ${remainingSeconds} s Â· El estudio queda en la cola si salÃ­s de esta pantalla.`}
+            `Tiempo estimado restante: ${remainingSeconds} s · El estudio queda en la cola si salís de esta pantalla.`}
           {phase === "completed" &&
-            "El estudio queda disponible en el historial y en la cola de validaciÃ³n."}
+            "El estudio queda disponible en el historial y en la cola de validación."}
         </span>
         <div className="flex items-center gap-3">
           {phase === "draft" && (
             <>
               <button
                 disabled
-                title="No disponible en esta versiÃ³n"
+                title="No disponible en esta versión"
                 className="px-3 py-1 rounded text-[11px] font-medium bg-cockpit-panel border border-cockpit-border-subtle text-zinc-400 opacity-50 cursor-not-allowed"
               >
                 Guardar borrador
@@ -230,7 +243,7 @@ export default function CapturePage() {
               </button>
               <button
                 disabled
-                title="No disponible en esta versiÃ³n"
+                title="No disponible en esta versión"
                 className="px-3 py-1 rounded text-[11px] font-semibold bg-clinical-action-light text-clinical-action-on-light opacity-50 cursor-not-allowed"
               >
                 Ir a la cola de estudios
