@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { CaptureTopBar } from "@/components/capture/CaptureTopBar";
 import { CaptureLoadPanel } from "@/components/capture/CaptureLoadPanel";
 import { CaptureClinicalForm } from "@/components/capture/CaptureClinicalForm";
+import { CaptureProcessingPanel } from "@/components/capture/CaptureProcessingPanel";
+import { CaptureStudyPanel } from "@/components/capture/CaptureStudyPanel";
 import {
   captureProcessingSnapshot,
   clampElapsed,
@@ -174,25 +176,26 @@ export default function CapturePage() {
               }
             />
           </>
+        ) : phase === "processing" ? (
+          <>
+            <CaptureProcessingPanel
+              snapshot={snapshot ?? captureProcessingSnapshot(0)}
+              eyeSlots={eyeSlots}
+            />
+            <CaptureStudyPanel
+              phase="processing"
+              clinical={clinical}
+              eyeSlots={eyeSlots}
+            />
+          </>
         ) : (
           <section className="flex-1 min-w-0 flex flex-col px-5 py-4 overflow-hidden">
-            {phase === "processing" && (
-              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
-                <span>Estado del estudio</span>
-                <span className="font-normal font-mono">
-                  Transcurrido {(snapshot?.elapsedSeconds ?? 0).toFixed(0)} s ·{" "}
-                  restante {remainingSeconds} s
-                </span>
-              </div>
-            )}
-            {phase === "completed" && (
-              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
-                <span>Estudio completado</span>
-                <span className="font-normal font-mono">
-                  Finalizado {MOCK_CONSENSUS.elapsedSeconds.toFixed(1)} s
-                </span>
-              </div>
-            )}
+            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-cockpit-text-dim">
+              <span>Estudio completado</span>
+              <span className="font-normal font-mono">
+                Finalizado {MOCK_CONSENSUS.elapsedSeconds.toFixed(1)} s
+              </span>
+            </div>
           </section>
         )}
       </div>
