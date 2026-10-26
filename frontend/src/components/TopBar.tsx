@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import { BilateralStudy } from "@/types/clinical";
 
 interface TopBarProps {
@@ -61,6 +62,16 @@ export function TopBar({
           <span>{reportExportPending ? "Generando PDF..." : "Exportar Informe"}</span>
           <span className="text-[10px] text-cockpit-text-muted">↗</span>
         </button>
+
+        {/* New Capture Link */}
+        <Link
+          href="/capture"
+          aria-label="Iniciar nueva captura de estudio"
+          className="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-[#1E1E24] hover:bg-[#25252D] text-cockpit-text border border-[#2E2E36] transition-colors"
+        >
+          <span>Nueva captura</span>
+          <span className="text-[10px] text-cockpit-text-muted">+</span>
+        </Link>
       </div>
     </header>
   );
