@@ -5,6 +5,7 @@ __pycache__/
 node_modules/
 .next/
 .env
+dist/
 .env.azure
 *.onnx
 mlruns/
