@@ -1,12 +1,13 @@
 import { Worker } from "bullmq";
+import { Redis } from "ioredis";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { mlClient } from "../services/ml-client.js";
 import { INFERENCE_QUEUE_NAME, InferenceJobData } from "./inference.queue.js";
 
-const connection = {
-  url: env.REDIS_URL,
-};
+const connection = new Redis(env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+});
 
 export function startInferenceWorker() {
   const worker = new Worker<InferenceJobData>(
@@ -54,7 +55,11 @@ export function startInferenceWorker() {
         glaucoma: 2,
       };
       const predictedClass = result.label
-        ? labelMap[result.label.toLowerCase()] ?? 0
+        ? labelMap[result.label.toLowerCase()] ??
+          (() => {
+            console.warn(`[Worker] Unrecognized model label "${result.label}", storing null`);
+            return null;
+          })()
         : null;
 
       // 3. Persist to PostgreSQL via Prisma

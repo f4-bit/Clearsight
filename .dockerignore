@@ -12,5 +12,7 @@ __pycache__
 *.onnx
 .env*
 docker/ml-service.env
+dist/
+backend/dist/
 !models_cache/**/*.onnx
 !models_cache/**/*.h5

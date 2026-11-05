@@ -23,7 +23,6 @@ export async function sanitizeImage(inputBuffer: Buffer): Promise<SanitizedImage
     .jpeg({
       quality: 95,
       chromaSubsampling: "4:4:4", // Preserves microvascular resolution
-      force: false,
     })
     .toBuffer();
 

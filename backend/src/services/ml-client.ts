@@ -42,6 +42,7 @@ export class MlClient {
         ...this.authHeaders,
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {
@@ -60,6 +61,7 @@ export class MlClient {
   async getJobStatus(jobId: string): Promise<JobResponse> {
     const res = await fetch(`${this.baseUrl}/v1/inferences/${jobId}`, {
       headers: this.authHeaders,
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       throw new Error(`Failed to fetch ML job ${jobId}: ${res.statusText}`);

@@ -18,13 +18,13 @@ services:
       ML_REDIS_URL: redis://ml-redis:6379/0
       ML_MODEL_CACHE_DIR: /models
       ML_MANIFEST_PATH: /app/ml/models/manifest.json
+      ML_DEVICE: cpu
     ports:
       - "8000:8000"
     volumes:
       - clearsight-ml-models:/models
     depends_on:
       - ml-redis
-    gpus: all
     networks:
       - clearsight
 
