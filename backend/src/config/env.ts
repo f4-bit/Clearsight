@@ -33,7 +33,13 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("8h"),
 
   // ML Service
-  ML_SERVICE_URL: z.string().default("http://localhost:8001"),
+  ML_SERVICE_URL: z.string().default("http://localhost:8000"),
+  // Bearer token for the ML inference service. If the ML service is configured with
+  // ML_API_TOKEN, this must match; leave empty to talk to a development ML service that
+  // does not enforce tokens.
+  ML_API_TOKEN: z.string().optional(),
+  // Host reachable FROM the ML service container (Docker network) used for presigned image URLs.
+  ML_PUBLIC_HOST: z.string().optional(),
 
   // CORS
   CORS_ORIGIN: z.string().default("*"),

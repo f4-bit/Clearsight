@@ -7,9 +7,13 @@ import {
 
 export class MlClient {
   private baseUrl: string;
+  private authHeaders: Record<string, string>;
 
   constructor(baseUrl = env.ML_SERVICE_URL) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.authHeaders = env.ML_API_TOKEN
+      ? { Authorization: `Bearer ${env.ML_API_TOKEN}` }
+      : {};
   }
 
   async submitInference(payload: {
@@ -33,7 +37,10 @@ export class MlClient {
   }): Promise<JobAccepted> {
     const res = await fetch(`${this.baseUrl}/v1/inferences`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...this.authHeaders,
+      },
       body: JSON.stringify(payload),
     });
 
@@ -51,7 +58,9 @@ export class MlClient {
   }
 
   async getJobStatus(jobId: string): Promise<JobResponse> {
-    const res = await fetch(`${this.baseUrl}/v1/inferences/${jobId}`);
+    const res = await fetch(`${this.baseUrl}/v1/inferences/${jobId}`, {
+      headers: this.authHeaders,
+    });
     if (!res.ok) {
       throw new Error(`Failed to fetch ML job ${jobId}: ${res.statusText}`);
     }

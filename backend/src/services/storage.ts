@@ -22,6 +22,23 @@ export const s3Client = new S3Client({
   forcePathStyle: true, // Required for MinIO
 });
 
+// Client used only to generate presigned URLs consumed by the ML process. ML runs inside
+// the Docker network and must not receive localhost URLs, so when ML_PUBLIC_HOST is set
+// (e.g. "minio:9000") we sign against that network hostname instead.
+const mlEndpointUrl = env.ML_PUBLIC_HOST
+  ? `${endpointProtocol}://${env.ML_PUBLIC_HOST}`
+  : endpointUrl;
+
+const mlS3Client = new S3Client({
+  endpoint: mlEndpointUrl,
+  region: "us-east-1",
+  credentials: {
+    accessKeyId: env.MINIO_ACCESS_KEY,
+    secretAccessKey: env.MINIO_SECRET_KEY,
+  },
+  forcePathStyle: true,
+});
+
 export class StorageService {
   static async ensureBucket(bucketName: string): Promise<void> {
     try {
@@ -59,6 +76,14 @@ export class StorageService {
       Key: key,
     });
     return getSignedUrl(s3Client as any, command, { expiresIn });
+  }
+
+  static async getMlDownloadUrl(bucket: string, key: string, expiresIn = 3600): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    });
+    return getSignedUrl(mlS3Client as any, command, { expiresIn });
   }
 
   static async getObjectStream(bucket: string, key: string): Promise<Readable> {

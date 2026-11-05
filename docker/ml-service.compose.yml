@@ -3,7 +3,7 @@ services:
     image: redis:7.4-alpine
     restart: unless-stopped
     networks:
-      - clearsight-ml
+      - clearsight
     volumes:
       - clearsight-ml-redis:/data
 
@@ -26,11 +26,12 @@ services:
       - ml-redis
     gpus: all
     networks:
-      - clearsight-ml
+      - clearsight
 
 networks:
-  clearsight-ml:
-    driver: bridge
+  clearsight:
+    external: true
+    name: clearsight
 
 volumes:
   clearsight-ml-models:

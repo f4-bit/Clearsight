@@ -69,7 +69,7 @@ export async function inferenceRoutes(app: FastifyInstance) {
       const [bucket, ...rest] = imageRecord.storagePath.split("/");
       const key = rest.join("/");
       const imageUrl =
-        request.body.imageUrl ?? (await StorageService.getDownloadUrl(bucket, key));
+        request.body.imageUrl ?? (await StorageService.getMlDownloadUrl(bucket, key));
 
       // 3. Enqueue job in BullMQ
       const job = await enqueueInference({
