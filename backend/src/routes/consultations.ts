@@ -1,5 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
+import type { Prisma } from "@prisma/client";
+type Image = Prisma.ImageGetPayload<Record<string, never>>;
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
@@ -10,7 +12,7 @@ import {
   consultationCreateSchema,
   consultationReadSchema,
 } from "../schemas/consultation.js";
-import { eyeSideEnum, imageReadSchema } from "../schemas/image.js";
+import { imageReadSchema } from "../schemas/image.js";
 import { sanitizeImage } from "../services/sanitizer.js";
 import { StorageService } from "../services/storage.js";
 
@@ -65,6 +67,14 @@ export async function consultationRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id: consultationId } = request.params as { id: string };
 
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(consultationId)) {
+        return reply.status(400).send({
+          error: "BadRequest",
+          message: "Consultation id must be a UUID",
+          statusCode: 400,
+        });
+      }
+
       const consultation = await prisma.consultation.findUnique({
         where: { id: consultationId },
       });
@@ -77,8 +87,39 @@ export async function consultationRoutes(app: FastifyInstance) {
         });
       }
 
-      const data = await request.file();
-      if (!data) {
+      // RBAC: doctors may only upload to their own consultations; ADMIN may upload anywhere
+      if (request.user.role !== "ADMIN" && consultation.doctorId !== request.user.id) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "You cannot upload images to another doctor's consultation",
+          statusCode: 403,
+        });
+      }
+
+      let fileBuffer: Buffer | null = null;
+      let eyeSide: "OD" | "OS" = "OD";
+
+      try {
+        for await (const part of request.parts()) {
+          if (part.type === "field") {
+            const value = String(part.value ?? "").trim().toUpperCase();
+            if (part.fieldname === "eyeSide" && (value === "OD" || value === "OS")) {
+              eyeSide = value;
+            }
+          } else if (part.type === "file" && !fileBuffer) {
+            fileBuffer = await part.toBuffer();
+          }
+        }
+      } catch (err) {
+        const statusCode = (err as { statusCode?: number }).statusCode === 413 ? 413 : 400;
+        return reply.status(statusCode).send({
+          error: statusCode === 413 ? "PayloadTooLarge" : "BadRequest",
+          message: "Image file exceeds the size limit or is unreadable",
+          statusCode,
+        });
+      }
+
+      if (!fileBuffer) {
         return reply.status(400).send({
           error: "BadRequest",
           message: "No image file uploaded",
@@ -86,14 +127,16 @@ export async function consultationRoutes(app: FastifyInstance) {
         });
       }
 
-      // Parse eyeSide from fields or fallback to OD
-      const eyeSideField = (data.fields.eyeSide as any)?.value;
-      const eyeSide = eyeSideField === "OS" ? "OS" : "OD";
-
-      const fileBuffer = await data.toBuffer();
-
-      // 1. Sanitize image (remove EXIF/TIFF headers, orient, compute MD5)
-      const sanitized = await sanitizeImage(fileBuffer);
+      let sanitized;
+      try {
+        sanitized = await sanitizeImage(fileBuffer);
+      } catch {
+        return reply.status(400).send({
+          error: "BadRequest",
+          message: "Invalid or unsupported image file",
+          statusCode: 400,
+        });
+      }
 
       // 2. Upload to MinIO/S3
       const now = new Date();
@@ -172,7 +215,7 @@ export async function consultationRoutes(app: FastifyInstance) {
         status: consultation.status,
         clinicalData: consultation.clinicalData as Record<string, any>,
         createdAt: consultation.createdAt,
-        images: consultation.images.map((img) => ({
+        images: consultation.images.map((img: Image) => ({
           id: img.id,
           consultationId: img.consultationId,
           eyeSide: img.eyeSide,

@@ -1,5 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
+import type { Prisma } from "@prisma/client";
+type Patient = Prisma.PatientGetPayload<Record<string, never>>;
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
@@ -76,7 +78,7 @@ export async function patientRoutes(app: FastifyInstance) {
       });
 
       return reply.send(
-        patients.map((p) => ({
+        patients.map((p: Patient) => ({
           id: p.id,
           externalCode: p.externalCode,
           age: p.age,
