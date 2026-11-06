@@ -1,0 +1,151 @@
+// Clearsight clinical database (PostgreSQL).
+//
+// Baseline: docker/init.sql (migration `0_init`, applied verbatim).
+// Deltas on top of it live in `20261027000000_prisma_alignment`.
+// Table/column names stay snake_case in the DB (@@map / @map) so the Python
+// ETL (scripts/retrain_cycle.py) and any raw SQL keep working unchanged.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  // Keeps the generated imports valid after `tsc` (it does not rewrite ".ts").
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  OFTALMOLOGO
+  INVESTIGADOR
+  ADMIN
+
+  @@map("user_role")
+}
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name") @db.VarChar(255)
+  role         UserRole @default(OFTALMOLOGO)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  consultations Consultation[]
+  feedback      ClinicalFeedback[]
+
+  @@map("users")
+}
+
+model Patient {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  externalCode         String?  @map("external_code") @db.VarChar(64)
+  age                  Int?
+  gender               String?  @db.VarChar(16)
+  clinicalHistoryFlags Json     @default("{}") @map("clinical_history_flags") @db.JsonB
+  clinicalData         Json     @default("{}") @map("clinical_data") @db.JsonB
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  consultations Consultation[]
+
+  @@index([externalCode], map: "idx_patients_external_code")
+  @@map("patients")
+}
+
+model Consultation {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patientId    String   @map("patient_id") @db.Uuid
+  doctorId     String   @map("doctor_id") @db.Uuid
+  // Same vocabulary as ml/service/schemas.py JobStatus (enforced by a CHECK).
+  status       String   @default("QUEUED") @db.VarChar(32)
+  clinicalData Json     @default("{}") @map("clinical_data") @db.JsonB
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  patient  Patient            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  doctor   User               @relation(fields: [doctorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  images   Image[]
+  feedback ClinicalFeedback[]
+
+  @@index([patientId], map: "idx_consultations_patient_id")
+  @@index([doctorId], map: "idx_consultations_doctor_id")
+  @@index([status], map: "idx_consultations_status")
+  @@map("consultations")
+}
+
+model Image {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  consultationId String   @map("consultation_id") @db.Uuid
+  // 'OD' | 'OS' (CHECK constraint in the DB, Zod enum in the API).
+  eyeSide        String   @map("eye_side") @db.VarChar(2)
+  storagePath    String   @map("storage_path")
+  hashMd5        String?  @map("hash_md5") @db.VarChar(32)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  inferences   Inference[]
+
+  @@index([consultationId], map: "idx_images_consultation_id")
+  @@index([hashMd5], map: "idx_images_hash_md5")
+  @@map("images")
+}
+
+model Inference {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  imageId        String   @map("image_id") @db.Uuid
+  jobId          String?  @unique @map("job_id") @db.Uuid
+  // ML class index: 0 = Glaucoma, 1 = Non_Glaucoma, 2 = Suspicious_Glaucoma
+  // (order of ml/models/manifest.json -> class_names).
+  predictedClass Int?     @map("predicted_class")
+  confidence     Float?
+  probabilities  Json     @default("{}") @db.JsonB
+  // Area-based CDR (model input) vs vertical CDR (clinical report): never interchangeable.
+  cdr            Float?
+  cdrVertical    Float?   @map("cdr_vertical")
+  quality        Json     @default("{}") @db.JsonB
+  artifacts      Json     @default("{}") @db.JsonB
+  elapsedSeconds Float?   @map("elapsed_seconds")
+  gradcamPath    String?  @map("gradcam_path")
+  modelVersion   String?  @map("model_version") @db.VarChar(128)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  image    Image              @relation(fields: [imageId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  feedback ClinicalFeedback[]
+
+  @@index([imageId], map: "idx_inferences_image_id")
+  @@index([predictedClass], map: "idx_inferences_predicted_class")
+  @@map("inferences")
+}
+
+model ClinicalFeedback {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  consultationId String   @map("consultation_id") @db.Uuid
+  inferenceId    String   @map("inference_id") @db.Uuid
+  doctorId       String   @map("doctor_id") @db.Uuid
+  predictedClass Int?     @map("predicted_class")
+  // NULL = "no concluyente". Such rows can never be gold standard (CHECK).
+  validatedClass Int?     @map("validated_class")
+  confidence     Float?
+  // NULL = no comparison possible (no concluyente / model gave no class).
+  agreement      Boolean?
+  doctorNotes    String?  @map("doctor_notes")
+  isGoldStandard Boolean  @default(false) @map("is_gold_standard")
+  clinicalData   Json     @default("{}") @map("clinical_data") @db.JsonB
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  inference    Inference    @relation(fields: [inferenceId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  doctor       User         @relation(fields: [doctorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // One verdict per doctor per inference -> target of the upsert.
+  @@unique([inferenceId, doctorId])
+  @@index([consultationId], map: "idx_clinical_feedback_consultation_id")
+  @@index([inferenceId], map: "idx_clinical_feedback_inference_id")
+  @@index([doctorId], map: "idx_clinical_feedback_doctor_id")
+  @@index([isGoldStandard], map: "idx_clinical_feedback_gold_standard")
+  @@map("clinical_feedback")
+}
