@@ -41,8 +41,8 @@ const envSchema = z.object({
   // Host reachable FROM the ML service container (Docker network) used for presigned image URLs.
   ML_PUBLIC_HOST: z.string().optional(),
 
-  // CORS
-  CORS_ORIGIN: z.string().default("*"),
+  // CORS (comma-separated origins; defaults per profile: dev=allow all, production=deny unless set)
+  CORS_ORIGIN: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

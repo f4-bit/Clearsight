@@ -29,8 +29,17 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.setSerializerCompiler(serializerCompiler);
 
   // 2. Global plugins
+  // CORS is resolved per profile: development defaults to allow-all,
+  // production defaults to deny (secure) unless CORS_ORIGIN is explicitly set.
+  // CORS_ORIGIN may be "*", or a comma-separated list of allowed browser origins.
+  const rawCors = env.CORS_ORIGIN ?? (env.NODE_ENV === "production" ? false : "*");
+  const corsOrigin =
+    typeof rawCors === "string" && rawCors.includes(",")
+      ? rawCors.split(",").map((s) => s.trim()).filter(Boolean)
+      : rawCors;
+
   await app.register(fastifyCors, {
-    origin: env.CORS_ORIGIN === "*" ? true : env.CORS_ORIGIN,
+    origin: corsOrigin === "*" ? true : corsOrigin,
     credentials: true,
   });
 
