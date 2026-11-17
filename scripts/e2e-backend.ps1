@@ -119,7 +119,7 @@ try {
   Step "3/7 Open consultation"
   $consultation = Invoke-Json "POST" "$BaseUrl/consultations" $token @{
     patientId = $patientId
-    status = "PENDIENTE"
+    status = "QUEUED"
     clinicalData = $clinicalData
   }
   $consultationId = $consultation.id
