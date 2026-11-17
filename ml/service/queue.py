@@ -81,6 +81,7 @@ class InMemoryJobQueue(JobQueue):
         return self.states.get(str(job_id))
 
     async def start(self, pipeline: InferencePipeline) -> None:
+        pipeline.artifact_store.ensure_buckets()
         self.worker_task = asyncio.create_task(self._worker(pipeline))
 
     async def close(self) -> None:
@@ -153,6 +154,7 @@ class RedisJobQueue(JobQueue):
         return json.loads(payload) if payload else None
 
     async def start(self, pipeline: InferencePipeline) -> None:
+        pipeline.artifact_store.ensure_buckets()
         self.worker_task = asyncio.create_task(self._worker(pipeline))
 
     async def close(self) -> None:
