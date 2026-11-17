@@ -13,12 +13,27 @@ x-backend-environment: &backend-environment
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   MINIO_SECURE: "false"
   JWT_SECRET: ${JWT_SECRET:-replace-me}
+  # HMAC secret used to pseudonymize doctor ids in gold-standard exports.
+  EXPORT_HMAC_SECRET: ${EXPORT_HMAC_SECRET:-replace-me-too}
   DATABASE_URL: postgresql://${POSTGRES_USER:-clearsight}:${POSTGRES_PASSWORD:-clearsight}@postgres:5432/${POSTGRES_DB:-clearsight}
   ML_SERVICE_URL: http://ml-service:8000
   ML_API_TOKEN: ${ML_API_TOKEN:-}
   ML_PUBLIC_HOST: minio:9000
+  CORS_ORIGIN: ${CORS_ORIGIN:-*}
 
 services:
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/migrate.Dockerfile
+    restart: "no"
+    environment: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - clearsight
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -118,6 +133,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mlflow:
@@ -137,6 +154,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mlflow:
