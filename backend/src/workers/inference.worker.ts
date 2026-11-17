@@ -48,11 +48,12 @@ export function startInferenceWorker() {
 
       const result = statusResponse.result;
 
-      // Map string label to integer class (0: Normal, 1: Suspect, 2: Glaucoma)
+      // Canonical ML class order (ml/models/manifest.json -> class_names):
+      // 0 = Glaucoma, 1 = Non_Glaucoma, 2 = Suspicious_Glaucoma
       const labelMap: Record<string, number> = {
-        normal: 0,
-        suspect: 1,
-        glaucoma: 2,
+        glaucoma: 0,
+        non_glaucoma: 1,
+        suspicious_glaucoma: 2,
       };
       const predictedClass = result.label
         ? labelMap[result.label.toLowerCase()] ??
@@ -90,7 +91,7 @@ export function startInferenceWorker() {
       if (inferenceRecord?.image?.consultationId) {
         await prisma.consultation.update({
           where: { id: inferenceRecord.image.consultationId },
-          data: { status: "COMPLETADA" },
+          data: { status: "COMPLETED" },
         });
       }
 

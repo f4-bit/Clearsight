@@ -31,7 +31,7 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      const { email, password, role } = request.body;
+      const { email, password, role, fullName } = request.body;
 
       const existing = await prisma.user.findUnique({
         where: { email },
@@ -50,12 +50,13 @@ export async function authRoutes(app: FastifyInstance) {
         data: {
           email,
           passwordHash,
+          fullName: fullName ?? email.split("@")[0] ?? email,
           role,
         },
       });
 
       const accessToken = app.jwt.sign(
-        { id: user.id, email: user.email, role: user.role },
+        { sub: user.id, role: user.role },
         { expiresIn: env.JWT_EXPIRES_IN }
       );
 
@@ -111,7 +112,7 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       const accessToken = app.jwt.sign(
-        { id: user.id, email: user.email, role: user.role },
+        { sub: user.id, role: user.role },
         { expiresIn: env.JWT_EXPIRES_IN }
       );
 
@@ -143,7 +144,23 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      return reply.send(request.user);
+      const user = await prisma.user.findUnique({
+        where: { id: request.user.sub },
+      });
+
+      if (!user) {
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "User no longer exists",
+          statusCode: 401,
+        });
+      }
+
+      return reply.send({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+      });
     }
   );
 }

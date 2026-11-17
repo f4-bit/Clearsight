@@ -24,7 +24,7 @@ const envSchema = z.object({
   MINIO_SECURE: z
     .string()
     .transform((val) => val === "true")
-    .default("false"),
+    .default(false),
   MINIO_BUCKET_RAW: z.string().default("raw-retinas"),
   MINIO_BUCKET_GRADCAM: z.string().default("gradcam-overlays"),
 
@@ -43,6 +43,10 @@ const envSchema = z.object({
 
   // CORS (comma-separated origins; defaults per profile: dev=allow all, production=deny unless set)
   CORS_ORIGIN: z.string().optional(),
+
+  // HMAC secret used to pseudonymize doctor ids in the gold-standard export.
+  // Rotate = old exports become unlinkable by design; set explicitly in production.
+  EXPORT_HMAC_SECRET: z.string().default("clearsight-dev-export-hmac-change-in-prod"),
 });
 
 export type Env = z.infer<typeof envSchema>;

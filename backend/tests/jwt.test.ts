@@ -49,9 +49,8 @@ import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance;
 const PATIENT_LOAD = {
-  id: "11111111-1111-1111-1111-111111111111",
-  email: "op@clearsight.clinic",
-  role: "OPHTHALMOLOGIST" as const,
+  sub: "11111111-1111-4111-8111-111111111111",
+  role: "OFTALMOLOGO" as const,
 };
 
 beforeAll(async () => {

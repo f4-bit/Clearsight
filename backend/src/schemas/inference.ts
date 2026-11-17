@@ -1,33 +1,46 @@
 import { z } from "zod";
-import { clinicalFeaturesSchema } from "./clinical.js";
+import { ClinicalFeaturesSchema } from "./clinical.js";
+import { DiagnosticClass, JobStatus, Probabilities, Uuid } from "./common.js";
 import { eyeSideEnum } from "./image.js";
 
-export const jobStatusEnum = z.enum([
-  "QUEUED",
-  "DOWNLOADING",
-  "LOCALIZING",
-  "SEGMENTING",
-  "CLASSIFYING",
-  "COMPLETED",
-  "REVIEW_REQUIRED",
-  "FAILED",
-]);
-
-export type JobStatus = z.infer<typeof jobStatusEnum>;
+export const jobStatusEnum = JobStatus;
 
 export const inferenceCreateSchema = z.object({
   inferenceId: z.string().uuid().optional(),
   imageId: z.string().uuid(),
   imageUrl: z.string().url().optional(),
   eyeSide: eyeSideEnum,
-  clinicalFeatures: clinicalFeaturesSchema,
+  clinicalFeatures: ClinicalFeaturesSchema,
   modelVersion: z.string().optional().nullable(),
 });
 
-export type InferenceCreate = z.infer<typeof inferenceCreateSchema>;
+export type InferenceApiCreate = z.infer<typeof inferenceCreateSchema>;
+
+/** Repository-layer create input (Keren's canonical data contract). */
+export const RepoInferenceCreate = z.object({
+  imageId: Uuid,
+  jobId: Uuid.nullish(),
+  modelVersion: z.string().max(128).nullish(),
+});
+export type InferenceCreate = z.input<typeof RepoInferenceCreate>;
+
+/** What the worker writes back when the ML service finishes (InferenceResult). */
+export const InferenceResultUpdate = z.object({
+  predictedClass: DiagnosticClass.nullable(),
+  confidence: z.number().min(0).max(1).nullable(),
+  probabilities: Probabilities,
+  cdr: z.number().nullable(),
+  cdrVertical: z.number().nullable(),
+  quality: z.record(z.string(), z.unknown()).default({}),
+  artifacts: z.record(z.string(), z.string()).default({}),
+  elapsedSeconds: z.number().min(0).nullable(),
+  gradcamPath: z.string().nullish(),
+  modelVersion: z.string().max(128).nullish(),
+});
+export type InferenceResultUpdate = z.input<typeof InferenceResultUpdate>;
 
 export const modelPredictionSchema = z.object({
-  probabilities: z.record(z.number()),
+  probabilities: z.record(z.string(), z.number()),
   predictedClass: z.string(),
   confidence: z.number(),
 });
@@ -39,13 +52,13 @@ export const inferenceResultSchema = z.object({
   eyeSide: eyeSideEnum,
   label: z.string().nullable().optional(),
   confidence: z.number().nullable().optional(),
-  probabilities: z.record(z.number()),
-  modelPredictions: z.record(modelPredictionSchema),
+  probabilities: z.record(z.string(), z.number()),
+  modelPredictions: z.record(z.string(), modelPredictionSchema),
   cdr: z.number().nullable().optional(),
   cdrVertical: z.number().nullable().optional(),
-  quality: z.record(z.any()),
-  artifacts: z.record(z.string()),
-  modelVersions: z.record(z.string()),
+  quality: z.record(z.string(), z.unknown()),
+  artifacts: z.record(z.string(), z.string()),
+  modelVersions: z.record(z.string(), z.string()),
   elapsedSeconds: z.number(),
 });
 

@@ -1,12 +1,21 @@
 import { z } from "zod";
+import { UserRole } from "./common.js";
 
-export const roleEnum = z.enum(["OPHTHALMOLOGIST", "RESEARCHER", "ADMIN"]);
-export type Role = z.infer<typeof roleEnum>;
+export const roleEnum = UserRole;
+export type Role = UserRole;
+
+/** JWT payload shared by the auth routes (issuer) and the middleware (verifier). */
+export const JwtPayload = z.object({
+  sub: z.uuid(),
+  role: UserRole,
+});
+export type JwtPayload = z.infer<typeof JwtPayload>;
 
 export const registerRequestSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8, "Password must be at least 8 characters"),
-  role: roleEnum.default("OPHTHALMOLOGIST"),
+  fullName: z.string().min(1).max(255).optional(),
+  role: roleEnum.default("OFTALMOLOGO"),
 });
 
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
@@ -23,7 +32,7 @@ export const tokenResponseSchema = z.object({
   tokenType: z.literal("bearer").default("bearer"),
   expiresIn: z.string(),
   user: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
     email: z.string().email(),
     role: roleEnum,
   }),
@@ -32,7 +41,7 @@ export const tokenResponseSchema = z.object({
 export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
 export const currentUserSchema = z.object({
-  id: z.string().uuid(),
+  id: z.uuid(),
   email: z.string().email(),
   role: roleEnum,
 });

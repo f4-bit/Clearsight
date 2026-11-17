@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const eyeSideEnum = z.enum(["OD", "OS"]);
-export type EyeSide = z.infer<typeof eyeSideEnum>;
 
 export const imageCreateSchema = z.object({
   consultationId: z.string().uuid(),

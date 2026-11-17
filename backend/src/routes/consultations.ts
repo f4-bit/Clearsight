@@ -1,12 +1,13 @@
 import { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
-import type { Prisma } from "@prisma/client";
+import type { Prisma } from "../generated/prisma/client.js";
 type Image = Prisma.ImageGetPayload<Record<string, never>>;
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
-import { authenticate, authorize } from "../middleware/auth.js";
+import { authenticate } from "../middleware/auth.js";
+import { requireRole } from "../middleware/rbac.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import {
   consultationCreateSchema,
@@ -23,7 +24,7 @@ export async function consultationRoutes(app: FastifyInstance) {
   typedApp.post(
     "/",
     {
-      preHandler: [authenticate, authorize(["OPHTHALMOLOGIST", "ADMIN"])],
+      preHandler: [authenticate, requireRole("OFTALMOLOGO", "ADMIN")],
       schema: {
         tags: ["Consultations"],
         summary: "Open a new ophthalmology consultation",
@@ -36,7 +37,7 @@ export async function consultationRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { patientId, status, clinicalData } = request.body;
-      const doctorId = request.body.doctorId ?? request.user.id;
+      const doctorId = request.body.doctorId ?? request.user.sub;
 
       const consultation = await prisma.consultation.create({
         data: {
@@ -62,7 +63,7 @@ export async function consultationRoutes(app: FastifyInstance) {
   app.post(
     "/:id/images",
     {
-      preHandler: [authenticate, authorize(["OPHTHALMOLOGIST", "ADMIN"])],
+      preHandler: [authenticate, requireRole("OFTALMOLOGO", "ADMIN")],
     },
     async (request, reply) => {
       const { id: consultationId } = request.params as { id: string };
@@ -88,7 +89,7 @@ export async function consultationRoutes(app: FastifyInstance) {
       }
 
       // RBAC: doctors may only upload to their own consultations; ADMIN may upload anywhere
-      if (request.user.role !== "ADMIN" && consultation.doctorId !== request.user.id) {
+      if (request.user.role !== "ADMIN" && consultation.doctorId !== request.user.sub) {
         return reply.status(403).send({
           error: "Forbidden",
           message: "You cannot upload images to another doctor's consultation",
@@ -184,8 +185,8 @@ export async function consultationRoutes(app: FastifyInstance) {
             patientId: z.string().uuid(),
             doctorId: z.string().uuid(),
             status: z.string(),
-            clinicalData: z.record(z.any()),
-            createdAt: z.date().or(z.string().datetime()),
+            clinicalData: z.record(z.string(), z.unknown()),
+            createdAt: z.date().or(z.iso.datetime()),
             images: z.array(imageReadSchema),
           }),
           404: errorResponseSchema,
@@ -218,7 +219,7 @@ export async function consultationRoutes(app: FastifyInstance) {
         images: consultation.images.map((img: Image) => ({
           id: img.id,
           consultationId: img.consultationId,
-          eyeSide: img.eyeSide,
+          eyeSide: img.eyeSide as "OD" | "OS",
           storagePath: img.storagePath,
           hashMd5: img.hashMd5,
           createdAt: img.createdAt,

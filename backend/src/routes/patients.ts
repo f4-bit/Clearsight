@@ -1,10 +1,11 @@
 import { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
-import type { Prisma } from "@prisma/client";
+import type { Prisma } from "../generated/prisma/client.js";
 type Patient = Prisma.PatientGetPayload<Record<string, never>>;
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { authenticate, authorize } from "../middleware/auth.js";
+import { authenticate } from "../middleware/auth.js";
+import { requireRole } from "../middleware/rbac.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import { patientCreateSchema, patientReadSchema } from "../schemas/patient.js";
 
@@ -15,7 +16,7 @@ export async function patientRoutes(app: FastifyInstance) {
   typedApp.post(
     "/",
     {
-      preHandler: [authenticate, authorize(["OPHTHALMOLOGIST", "ADMIN"])],
+      preHandler: [authenticate, requireRole("OFTALMOLOGO", "ADMIN")],
       schema: {
         tags: ["Patients"],
         summary: "Register a pseudonymized clinical patient",
@@ -34,7 +35,7 @@ export async function patientRoutes(app: FastifyInstance) {
           externalCode: data.externalCode,
           age: data.age,
           gender: data.gender,
-          clinicalHistoryFlags: data.clinicalHistoryFlags ?? {},
+          clinicalHistoryFlags: (data.clinicalHistoryFlags ?? {}) as Prisma.InputJsonValue,
           clinicalData: data.clinicalData ? (data.clinicalData as any) : {},
         },
       });

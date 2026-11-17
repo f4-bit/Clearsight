@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
-import { authenticate, authorize } from "../middleware/auth.js";
+import { authenticate } from "../middleware/auth.js";
+import { requireRole } from "../middleware/rbac.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import {
   inferenceCreateSchema,
@@ -20,7 +21,7 @@ export async function inferenceRoutes(app: FastifyInstance) {
   typedApp.post(
     "/",
     {
-      preHandler: [authenticate, authorize(["OPHTHALMOLOGIST", "ADMIN"])],
+      preHandler: [authenticate, requireRole("OFTALMOLOGO", "ADMIN")],
       schema: {
         tags: ["Inferences"],
         summary: "Dispatch asynchronous ML inference job via BullMQ",
@@ -59,14 +60,14 @@ export async function inferenceRoutes(app: FastifyInstance) {
         },
       });
 
-      // Update consultation status to EN_PROCESO
+      // Update consultation status to QUEUED (ML job dispatched)
       await prisma.consultation.update({
         where: { id: imageRecord.consultationId },
-        data: { status: "EN_PROCESO" },
+        data: { status: "QUEUED" },
       });
 
       // 2. Generate presigned URL for image so ML worker can fetch it
-      const [bucket, ...rest] = imageRecord.storagePath.split("/");
+      const [bucket = "", ...rest] = imageRecord.storagePath.split("/");
       const key = rest.join("/");
       const imageUrl =
         request.body.imageUrl ?? (await StorageService.getMlDownloadUrl(bucket, key));
@@ -104,10 +105,10 @@ export async function inferenceRoutes(app: FastifyInstance) {
             imageId: z.string().uuid(),
             predictedClass: z.number().nullable(),
             confidence: z.number().nullable(),
-            probabilities: z.record(z.any()),
+            probabilities: z.record(z.string(), z.unknown()),
             gradcamPath: z.string().nullable(),
             modelVersion: z.string().nullable(),
-            createdAt: z.date().or(z.string().datetime()),
+            createdAt: z.date().or(z.iso.datetime()),
           }),
           404: errorResponseSchema,
         },
@@ -174,7 +175,7 @@ export async function inferenceRoutes(app: FastifyInstance) {
         });
       }
 
-      const [bucket, ...rest] = inference.gradcamPath.split("/");
+      const [bucket = "", ...rest] = inference.gradcamPath.split("/");
       const key = rest.join("/");
       const url = await StorageService.getDownloadUrl(bucket, key, 3600);
 

@@ -36,26 +36,26 @@
 .PARAMETER BaseUrl
   Public URL of the backend (host:port for the Docker mapping, default 8080:8000).
 .PARAMETER Email
-  Doctor credentials from the seed (default doctor@clearsight.clinic).
+  Doctor credentials from the seed (default doctor1@clearsight.test).
 .PARAMETER Password
-  Seed password (default clearsight123).
+  Seed password (default ChangeMe123!, the SEED_PASSWORD default).
 .PARAMETER TimeoutSec
   Seconds to poll /inferences/:id before declaring the worker offline (default 180).
 .PARAMETER KeepTemp
   Keep the generated test image in $env:TEMP for inspection/debugging.
 #>
 [CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '', Justification = 'Local E2E runbook: the seed password must be passed as a plain string to Invoke-RestMethod.')]
 param(
   [string]$BaseUrl = "http://localhost:8080",
-  [string]$Email = "doctor@clearsight.clinic",
-  [string]$Password = "clearsight123",
+  [string]$Email = "doctor1@clearsight.test",
+  [string]$Password = "ChangeMe123!",
   [int]$TimeoutSec = 180,
   [switch]$KeepTemp
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$WorkspaceRoot = Resolve-Path (Join-Path $ScriptDir "..")
 $TempDir = Join-Path $env:TEMP ("clearsight-e2e-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
@@ -161,8 +161,8 @@ try {
     Start-Sleep -Seconds 2
     $current = Invoke-Json "GET" "$BaseUrl/inferences/$inferenceId" $token
     $pred = $current.predictedClass
-    Write-Host ("[e2e] poll: predictedClass={0} confidence={1} status={2}" -f $pred, $current.confidence, $(if ($pred -ne $null) { "COMPLETED" } else { "PENDING" }))
-    if ($pred -ne $null) { $result = $current; break }
+    Write-Host ("[e2e] poll: predictedClass={0} confidence={1} status={2}" -f $pred, $current.confidence, $(if ($null -ne $pred) { "COMPLETED" } else { "PENDING" }))
+    if ($null -ne $pred) { $result = $current; break }
   } while ((Get-Date) -lt $deadline)
 
   if (-not $result) {
@@ -176,15 +176,22 @@ try {
 
   Step "7/7 Doctor feedback (gold-standard)"
   $feedback = Invoke-Json "POST" "$BaseUrl/feedback" $token @{
-    consultationId = $consultationId
-    inferenceId = $inferenceId
-    validatedClass = $result.predictedClass
-    confidence = 0.9
-    agreement = $true
-    doctorNotes = "E2E validation: confirmed model prediction."
-    isGoldStandard = $true
+    consultation_id = $consultationId
+    inference_id = $inferenceId
+    validated_class = $result.predictedClass
+    doctor_notes = "E2E validation: confirmed model prediction."
+    is_gold_standard = $true
   }
   Write-Host "[e2e] feedback recorded: $($feedback.id) (gold-standard)"
+
+  Step "+1 Gold-standard export (INVESTIGADOR)"
+  $researcherLogin = Invoke-Json "POST" "$BaseUrl/auth/login" $null @{
+    email = "researcher@clearsight.test"
+    password = $Password
+  }
+  $researcherToken = $researcherLogin.accessToken
+  $export = Invoke-Json "GET" "$BaseUrl/export/gold-standard?format=json&limit=10" $researcherToken
+  Write-Host "[e2e] gold-standard rows: $($export.count) (has_more=$($export.has_more))"
 
   Write-Host ""
   Write-Host "==================== E2E OK ====================" -ForegroundColor Green

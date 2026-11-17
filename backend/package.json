@@ -1,42 +1,58 @@
 {
   "name": "clearsight-backend",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "description": "Clearsight Clinical Ophthalmology Platform Backend",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
     "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:watch": "vitest",
     "worker": "tsx src/workers/inference.worker.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "seed": "prisma db seed",
+    "etl:feedback": "tsx scripts/etl-feedback.ts"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.750.0",
     "@aws-sdk/s3-request-presigner": "^3.750.0",
     "@fastify/cors": "^10.0.2",
-    "@fastify/jwt": "^9.0.4",
+    "@fastify/jwt": "^10.2.5",
     "@fastify/multipart": "^9.0.3",
-    "@fastify/swagger": "^9.4.2",
+    "@fastify/swagger": "^9.5.1",
     "@fastify/swagger-ui": "^5.2.2",
-    "@prisma/client": "^6.4.1",
-    "bcryptjs": "^3.0.2",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "bcryptjs": "^3.0.3",
     "bullmq": "^5.41.6",
-    "dotenv": "^16.4.7",
-    "fastify": "^5.2.1",
-    "fastify-type-provider-zod": "^4.0.2",
+    "dotenv": "^18.0.9",
+    "fastify": "^5.12.7",
+    "fastify-type-provider-zod": "^7.0.0",
     "ioredis": "^5.5.0",
+    "pg": "^8.23.1",
     "sharp": "^0.33.5",
-    "zod": "^3.24.2"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^22.13.5",
-    "prisma": "^6.4.1",
-    "tsx": "^4.19.3",
-    "typescript": "^5.7.3",
-    "vitest": "^3.0.6"
+    "@testcontainers/postgresql": "^12.2.1",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "prisma": "7.10.1",
+    "testcontainers": "^12.2.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

@@ -11,7 +11,10 @@ import {
   ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import { ZodError } from "zod";
-import { env } from "./config/env.js";
+import { env, type Env } from "./config/env.js";
+import { HttpError } from "./lib/http-error.js";
+import { prisma as defaultPrisma, type PrismaClient } from "./lib/prisma.js";
+import { createRepositories } from "./repositories/index.js";
 import { authRoutes } from "./routes/auth.js";
 import { consultationRoutes } from "./routes/consultations.js";
 import { feedbackRoutes } from "./routes/feedback.js";
@@ -19,9 +22,24 @@ import { inferenceRoutes } from "./routes/inferences.js";
 import { patientRoutes } from "./routes/patients.js";
 import { healthResponseSchema } from "./schemas/common.js";
 
-export async function buildApp(): Promise<FastifyInstance> {
+export interface AppDeps {
+  env: Pick<Env, "JWT_SECRET" | "EXPORT_HMAC_SECRET"> &
+    Partial<Pick<Env, "NODE_ENV" | "CORS_ORIGIN">>;
+  prisma: PrismaClient;
+  logger?: boolean;
+}
+
+/**
+ * Builds the app. Two usage modes:
+ *  - `buildApp()` — reads the env singleton and the process-wide Prisma client (server, smoke tests).
+ *  - `buildApp({ env, prisma })` — dependency injection (integration tests with testcontainers).
+ */
+export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
+  const cfg = deps?.env ?? env;
+  const nodeEnv = cfg.NODE_ENV ?? "test";
+  const prisma = deps?.prisma ?? defaultPrisma;
   const app = Fastify({
-    logger: env.NODE_ENV === "development",
+    logger: deps?.logger ?? (nodeEnv === "development" && !deps),
   }).withTypeProvider<ZodTypeProvider>();
 
   // 1. Zod compiler setup
@@ -32,7 +50,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // CORS is resolved per profile: development defaults to allow-all,
   // production defaults to deny (secure) unless CORS_ORIGIN is explicitly set.
   // CORS_ORIGIN may be "*", or a comma-separated list of allowed browser origins.
-  const rawCors = env.CORS_ORIGIN ?? (env.NODE_ENV === "production" ? false : "*");
+  const rawCors = cfg.CORS_ORIGIN ?? (nodeEnv === "production" ? false : "*");
   const corsOrigin =
     typeof rawCors === "string" && rawCors.includes(",")
       ? rawCors.split(",").map((s) => s.trim()).filter(Boolean)
@@ -50,7 +68,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(fastifyJwt, {
-    secret: env.JWT_SECRET,
+    secret: cfg.JWT_SECRET,
   });
 
   // 3. Swagger / OpenAPI documentation
@@ -92,11 +110,40 @@ export async function buildApp(): Promise<FastifyInstance> {
   // 4. Global Error Handler
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
-      reply.status(400).send({
-        error: "ValidationFailed",
-        message: "Invalid request payload",
-        statusCode: 400,
-        issues: error.issues,
+      reply.status(422).send({
+        error: "validation_error",
+        message: "Request validation failed",
+        issues: error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message,
+        })),
+      });
+      return;
+    }
+
+    if (error instanceof HttpError) {
+      reply.status(error.statusCode).send({
+        error: error.code,
+        message: error.message,
+        statusCode: error.statusCode,
+      });
+      return;
+    }
+
+    const prismaCode = (error as { code?: unknown }).code;
+    if (prismaCode === "P2025") {
+      reply.status(404).send({
+        error: "NotFound",
+        message: "Record not found",
+        statusCode: 404,
+      });
+      return;
+    }
+    if (prismaCode === "P2003") {
+      reply.status(409).send({
+        error: "Conflict",
+        message: "Referenced record does not exist",
+        statusCode: 409,
       });
       return;
     }
@@ -145,7 +192,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(patientRoutes, { prefix: "/patients" });
   await app.register(consultationRoutes, { prefix: "/consultations" });
   await app.register(inferenceRoutes, { prefix: "/inferences" });
-  await app.register(feedbackRoutes, { prefix: "/feedback" });
+  // Clinical feedback + gold-standard export (paths: /feedback, /export/gold-standard)
+  await app.register(feedbackRoutes, {
+    repos: createRepositories(prisma),
+    exportHmacSecret: cfg.EXPORT_HMAC_SECRET,
+  });
 
   return app;
 }

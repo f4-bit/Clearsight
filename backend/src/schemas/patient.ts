@@ -1,24 +1,33 @@
 import { z } from "zod";
-import { clinicalFeaturesSchema } from "./clinical.js";
+import { Uuid } from "./common.js";
 
-export const patientCreateSchema = z.object({
-  externalCode: z.string().max(64).optional().nullable(),
-  age: z.number().int().min(0).max(130).optional().nullable(),
-  gender: z.string().max(16).optional().nullable(),
-  clinicalHistoryFlags: z.record(z.any()).default({}),
-  clinicalData: clinicalFeaturesSchema.optional().nullable(),
+const JsonObject = z.record(z.string(), z.unknown());
+
+export const PatientCreate = z.object({
+  externalCode: z.string().max(64).nullish(),
+  age: z.number().int().min(0).max(130).nullish(),
+  gender: z.string().max(16).nullish(),
+  clinicalHistoryFlags: JsonObject.default({}),
+  clinicalData: JsonObject.default({}),
 });
+export type PatientCreate = z.input<typeof PatientCreate>;
 
-export type PatientCreate = z.infer<typeof patientCreateSchema>;
+export const PatientUpdate = PatientCreate.partial();
+export type PatientUpdate = z.input<typeof PatientUpdate>;
+
+export const PatientId = z.object({ id: Uuid });
+
+// camelCase alias kept for the API routes and tests.
+export const patientCreateSchema = PatientCreate;
 
 export const patientReadSchema = z.object({
   id: z.string().uuid(),
   externalCode: z.string().nullable().optional(),
   age: z.number().nullable().optional(),
   gender: z.string().nullable().optional(),
-  clinicalHistoryFlags: z.record(z.any()),
-  clinicalData: z.record(z.any()).nullable().optional(),
-  createdAt: z.date().or(z.string().datetime()),
+  clinicalHistoryFlags: z.record(z.string(), z.unknown()),
+  clinicalData: z.record(z.string(), z.unknown()).nullable().optional(),
+  createdAt: z.date().or(z.iso.datetime()),
 });
 
 export type PatientRead = z.infer<typeof patientReadSchema>;

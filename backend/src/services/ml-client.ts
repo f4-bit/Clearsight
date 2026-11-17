@@ -1,6 +1,5 @@
 import { env } from "../config/env.js";
 import {
-  InferenceCreate,
   JobAccepted,
   JobResponse,
 } from "../schemas/inference.js";

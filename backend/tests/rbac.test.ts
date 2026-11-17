@@ -45,20 +45,29 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-import { buildApp } from "../src/app.js";
+vi.mock("../src/repositories/index.js", () => ({
+  createRepositories: () => ({
+    feedback: {
+      listGoldStandard: vi.fn().mockResolvedValue([]),
+    },
+  }),
+}));
+
+import { buildTestApp } from "./helpers/app.js";
 import { prisma } from "../src/lib/prisma.js";
 import type { FastifyInstance } from "fastify";
+import type { UserRole } from "../src/schemas/common.js";
 
 let app: FastifyInstance;
-const DOCTOR = { id: "11111111-1111-1111-1111-111111111111", email: "doc@clearsight.clinic", role: "OPHTHALMOLOGIST" as const };
-const ADMIN = { id: "22222222-2222-2222-2222-222222222222", email: "admin@clearsight.clinic", role: "ADMIN" as const };
-const RESEARCHER = { id: "33333333-3333-3333-3333-333333333333", email: "lab@clearsight.clinic", role: "RESEARCHER" as const };
+const DOCTOR = { sub: "11111111-1111-4111-8111-111111111111", email: "doc@clearsight.clinic", role: "OFTALMOLOGO" as const };
+const ADMIN = { sub: "22222222-2222-4222-8222-222222222222", email: "admin@clearsight.clinic", role: "ADMIN" as const };
+const RESEARCHER = { sub: "33333333-3333-4333-8333-333333333333", email: "lab@clearsight.clinic", role: "INVESTIGADOR" as const };
 
 beforeAll(async () => {
-  app = await buildApp();
+  app = await buildTestApp(prisma);
 });
 
-const signToken = (payload: { id: string; email: string; role: string }) =>
+const signToken = (payload: { sub: string; role: UserRole }) =>
   app.jwt.sign(payload);
 
 describe("RBAC smoke tests", () => {
@@ -78,9 +87,9 @@ describe("RBAC smoke tests", () => {
     }
   });
 
-  it("POST /patients allows OPHTHALMOLOGIST with valid body", async () => {
+  it("POST /patients allows OFTALMOLOGO with valid body", async () => {
     const mockPatient = {
-      id: "44444444-4444-4444-4444-444444444444",
+      id: "44444444-4444-4444-8444-444444444444",
       externalCode: "P-001",
       age: 55,
       gender: "M",
@@ -102,7 +111,7 @@ describe("RBAC smoke tests", () => {
     expect(res.statusCode).toBe(201);
   });
 
-  it("POST /patients returns 403 for RESEARCHER", async () => {
+  it("POST /patients returns 403 for INVESTIGADOR", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/patients",
@@ -115,7 +124,7 @@ describe("RBAC smoke tests", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("POST /inferences returns 403 for RESEARCHER", async () => {
+  it("POST /inferences returns 403 for INVESTIGADOR", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/inferences",
@@ -124,7 +133,7 @@ describe("RBAC smoke tests", () => {
         "content-type": "application/json",
       },
       payload: {
-        imageId: "55555555-5555-5555-5555-555555555555",
+        imageId: "55555555-5555-4555-8555-555555555555",
         eyeSide: "OD",
         clinicalFeatures: {
           Age: 62,
@@ -147,12 +156,12 @@ describe("RBAC smoke tests", () => {
   it("GET /inferences/:id returns 401 without token", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/inferences/55555555-5555-5555-5555-555555555555",
+      url: "/inferences/55555555-5555-4555-8555-555555555555",
     });
     expect(res.statusCode).toBe(401);
   });
 
-  it("POST /feedback returns 403 for RESEARCHER", async () => {
+  it("POST /feedback returns 403 for INVESTIGADOR", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/feedback",
@@ -161,27 +170,27 @@ describe("RBAC smoke tests", () => {
         "content-type": "application/json",
       },
       payload: {
-        consultationId: "66666666-6666-6666-6666-666666666666",
-        inferenceId: "77777777-7777-7777-7777-777777777777",
-        validatedClass: 1,
+        consultation_id: "66666666-6666-4666-8666-666666666666",
+        inference_id: "77777777-7777-4777-8777-777777777777",
+        validated_class: 1,
       },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  it("GET /feedback/gold-standard returns 403 for OPHTHALMOLOGIST", async () => {
+  it("GET /export/gold-standard returns 403 for OFTALMOLOGO", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/feedback/gold-standard?limit=10",
+      url: "/export/gold-standard?limit=10",
       headers: { authorization: `Bearer ${signToken(DOCTOR)}` },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  it("GET /feedback/gold-standard returns 200 for RESEARCHER", async () => {
+  it("GET /export/gold-standard returns 200 for INVESTIGADOR", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/feedback/gold-standard?limit=10",
+      url: "/export/gold-standard?limit=10",
       headers: { authorization: `Bearer ${signToken(RESEARCHER)}` },
     });
     expect(res.statusCode).toBe(200);
@@ -189,7 +198,7 @@ describe("RBAC smoke tests", () => {
     expect(body.count).toBe(0);
   });
 
-  it("POST /consultations returns 403 for RESEARCHER", async () => {
+  it("POST /consultations returns 403 for INVESTIGADOR", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/consultations",
@@ -197,7 +206,7 @@ describe("RBAC smoke tests", () => {
         authorization: `Bearer ${signToken(RESEARCHER)}`,
         "content-type": "application/json",
       },
-      payload: { patientId: "88888888-8888-8888-8888-888888888888" },
+      payload: { patientId: "88888888-8888-4888-8888-888888888888" },
     });
     expect(res.statusCode).toBe(403);
   });

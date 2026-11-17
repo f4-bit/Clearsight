@@ -5,3 +5,4 @@ export * from "./patient.js";
 export * from "./image.js";
 export * from "./consultation.js";
 export * from "./inference.js";
+export * from "./feedback.js";
