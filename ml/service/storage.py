@@ -20,6 +20,7 @@ class ArtifactStore(Protocol):
 
 class MinioArtifactStore:
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
         self.minio_required = settings.minio_required
         if settings.minio_required and not all(
             [

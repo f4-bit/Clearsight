@@ -25,6 +25,12 @@ services:
     depends_on:
       - ml-redis
     gpus: all
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     networks:
       - clearsight-ml
 
