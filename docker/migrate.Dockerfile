@@ -15,4 +15,4 @@ RUN npm ci
 COPY backend/prisma ./prisma
 COPY backend/prisma.config.ts ./prisma.config.ts
 
-CMD ["npx", "prisma", "migrate", "deploy"]
+CMD ["sh", "-c", "npx prisma migrate deploy || (npx prisma migrate resolve --applied 0_init && npx prisma migrate deploy)"]

@@ -2,6 +2,11 @@ services:
   ml-redis:
     image: redis:7.4-alpine
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - clearsight
     volumes:
@@ -24,7 +29,14 @@ services:
     volumes:
       - clearsight-ml-models:/models
     depends_on:
-      - ml-redis
+      ml-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     networks:
       - clearsight
 

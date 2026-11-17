@@ -168,7 +168,7 @@ class InferencePipeline:
         cdr = calculate_area_cdr(segmentation.mask)
         cdr_vertical = calculate_vertical_cdr(segmentation.mask)
         base_result: dict[str, Any] = {
-            "inference_id": request.inference_id,
+            "inference_id": str(request.inference_id),
             "eye_side": request.eye_side,
             "label": None,
             "confidence": None,

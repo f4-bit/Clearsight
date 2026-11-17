@@ -8,7 +8,8 @@ x-backend-environment: &backend-environment
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clearsight}
   REDIS_URL: redis://redis:6379/0
   MLFLOW_TRACKING_URI: http://mlflow:5000
-  MINIO_ENDPOINT: minio:9000
+  MINIO_ENDPOINT: minio
+  MINIO_PORT: "9000"
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   MINIO_SECURE: "false"
@@ -73,12 +74,13 @@ services:
       - clearsight
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: cgr.dev/chainguard/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MC_HOST_health: http://${MINIO_ACCESS_KEY:-minioadmin}:${MINIO_SECRET_KEY:-minioadmin}@127.0.0.1:9000
     volumes:
       - minio-data:/data
     ports:
@@ -86,8 +88,11 @@ services:
       - "9001:9001"
     healthcheck:
       test:
-        - CMD-SHELL
-        - curl -sf http://localhost:9000/minio/health/live || exit 1
+        - CMD
+        - mc
+        - ping
+        - --exit
+        - health
       interval: 10s
       timeout: 5s
       retries: 5

@@ -59,14 +59,16 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TempDir = Join-Path $env:TEMP ("clearsight-e2e-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
-# Minimal 1x1 white JPEG (EXIF-marked when possible) for pipeline smoke.
-# The sanitizer drops all metadata before upload; randomness matters little.
-$TestJpegBase64 = @"
-/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAIBAQIBAQICAgICAgICAwUDAwMDAwYEBAcFBwYHBgcGBwYICwsLCQcKCAcHCg0KCkMWCg4ODwkHDQ4RDOMTEBASEhHNQEwNzQ8TDk4Oz0wSTAyMTU7OyY9LTk8TDs8MzkuSTktTDRDNjtMbDgwPDUqILo6wsSR0nFsEzKcEvuo+zo+LqYybrD/2wBDAQICAgMDAgMDAwMEAwMEBQgUEBYUFSExEoH/xAAQAwEBAAAAAAAAAAAAAAAAAAAAAemJ/8QAFBEBAAAAAAAAAAAAAAAAAAAAABBCoY//EABQBAQAAAAAAAAAAAAAAAAAAAAD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwDyuoK3n+uc9NvfE0t69sgSs1rDby52P//Z
-"@ -replace "`r?`n", ""
-
+# Generate a valid synthetic retinography-shaped JPEG in runtime (no binary in git).
+Add-Type -AssemblyName System.Drawing
+$bitmap = New-Object System.Drawing.Bitmap(512, 512)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.Clear([System.Drawing.Color]::White)
+$graphics.FillEllipse([System.Drawing.Brushes]::Black, 16, 16, 32, 32)
+$graphics.Dispose()
 $TestJpegPath = Join-Path $TempDir "sample_od.jpg"
-[Convert]::FromBase64String($TestJpegBase64) | Set-Content -Path $TestJpegPath -Encoding Byte -Force
+$bitmap.Save($TestJpegPath, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+$bitmap.Dispose()
 Write-Host "[e2e] test image -> $TestJpegPath"
 
 function Step($name) {
@@ -129,15 +131,19 @@ try {
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if (-not $curl) { throw "curl.exe not found on PATH (Windows 10+ required)" }
   $uploadUrl = "$BaseUrl/consultations/$consultationId/images"
-  $uploadResult = & curl.exe -s -X POST `
+  $uploadResult = (& curl.exe -s -X POST `
     -H "Authorization: Bearer $token" `
     -F "eyeSide=OD" `
     -F "image=@$TestJpegPath;type=image/jpeg" `
     -w "`nHTTP_STATUS:%{http_code}" `
-    $uploadUrl
-  $httpCode = if ($uploadResult -match "HTTP_STATUS:(\d+)") { $Matches[1] } else { "unknown" }
+    $uploadUrl 2>&1 | Out-String)
+  $codeMatch = [regex]::Match($uploadResult, "HTTP_STATUS:(\d+)")
+  $httpCode = if ($codeMatch.Success) { $codeMatch.Groups[1].Value } else { "unknown" }
   Write-Host "[e2e] upload HTTP $httpCode"
-  if ($httpCode -ne "201") { throw "image upload failed with HTTP $httpCode" }
+  if ($httpCode -ne "201") {
+    Write-Host "[e2e] upload response: $($uploadResult.Trim())" -ForegroundColor Red
+    throw "image upload failed with HTTP $httpCode"
+  }
   $imageLine = ($uploadResult -split "`r?`n") | Where-Object { $_ -match "^\{" } | Select-Object -Last 1
   $image = $imageLine | ConvertFrom-Json
   $imageId = $image.id
