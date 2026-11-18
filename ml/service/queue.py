@@ -81,7 +81,7 @@ class InMemoryJobQueue(JobQueue):
         return self.states.get(str(job_id))
 
     async def start(self, pipeline: InferencePipeline) -> None:
-        pipeline.artifact_store.ensure_buckets()
+        pipeline.artifact_store.ensure_storage()
         self.worker_task = asyncio.create_task(self._worker(pipeline))
 
     async def close(self) -> None:
@@ -154,7 +154,7 @@ class RedisJobQueue(JobQueue):
         return json.loads(payload) if payload else None
 
     async def start(self, pipeline: InferencePipeline) -> None:
-        pipeline.artifact_store.ensure_buckets()
+        pipeline.artifact_store.ensure_storage()
         self.worker_task = asyncio.create_task(self._worker(pipeline))
 
     async def close(self) -> None:
@@ -190,7 +190,11 @@ class RedisJobQueue(JobQueue):
                 # failed (if we can identify it) and keep draining the queue.
                 try:
                     raw = json.loads(payload)
-                    job_id = UUID(str(raw.get("inference_id", "00000000-0000-0000-0000-000000000000")))
+                    raw_id = raw.get(
+                        "inference_id",
+                        "00000000-0000-0000-0000-000000000000",
+                    )
+                    job_id = UUID(str(raw_id))
                 except Exception:
                     job_id = UUID("00000000-0000-0000-0000-000000000000")
                 await self._update_state(

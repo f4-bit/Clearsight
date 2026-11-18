@@ -43,6 +43,22 @@
 | Alcance cubierto | `test_service` con `create_app(initialize_runtime=False)` y health; `clinicalNormalization` (5 casos); `manifest` (1 caso) |
 | Fuera de alcance de esta evidencia | ML real, Azure, DB, Redis, Docker daemon y suite backend |
 
+## 1.2 Evidencia HITO 1 — preparación de storage neutral (2026-11-18)
+
+> Evidencia de ejecución local del hito 1 (`ArtifactStore.ensure_storage`). No se usó Azure real, MinIO real, Redis real ni pesos: los tests inyectan clientes fake de SDK/cola. La evidencia **INITIAL BASELINE** de 1.1 se conserva sin cambios.
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | `ArtifactStore.ensure_storage`; MinIO delega en `ensure_buckets`; Azure verifica `mask_bucket`/`overlay_bucket` con `exists()` sin crear contenedores y falla seguro si un contenedor configurado no existe cuando hay cliente, aunque el storage sea opcional; ambas colas llaman `ensure_storage` antes de crear el worker. |
+| Test focalizado | `python -m pytest ml/tests/test_service.py ml/tests/test_azure_readiness.py ml/tests/test_clinical_normalization.py ml/tests/test_manifest.py ml/tests/test_storage.py -q -k "not database_feedback"` con `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` temporal, restaurado en `finally`. |
+| Resultado exacto | **28 passed, 1 deselected, 1 warning, 4.05s** |
+| Regresión roja antes del fix | Con las dos llamadas de cola revertidas temporalmente a `ensure_buckets`, `python -m pytest ml/tests/test_storage.py -q -k "queue_start"` → **5 failed, 1 passed, 10 deselected, 4.18s**: fallan los casos Azure/neutral con `AttributeError ... has no attribute 'ensure_buckets'` en `queue.py:84,157` y MinIO sigue pasando porque conserva `ensure_buckets`; restaurado a `ensure_storage` y verificado verde. |
+| Lint | `python -m ruff check --config ml/pyproject.toml ml/service/storage.py ml/service/queue.py ml/tests/test_storage.py ml/tests/test_service.py` → **All checks passed.** |
+| Tipos | `python -m mypy --config-file ml/pyproject.toml ml/service/storage.py ml/service/queue.py` → **Success: no issues found in 2 source files.** El baseline previo registraba 2 errores por `ArtifactStore` sin `ensure_buckets`; el contrato neutral los resuelve. |
+| Validación documental | `openspec validate consolidate-backend-ml-azure --strict` → `Change 'consolidate-backend-ml-azure' is valid`; `git diff --check` sin errores de whitespace. |
+| Fuera de alcance | No se ejecutó Azure ni MinIO reales, ni E2E, ni tests con pesos/DB/Redis. El test de readiness usa `InMemoryJobQueue` y `build_runtime` stub; prueba 200/503 por preparación de storage, no un E2E Azure. |
+| Deuda conocida | `MinioArtifactStore.ensure_buckets` mantiene el comportamiento actual: solo crea en 404 y no propaga otros errores de `head_bucket` (p. ej. 403); no se declara fail-closed para MinIO en este hito. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

@@ -16,10 +16,10 @@
   - **Test:** revisión de contrato; no aplica ejecución.
   - **Coverage:** “Contrato HTTP único y explícito para frontend”, “Separación entre contrato actual verificado y target vnext”, “Autenticación y autorización por endpoint y recurso”.
 
-- [ ] 0.3 Añadir guard de merge para no reintroducir llamadas `ensure_buckets` sin método o con provider incorrecto.
-  - **Scope:** `ml/service/queue.py`, `ml/service/storage.py`, test nuevo en `ml/tests/test_service.py`.
-  - **When/Then:** WHEN arranca una cola con MinIO o Azure THEN solo se invoca un método existente del provider y no se repite el bug de master (`queue:73/146`).
-  - **Test:** `python -m pytest ml/tests/test_service.py -q`.
+- [x] 0.3 Añadir guard de merge para no reintroducir llamadas `ensure_buckets` sin método o con provider incorrecto.
+  - **Scope:** `ml/service/queue.py`, `ml/service/storage.py`, `ml/tests/test_storage.py`, `ml/tests/test_service.py`.
+  - **When/Then:** WHEN arranca una cola con MinIO o Azure THEN invoca el método neutral `ensure_storage` existente en ambos providers y no se repite el bug de master (`queue:73/146`).
+  - **Test:** `python -m pytest ml/tests/test_storage.py ml/tests/test_service.py -q`.
   - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, “Contrato público estricto del servicio ML”.
 
 - [x] 0.4 Crear `contracts/testing-runbook.md` con fases, precondiciones, comandos verificados, comandos `FUTURO` y stop de pasos peligrosos.
@@ -128,10 +128,10 @@
 
 ## 3. Storage y artefactos
 
-- [ ] 3.1 Implementar `ensure_buckets` por provider en ML.
-  - **Scope:** `ml/service/storage.py:10-18,59-70,95-166`, `ml/service/queue.py:84,157`.
-  - **When/Then:** WHEN el storage es Azure THEN el arranque usa inicialización Azure o no exige buckets MinIO; WHEN es MinIO THEN conserva el comportamiento actual.
-  - **Test:** `python -m pytest ml/tests/test_service.py ml/tests/test_azure_readiness.py -q` con stub de Azure.
+- [x] 3.1 Implementar `ensure_storage` neutral por provider en ML.
+  - **Scope:** `ml/service/storage.py:10-18,62-76,138-148`, `ml/service/queue.py:84,157`; `ml/tests/test_storage.py`.
+  - **When/Then:** WHEN el storage es Azure THEN `ensure_storage` verifica con el SDK la existencia de `mask_bucket`/`overlay_bucket` configurados sin crearlos y falla antes de crear el consumer si falta alguno o el SDK falla; WHEN es MinIO THEN delega en `ensure_buckets` y conserva el comportamiento actual; WHEN no hay cliente por configuración opcional THEN no-op.
+  - **Test:** `python -m pytest ml/tests/test_storage.py ml/tests/test_service.py ml/tests/test_azure_readiness.py -q`.
   - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, REG-001.
 
 - [ ] 3.2 Implementar abstracción dual en backend: Azure Blob y MinIO/S3.

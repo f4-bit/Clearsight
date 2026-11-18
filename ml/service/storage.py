@@ -8,6 +8,9 @@ from ml.config import Settings
 
 
 class ArtifactStore(Protocol):
+    def ensure_storage(self) -> None:
+        ...
+
     def upload_bytes(
         self,
         bucket: str | None,
@@ -69,6 +72,9 @@ class MinioArtifactStore:
                 if e.response["Error"]["Code"] == "404":
                     self.client.create_bucket(Bucket=bucket)
 
+    def ensure_storage(self) -> None:
+        self.ensure_buckets()
+
     def upload_bytes(
         self,
         bucket: str | None,
@@ -128,6 +134,17 @@ class AzureBlobArtifactStore:
                 account_url=account_url,
                 credential=settings.minio_secret_key,
             )
+
+    def ensure_storage(self) -> None:
+        if self.client is None:
+            return
+        for container in [self.settings.mask_bucket, self.settings.overlay_bucket]:
+            if not container:
+                continue
+            if not self.client.get_container_client(container).exists():
+                raise RuntimeError(
+                    f"Azure Blob container is not available: {container}"
+                )
 
     def upload_bytes(
         self,
