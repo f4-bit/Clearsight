@@ -4,7 +4,13 @@
 
 ### Requirement: Provisión aislada por ejecución con alcance confirmado
 
-El sistema SHALL preparar el despliegue Azure como una ejecución aislada que crea recursos con prefijo único y tags de entorno. Antes de crear cualquier recurso, el operador MUST confirmar suscripción, alcance de recursos, presupuesto numérico y duración máxima. Si esos datos no están acordados, el despliegue MUST quedar bloqueado; el diseño y la documentación MUST seguir siendo válidos. La capa gratuita MUST NOT asumirse ni prometerse.
+El sistema SHALL preparar el despliegue Azure como una ejecución aislada que crea recursos con prefijo único y tags de entorno. Antes de crear cualquier recurso, el operador MUST confirmar suscripción, alcance de recursos, presupuesto numérico y duración máxima. Si esos datos no están acordados, el despliegue MUST quedar bloqueado; el diseño y la documentación MUST seguir siendo válidos. La capa gratuita MUST NOT asumirse ni prometerse. El contexto CLI read-only verificado (default `Enabled`/`AzureCloud`, `group list` vacío) satisface solo el prerequisito de CLI y MUST NOT interpretarse como capa gratuita, cuota, RBAC de creación ni permiso de gasto. Sin presupuesto numérico, duración, scope y confirmación de contexto/permisos justo antes de crear, el deploy MUST seguir bloqueado.
+
+#### Scenario: Contexto CLI verificado
+
+- **WHEN** el operador confirma que existe un contexto CLI default activo y lecturas read-only devuelven una suscripción `Enabled` sin recursos del run
+- **THEN** el sistema registra solo el prerequisito de CLI satisfecho
+- **AND** no declara capa gratuita, cuotas, RBAC de creación, permiso de gasto ni deployment ready.
 
 #### Scenario: Datos de alcance confirmados
 
@@ -68,7 +74,7 @@ El sistema SHALL verificar el borrado de los recursos del run, considerando que 
 
 ### Requirement: Separación entre bloqueo de deploy y bloqueo de diseño
 
-El sistema SHALL distinguir los vacíos que bloquean el despliegue de los que bloquean una tarea puntual. La falta de presupuesto, suscripción, alcance o duración MUST bloquear el deploy, pero MUST NOT impedir completar la documentación, los contratos, las pruebas con stub o el diseño de seguridad.
+El sistema SHALL distinguir los vacíos que bloquean el despliegue de los que bloquean una tarea puntual. La falta de presupuesto, suscripción, alcance o duración MUST bloquear el deploy, pero MUST NOT impedir completar la documentación, los contratos, las pruebas con stub o el diseño de seguridad. La disponibilidad de CLI o de un contexto default MUST NOT eliminar ese bloqueo; solo un presupuesto/duración/scope confirmados y permisos/quota verificados justo antes de crear habilitan el despliegue.
 
 #### Scenario: Diseño sin deploy
 

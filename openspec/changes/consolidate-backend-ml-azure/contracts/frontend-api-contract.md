@@ -120,7 +120,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | GET | `/inferences/:id/artifacts/:type/url` | proposed | Owner/grant | — | `ArtifactUrl`; solo `AVAILABLE` devuelve URL | `401`, `403`, `404`, `409` |
 | GET | `/inferences/:id/reports` | proposed | Owner/grant | — | `ReportVersion[]` inmutables, con `reportId` y `version` | `401`, `403`, `404` |
 | GET | `/inferences/:id/reports/:version/url` | proposed | Owner/grant | — | `ArtifactUrl` con `reportVersion` | `401`, `403`, `404`, `409` |
-| POST | `/inferences/:id/review` | blocked (B1) | OFTALMOLOGO autorizado | Pendiente de regla clínica | Pendiente | — |
+| POST | `/inferences/:id/review` | deferred (B1 restricción) | — | No es target actual; no approve-review ejecutable ni auto-complete manual | — | — |
 | GET | `/inferences/:id/gradcam` | deferred | — | — | `NOT_SUPPORTED` | — |
 
 **No hay un endpoint independiente `/reanalysis` en TARGET.** El reanálisis canónico es `POST /inferences` con `reanalysisOf`. Si se expone un alias por compatibilidad, delega exactamente en el mismo caso de uso, la misma `Idempotency-Key` y el mismo `202`; no es una segunda implementación.
@@ -137,6 +137,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | Método | Ruta | Estado | Nota |
 |---|---|---|---|
 | GET/PATCH | `/admin/users` | deferred | Lectura/edición admin diferida; **POST alta es prioridad** en 3.1, no diferida. Desactivación/roles y último admin protegido desde que existan esas rutas. |
+| DELETE | `/admin/users/:id` | not planned | **No hay hard delete en este hito**, ni siquiera para cuentas sin actividad. La acción soportada es desactivación + revocación de sesiones; la supresión legal queda pendiente solo para producción. |
 | GET | `/admin/audit` | deferred | Auditoría operativa append-only, mínimo PHI. |
 | GET | `/consultations` | deferred | Historial/filtros/paginación, sin frontend en este hito. |
 
@@ -248,7 +249,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 | `reanalysisOf` | UUID | No | Crea ejecución nueva enlazada; no sobrescribe. |
 | `imageUrl` | — | Prohibido | No lo envía el frontend; el backend firma desde referencia confiable. |
 
-**Respuesta `202`:** `{ inferenceId: UUID, jobId: string, status: "QUEUED" }`. Si se pierde el `202`, se reintenta con la misma key; no se exige consultar un ID nunca recibido. El modelo queda fijado; la URL firmada dinámica no forma parte del payload/fingerprint. **Mientras B3 no esté aprobado, no se purgan** registros de idempotencia, tombstones ni vínculos de inferencia necesarios para replay. Cuando B3 se apruebe, la retención podrá acotarse sin romper el horizonte de replay definido; no se promete replay eterno arbitrario, pero la política vigente es no purgar.
+**Respuesta `202`:** `{ inferenceId: UUID, jobId: string, status: "QUEUED" }`. Si se pierde el `202`, se reintenta con la misma key; no se exige consultar un ID nunca recibido. El modelo queda fijado; la URL firmada dinámica no forma parte del payload/fingerprint. **Mientras B3 no esté aprobado, no se purgan** registros de idempotencia, tombstones ni vínculos de inferencia necesarios para replay. Cuando B3 se apruebe, la retención podrá acotarse sin romper el horizonte de replay definido; no se promete replay eterno arbitrario, pero la política vigente es no purgar. **B2:** una consulta completada no se reabre ni altera automáticamente; `requiredExecutionIds` no se promueve ni reemplaza tras cierre y los reanálisis históricos no modifican el frozen set.
 
 ## 7. Artefactos, polling y entrega
 
@@ -261,7 +262,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 - `REVIEW_REQUIRED` no aprueba automáticamente ni permite `delivery.complete=true`; si la evidencia/PDF se sigue generando, el cliente continúa el polling hasta que la publicación conocida no tenga `PENDING`, sin convertir la revisión en éxito.
 - Polling: 2 s inicial, techo 10 s, `Retry-After`. Un timeout global configurable dispara aviso y no marca la inferencia como `FAILED` por sí solo.
 - Reportes: `reportId` + `version` inmutables; feedback/explicaciones nuevas crean nueva versión sin pisar la anterior.
-- Backend y ML deben abstraer **Azure Blob y MinIO/S3**. Azure usa SAS read-only sobre objeto, HTTPS y TTL; MinIO usa presign. El backend actual es solo S3/MinIO (`backend/src/services/storage.ts:1-98`); Azure no está implementado todavía y se marca como TARGET. Los tests de provider usan Azure fake/Azurite sin Azure real; el E2E real Azure queda bloqueado por B6.
+- Backend y ML deben abstraer **Azure Blob y MinIO/S3**. Azure usa SAS read-only sobre objeto, HTTPS y TTL; MinIO usa presign. El backend actual es solo S3/MinIO (`backend/src/services/storage.ts:1-98`); Azure no está implementado todavía y se marca como TARGET. Los tests de provider usan Azure fake/Azurite sin Azure real; el E2E real Azure queda condicionado a B6 (parcial, no deployment ready).
 
 ## 8. Estados agregados y precedencia
 
@@ -277,7 +278,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 | Alguna con resultado/evidencia pero no todas | `PARTIAL` |
 | En otro caso | `OPEN` |
 
-`reportState` separado y formal: `NOT_REQUESTED` si `requiredExecutionIds` está vacío; `AVAILABLE` solo si el conjunto requerido **no está vacío y todos** los `pdfStatus` están `AVAILABLE`; `REPORT_PENDING` si alguno está en generación/publicación y ninguno es fallo terminal; `FAILED` si alguno es fallo terminal. Precedencia: `FAILED > REPORT_PENDING > AVAILABLE`; nunca `AVAILABLE` por vacuidad. `completionState = COMPLETE` solo si `requiredExecutionIds` no está vacío y **todas** esas ejecuciones tienen resultado, artefactos obligatorios y PDF disponible; no basta “algún reporte” ni un reporte histórico. Cada delivery de ejecución registra su propia completitud y la agregación no sobrescribe histórico. `analysisState` evalúa resultado/ML y no mete PDF en el enum ML; la completitud se decide por el agregado.
+`reportState` separado y formal: `NOT_REQUESTED` si `requiredExecutionIds` está vacío; `AVAILABLE` solo si el conjunto requerido **no está vacío y todos** los `pdfStatus` están `AVAILABLE`; `REPORT_PENDING` si alguno está en generación/publicación y ninguno es fallo terminal; `FAILED` si alguno es fallo terminal. Precedencia: `FAILED > REPORT_PENDING > AVAILABLE`; nunca `AVAILABLE` por vacuidad. `completionState = COMPLETE` solo si `requiredExecutionIds` no está vacío y **todas** esas ejecuciones tienen resultado, artefactos obligatorios y PDF disponible; no basta “algún reporte” ni un reporte histórico. Cada delivery de ejecución registra su propia completitud y la agregación no sobrescribe histórico. **B2:** no hay reapertura ni promoción de `requiredExecutionIds` tras cierre; el frozen set manda. `analysisState` evalúa resultado/ML y no mete PDF en el enum ML; la completitud se decide por el agregado.
 
 `pollingStop` de consulta: `CONTINUE`, `COMPLETE`, `ACTION_REQUIRED` o `FAILED`. `COMPLETE` solo con `completionState=COMPLETE`; `ACTION_REQUIRED` cuando hay revisión/bloqueo que exige acción humana o nueva consulta; `FAILED` en fallo terminal; `CONTINUE` si queda `REPORT_PENDING`, `PENDING` o `jobTerminal=false`. El cliente para en `COMPLETE`, `ACTION_REQUIRED` o `FAILED` con reporte terminal sin `PENDING`. Un PDF de `REVIEW_REQUIRED` no declara completitud. `COMPLETED` de ML no es estado de consulta.
 
@@ -305,15 +306,16 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 | Administración/auditoría operativa | deferred | Hito posterior. |
 | PDF enriquecido | deferred | Posterior al PDF básico. |
 | Grad-CAM / SHAP | deferred | Requisitos SRS diferidos; reporte independiente digital/PDF. |
-| Resolución `REVIEW_REQUIRED` | blocked | B1: regla clínica pendiente. |
-| Cambio/promoción de `requiredExecutionIds` | blocked | B2: política clínica pendiente. |
-| Retención numérica | blocked | B3. |
-| Consentimiento/privacidad | blocked | B4. |
-| Supresión de identidad | blocked | B5. |
-| Deploy Azure real | blocked | B6. |
-| RF07 unimodal / RF15 comparación | blocked | B7. |
-| Envío real de email forgot/reset | blocked | B8: proveedor/remitente/credenciales no acordados; diseño/implementación permitidos. |
-| `DatabaseFeedbackSource` | deferred | B9: decisión/dependencia pendientes. |
+| Resolución `REVIEW_REQUIRED` | deferred (ex B1) | B1 resuelto como restricción: el médico no convierte una ejecución sin resultado válido; la resolución es un reanálisis con PDF independiente; no hay endpoint approve-review ejecutable ni auto-complete manual. |
+| Cambio/promoción de `requiredExecutionIds` | restricción aprobada (B2) | No reapertura ni promoción tras cierre; frozen set; reanálisis históricos independientes. |
+| Borrado/hard delete de usuarios | fuera de alcance (B5) | Desactivación + revocación de sesiones; no hard delete en este hito; supresión/retención solo producción. |
+| Retención numérica | pendiente solo producción (B3) | No fija plazos ni declara cumplimiento legal; no bloquea desarrollo/test sintético/PAPILA. |
+| Consentimiento/privacidad | pendiente solo producción (B4) | No afirma anonimización por HMAC ni cumplimiento; fail closed con datos reales sin governance. |
+| Supresión de identidad/legal | pendiente solo producción (B5) | Sin automatización ni plazos; excepción futura con política. |
+| Deploy Azure real | parcialmente satisfecho CLI / no deployment ready (B6) | Contexto CLI read-only sin crear recursos; faltan presupuesto/duración/scope y confirmación/permisos. |
+| RF07 unimodal / RF15 comparación | deferred (B7) | No se implementan ni simulan; no bloquean. |
+| Envío real de email forgot/reset | pendiente solo provisioning (B8) | Sink en memoria primero; envío real solo a destinatarios autorizados, sin PHI/enlaces secretos, sin versionar direcciones/credenciales. |
+| `DatabaseFeedbackSource` | fuera de alcance (B9) | No añade SQLAlchemy ni bloquea el change. |
 
 ## 11. Reglas de consumo para frontend
 
@@ -327,3 +329,5 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 8. No presentar un PDF de revisión como caso completo.
 9. No confundir `hashMd5` actual con `checksumSha256` target.
 10. No mostrar unidades/categorías clínicas no verificadas como validadas.
+11. No esperar un endpoint de aprobación de revisión ni un auto-complete manual; la resolución es un reanálisis con PDF independiente.
+12. No ofrecer hard delete de usuarios en este hito; la acción soportada es desactivación + revocación de sesiones.

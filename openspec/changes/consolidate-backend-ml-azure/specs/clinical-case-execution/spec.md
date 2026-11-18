@@ -36,7 +36,7 @@ El sistema SHALL crear un snapshot clínico inmutable para cada ejecución. El s
 
 ### Requirement: Reanálisis enlazado sin sobrescribir evidencia
 
-El sistema SHALL permitir solicitar un reanálisis como una nueva ejecución enlazada a la anterior mediante un identificador de procedencia. La nueva ejecución MUST NOT sobrescribir resultado, artefactos, PDF, feedback ni auditoría de la ejecución previa. Ambas ejecuciones MUST permanecer consultables y auditables. Un reanálisis no seleccionado en `requiredExecutionIds` MAY existir en el historial con su propio PDF independiente, pero MUST NOT modificar la completitud de una consulta ya cerrada ni la selección de ejecuciones requeridas.
+El sistema SHALL permitir solicitar un reanálisis como una nueva ejecución enlazada a la anterior mediante un identificador de procedencia. La nueva ejecución MUST NOT sobrescribir resultado, artefactos, PDF, feedback ni auditoría de la ejecución previa. Ambas ejecuciones MUST permanecer consultables y auditables. Un reanálisis no seleccionado en `requiredExecutionIds` MAY existir en el historial con su propio PDF independiente, pero MUST NOT modificar la completitud de una consulta ya cerrada ni la selección de ejecuciones requeridas. La consulta cerrada MUST NOT reabrirse ni alterarse automáticamente y MUST NOT promoverse ni reemplazarse un `requiredExecutionId` tras el cierre (B2 resuelto como restricción aprobada); los reanálisis históricos independientes MUST NOT modificar el conjunto requerido congelado.
 
 #### Scenario: Nuevo reanálisis
 
@@ -58,7 +58,7 @@ El sistema SHALL permitir solicitar un reanálisis como una nueva ejecución enl
 
 ### Requirement: Selección explícita de ejecuciones requeridas y cambio tras cierre
 
-El sistema SHALL declarar por consulta una selección explícita de `requiredExecutionIds` y una `requiredSetVersion` (manifiesto) al iniciar el análisis. La selección puede cubrir uno (`OD` u `OS`) o ambos ojos; no se exige bilateralidad de forma universal. La completitud MUST evaluarse solo sobre esos IDs y MUST NOT usar “latest” automático. Un reanálisis no seleccionado MUST NOT cambiar la evidencia ni la completitud de una consulta cerrada. La promoción o reemplazo de un `requiredExecutionId` ante fallo o revisión MUST quedar bloqueada hasta que exista política clínica aprobada; la ejecución del reanálisis en sí no está bloqueada. Si el producto permite cambiar el conjunto requerido después del cierre, el sistema MUST exigir una regla y una versión documentadas antes de aplicar el cambio; mientras esa decisión no exista, el sistema MUST NOT asumir cierre retroactivo ni ampliar la completitud de una consulta ya cerrada.
+El sistema SHALL declarar por consulta una selección explícita de `requiredExecutionIds` y una `requiredSetVersion` (manifiesto) al iniciar el análisis. La selección puede cubrir uno (`OD` u `OS`) o ambos ojos; no se exige bilateralidad de forma universal. La completitud MUST evaluarse solo sobre esos IDs y MUST NOT usar “latest” automático. Un reanálisis no seleccionado MUST NOT cambiar la evidencia ni la completitud de una consulta cerrada. La promoción o reemplazo de un `requiredExecutionId` tras el cierre MUST NOT realizarse (B2 resuelto como restricción aprobada); la ejecución del reanálisis en sí no está bloqueada y conserva su PDF independiente. La consulta cerrada MUST NOT reabrirse ni ampliarse automáticamente y no se asume cierre retroactivo. Cualquier cambio futuro del conjunto requerido exigirá una nueva decisión de producto y una versión documentada antes de aplicarse.
 
 #### Scenario: Consulta con un solo ojo requerido
 
@@ -130,7 +130,7 @@ El sistema SHALL calcular `analysisState`, `reportState`, `completionState` y `p
 
 ### Requirement: Revisión humana terminal sin cierre automático
 
-El sistema SHALL tratar `REVIEW_REQUIRED` como un estado terminal para la espera automática. Un timeout MUST NOT convertir la ejecución en `COMPLETED`, y la existencia de un PDF MUST NOT aprobar automáticamente la revisión. La resolución humana detallada queda pendiente de regla clínica; mientras no exista, el sistema MUST NOT cerrar automáticamente la revisión ni inventar una aprobación.
+El sistema SHALL tratar `REVIEW_REQUIRED` como un estado terminal para la espera automática. Un timeout MUST NOT convertir la ejecución en `COMPLETED`, y la existencia de un PDF MUST NOT aprobar automáticamente la revisión. **B1 queda resuelto como restricción aprobada:** el médico MUST NOT convertir una ejecución sin resultado válido en `COMPLETED`; `REVIEW_REQUIRED` MUST preservarse. La resolución SHALL ser un reanálisis como ejecución nueva, con imagen/snapshot nuevos si procede, PDF independiente y vínculo a la ejecución anterior, sin sobrescribir la evidencia previa. No existe endpoint ejecutable de aprobación de revisión ni auto-completado manual alternativo en este hito.
 
 #### Scenario: Revisión requerida por calidad
 
@@ -142,4 +142,10 @@ El sistema SHALL tratar `REVIEW_REQUIRED` como un estado terminal para la espera
 
 - **WHEN** existe un PDF generado para una ejecución en `REVIEW_REQUIRED`
 - **THEN** el sistema no cambia la ejecución a `COMPLETED`
-- **AND** exige una resolución humana conforme a la regla clínica que se apruebe.
+- **AND** exige una resolución humana que, conforme a B1, consiste en un reanálisis con PDF independiente y no en una conversión manual.
+
+#### Scenario: Médico intenta convertir sin resultado válido
+
+- **WHEN** un médico intenta marcar `COMPLETED` una ejecución `REVIEW_REQUIRED` o sin resultado válido
+- **THEN** el sistema rechaza la conversión
+- **AND** preserva `REVIEW_REQUIRED` y ofrece un reanálisis como ejecución nueva vinculada, sin pisar la evidencia anterior.

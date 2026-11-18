@@ -26,7 +26,7 @@ El servicio ML SHALL exponer `POST /v1/inferences` con cuerpo JSON que contenga 
 
 ### Requirement: Estados de job y resultado completo
 
-El servicio ML SHALL usar el vocabulario de estados `QUEUED`, `DOWNLOADING`, `LOCALIZING`, `SEGMENTING`, `CLASSIFYING`, `COMPLETED`, `REVIEW_REQUIRED` y `FAILED`. El resultado de una ejecución exitosa MUST incluir `inference_id`, `eye_side`, `label`, `confidence`, `probabilities`, predicciones por modelo, `cdr`, `cdr_vertical`, `quality`, `artifacts`, `model_versions` y `elapsed_seconds`. `REVIEW_REQUIRED` MUST poder devolver evidencia parcial sin presentarla como éxito completo.
+El servicio ML SHALL usar el vocabulario de estados `QUEUED`, `DOWNLOADING`, `LOCALIZING`, `SEGMENTING`, `CLASSIFYING`, `COMPLETED`, `REVIEW_REQUIRED` y `FAILED`. El resultado de una ejecución exitosa MUST incluir `inference_id`, `eye_side`, `label`, `confidence`, `probabilities`, predicciones por modelo, `cdr`, `cdr_vertical`, `quality`, `artifacts`, `model_versions` y `elapsed_seconds`. `REVIEW_REQUIRED` MUST poder devolver evidencia parcial sin presentarla como éxito completo. Una ejecución `REVIEW_REQUIRED` MUST NOT convertirse en `COMPLETED` por acción del médico ni por la existencia de un PDF; la resolución es un reanálisis como ejecución nueva vinculada, con PDF independiente y sin pisar la evidencia anterior (B1).
 
 #### Scenario: Consulta de un job completado
 
@@ -116,7 +116,7 @@ El backend SHALL implementar idempotencia persistida y resistente a concurrencia
 
 ### Requirement: Creación y reanálisis canónicos sin endpoints alternativos
 
-El sistema SHALL exponer un único contrato canónico para crear una ejecución: `POST /inferences` con `reanalysisOf` opcional para reanálisis. El sistema MUST NOT ofrecer `POST /inferences/:id/reanalysis` como un endpoint independiente con semántica distinta. Si se conserva como alias de compatibilidad, MUST delegar exactamente en el mismo caso de uso, la misma idempotencia obligatoria y el mismo `202`; el frontend MUST usar solo el canónico. El `imageId` MUST corresponder a la lateralidad almacenada y un `eyeSide` contradictorio MUST rechazarse con `422` sin confiar en el valor del cliente.
+El sistema SHALL exponer un único contrato canónico para crear una ejecución: `POST /inferences` con `reanalysisOf` opcional para reanálisis. El sistema MUST NOT ofrecer `POST /inferences/:id/reanalysis` como un endpoint independiente con semántica distinta. Si se conserva como alias de compatibilidad, MUST delegar exactamente en el mismo caso de uso, la misma idempotencia obligatoria y el mismo `202`; el frontend MUST usar solo el canónico. El `imageId` MUST corresponder a la lateralidad almacenada y un `eyeSide` contradictorio MUST rechazarse con `422` sin confiar en el valor del cliente. Un reanálisis MUST NOT reabrir ni alterar automáticamente una consulta completada ni promover `requiredExecutionIds` tras el cierre; los reanálisis históricos no modifican el frozen set (B2).
 
 #### Scenario: Reanálisis canónico
 

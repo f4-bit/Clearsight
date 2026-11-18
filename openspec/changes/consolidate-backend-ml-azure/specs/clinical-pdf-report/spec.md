@@ -58,7 +58,7 @@ El PDF MUST NOT incluir secretos, tokens, SAS, presigned URLs, credenciales ni e
 
 ### Requirement: Idempotencia y versionado del reporte
 
-El sistema SHALL generar el PDF de forma idempotente usando el mismo `inference_id`, snapshot inmutable y versión de datos. Reintentar la generación MUST NOT reinferir ni alterar el resultado. Un feedback posterior, una explicación nueva o un cambio aprobado de contenido MUST generar una nueva versión del reporte sin pisar la anterior ni recalcular silenciosamente.
+El sistema SHALL generar el PDF de forma idempotente usando el mismo `inference_id`, snapshot inmutable y versión de datos. Reintentar la generación MUST NOT reinferir ni alterar el resultado. Un feedback posterior, una explicación nueva o un cambio aprobado de contenido MUST generar una nueva versión del reporte sin pisar la anterior ni recalcular silenciosamente. Un reanálisis SHALL generar su propio PDF independiente y vinculado a la ejecución anterior; MUST NOT sobrescribir el PDF de la ejecución previa.
 
 #### Scenario: Reintento de PDF
 
@@ -72,9 +72,15 @@ El sistema SHALL generar el PDF de forma idempotente usando el mismo `inference_
 - **THEN** el sistema puede generar una nueva versión del reporte
 - **AND** conserva la versión anterior y su trazabilidad.
 
+#### Scenario: Reanálisis con PDF independiente
+
+- **WHEN** se ejecuta un reanálisis de una ejecución existente
+- **THEN** el sistema genera un PDF independiente para la nueva ejecución
+- **AND** no sobrescribe ni reinterpreta el PDF de la ejecución anterior.
+
 ### Requirement: Reporte de revisión con limitación explícita
 
-El PDF de una ejecución en `REVIEW_REQUIRED` SHALL mostrar la limitación y el estado de revisión. MUST NOT declarar la ejecución o la consulta como completada. MUST indicar qué evidencia es parcial y qué imagen o artefacto falta, incluyendo la ausencia de original sanitizada, `mask` u `overlay` cuando aplique. El reporte de revisión MAY ser parcial y documentar la falta; MUST NOT presentarse como completitud normal.
+El PDF de una ejecución en `REVIEW_REQUIRED` SHALL mostrar la limitación y el estado de revisión. MUST NOT declarar la ejecución o la consulta como completada. MUST indicar qué evidencia es parcial y qué imagen o artefacto falta, incluyendo la ausencia de original sanitizada, `mask` u `overlay` cuando aplique. El reporte de revisión MAY ser parcial y documentar la falta; MUST NOT presentarse como completitud normal. La resolución B1 es un reanálisis con PDF independiente; el PDF de revisión MUST NOT convertirse en completitud por acción del médico ni por la existencia del PDF.
 
 #### Scenario: PDF de ejecución en revisión
 

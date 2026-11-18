@@ -82,7 +82,7 @@ El sistema SHALL bloquear una cuenta durante 15 minutos tras cinco intentos fall
 
 ### Requirement: Sesiones, refresh, logout y recuperación seguros
 
-El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitecto dentro de la delegación industry; no es una decisión exacta de producto ni una funcionalidad ya implementada. El access token MUST ser un JWT breve con default 15 minutos, `sessionId` y `tokenVersion`. En cada request el servidor MUST consultar una sesión activa, la versión y el usuario activo/rol vigente en un store durable, y MUST aplicar fail closed si no puede verificar. El refresh token MUST ser opaco, generado con CSPRNG, almacenado como hash en reposo, rotado de forma atómica y de un solo uso; la reutilización MUST revocar la familia. Su expiración absoluta simple propuesta es 7 días, sin extensión por idle salvo configuración explícita. Logout MUST revocar la sesión de inmediato. Desactivar una cuenta MUST revocar todas las sesiones e incrementar la versión. Un cambio de rol MUST invalidar tokens y permisos de inmediato. El reset de contraseña MUST usar token de un solo uso, 30 minutos, hash, sin logs, y revocar todas las sesiones. `forgot` MUST responder `202` uniforme con rate limit y proveedor de envío configurable. Para web, el refresh MUST viajar en cookie `HttpOnly; Secure; SameSite` y no en JSON; si es cross-site, MUST evaluarse origen/CSRF. La respuesta de refresh MUST NOT exponer el refresh token. El access bearer MUST NOT sugerirse en `localStorage`. El cliente backend no-browser queda fuera de alcance. El envío real de email depende de datos de proveedor no acordados: eso bloquea solo la habilitación real del envío, no el diseño ni la implementación del flujo. Los tokens MUST NOT registrarse en logs ni incluirse en URLs.
+El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitecto dentro de la delegación industry; no es una decisión exacta de producto ni una funcionalidad ya implementada. El access token MUST ser un JWT breve con default 15 minutos, `sessionId` y `tokenVersion`. En cada request el servidor MUST consultar una sesión activa, la versión y el usuario activo/rol vigente en un store durable, y MUST aplicar fail closed si no puede verificar. El refresh token MUST ser opaco, generado con CSPRNG, almacenado como hash en reposo, rotado de forma atómica y de un solo uso; la reutilización MUST revocar la familia. Su expiración absoluta simple propuesta es 7 días, sin extensión por idle salvo configuración explícita. Logout MUST revocar la sesión de inmediato. Desactivar una cuenta MUST revocar todas las sesiones e incrementar la versión. Un cambio de rol MUST invalidar tokens y permisos de inmediato. El reset de contraseña MUST usar token de un solo uso, 30 minutos, hash, sin logs, y revocar todas las sesiones. `forgot` MUST responder `202` uniforme con rate limit y proveedor de envío configurable. Para web, el refresh MUST viajar en cookie `HttpOnly; Secure; SameSite` y no en JSON; si es cross-site, MUST evaluarse origen/CSRF. La respuesta de refresh MUST NOT exponer el refresh token. El access bearer MUST NOT sugerirse en `localStorage`. El cliente backend no-browser queda fuera de alcance. **B8 queda como restricción de provisioning:** el usuario autoriza usar sus correos reales cuando se llegue, pero direcciones y proveedor aún no están fijados. Las pruebas MUST usar primero un adaptador con sink en memoria; el envío real solo se habilitará a destinatarios autorizados explícitos, para casos sin PHI y sin enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales, con rate limiting y sin user enumeration. Los tokens MUST NOT registrarse en logs ni incluirse en URLs.
 
 #### Scenario: Verificación por request
 
@@ -122,13 +122,18 @@ El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitec
 
 #### Scenario: Envío real de email no configurado
 
-- **WHEN** no están aprobados proveedor, remitente y credenciales de email
-- **THEN** el flujo de forgot/reset puede diseñarse e implementarse
-- **AND** el envío real permanece deshabilitado hasta aprobación.
+- **WHEN** no están fijados direcciones, proveedor y autorización de destinatarios
+- **THEN** el flujo de forgot/reset se prueba con un adaptador de sink en memoria
+- **AND** el envío real permanece deshabilitado.
+
+#### Scenario: Envío real autorizado
+
+- **WHEN** el usuario autoriza destinatarios explícitos
+- **THEN** el envío real solo usa esos destinatarios, sin PHI ni enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales, con rate limit y sin user enumeration.
 
 ### Requirement: Desactivación y preservación de autoría
 
-El sistema SHALL desactivar usuarios sin borrar su autoría ni su historial. Un usuario desactivado MUST NOT iniciar sesión ni usar sesiones previamente emitidas. Sus consultas, feedback y auditoría MUST permanecer íntegros y atribuidos.
+El sistema SHALL desactivar usuarios sin borrar su autoría ni su historial. La desactivación MUST revocar todas las sesiones emitidas e incrementar la versión; un usuario desactivado MUST NOT iniciar sesión ni usar sesiones previamente emitidas. Sus consultas, feedback y auditoría MUST permanecer íntegros y atribuidos. La desactivación MUST NOT hacer cascade delete ni reasignar historial.
 
 #### Scenario: Usuario desactivado
 
@@ -138,9 +143,9 @@ El sistema SHALL desactivar usuarios sin borrar su autoría ni su historial. Un 
 
 #### Scenario: Intento de borrado con actividad
 
-- **WHEN** se intenta borrar físicamente una cuenta con actividad clínica
-- **THEN** el sistema lo deniega conforme a la política
-- **AND** ofrece desactivación como alternativa.
+- **WHEN** se solicita borrado físico de una cuenta, con o sin actividad clínica
+- **THEN** el sistema lo rechaza o no lo ofrece en este hito
+- **AND** ofrece desactivación + revocación de sesiones como alternativa.
 
 ### Requirement: Protección del último administrador activo
 
@@ -182,13 +187,13 @@ El sistema SHALL registrar auditoría append-only de acciones sensibles con acto
 
 ### Requirement: Borrado físico excepcional y supresión de identidad
 
-El sistema SHALL limitar el borrado físico a cuentas sin actividad, conforme a la política aplicable, sin cascadas ni reasignación de historial. La desactivación MUST ser distinta de la supresión de identidad o legal. Mientras la política de supresión no esté aprobada, el sistema MUST NOT eliminar ni anonimizar automáticamente datos clínicos o de identidad.
+El sistema SHALL tratar la desactivación como la acción soportada para usuarios y MUST NOT implementar hard delete en este hito, ni siquiera para cuentas sin actividad. La desactivación MUST revocar sesiones y conservar autoría/historial, sin cascadas ni reasignación. La supresión de identidad/legal es distinta de la desactivación; mientras su política no esté aprobada, el sistema MUST NOT eliminar ni anonimizar automáticamente datos clínicos o de identidad. Cualquier excepción futura de hard delete requerirá política aprobada y no forma parte de este hito.
 
 #### Scenario: Cuenta sin actividad
 
-- **WHEN** se solicita borrado físico de una cuenta sin actividad y la política lo permite
-- **THEN** el sistema ejecuta el borrado conforme al procedimiento aprobado
-- **AND** no afecta registros clínicos de terceros.
+- **WHEN** se solicita hard delete de una cuenta sin actividad
+- **THEN** el sistema lo rechaza o no lo ofrece en este hito
+- **AND** ofrece desactivación + revocación de sesiones.
 
 #### Scenario: Supresión sin política aprobada
 

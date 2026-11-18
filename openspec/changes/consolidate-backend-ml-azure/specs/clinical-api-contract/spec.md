@@ -152,7 +152,7 @@ El sistema SHALL conservar compatibilidad con los clientes actuales durante la m
 
 ### Requirement: URLs de artefactos y PDF en el contrato
 
-El contrato SHALL documentar cómo solicitar URLs de artefactos y reportes/PDF, que el TTL es corto y que el cliente debe pedir una URL nueva si expira. Las respuestas MUST incluir estado del artefacto y MUST NOT incluir URLs persistidas como identidad. Los reportes MUST exponerse con `reportId` y `version` explícitos e inmutables; el cliente MUST NOT asumir que “el PDF” es un archivo único sobrescribible. El contrato MUST indicar que un PDF de revisión no declara completitud.
+El contrato SHALL documentar cómo solicitar URLs de artefactos y reportes/PDF, que el TTL es corto y que el cliente debe pedir una URL nueva si expira. Las respuestas MUST incluir estado del artefacto y MUST NOT incluir URLs persistidas como identidad. Los reportes MUST exponerse con `reportId` y `version` explícitos e inmutables; el cliente MUST NOT asumir que “el PDF” es un archivo único sobrescribible. El contrato MUST indicar que un PDF de revisión no declara completitud. El contrato MUST NOT ofrecer un endpoint ejecutable de aprobación de revisión ni un auto-completado manual; el endpoint de revisión queda `deferred` y no es target del producto actual. La resolución es un reanálisis con PDF independiente.
 
 #### Scenario: Descarga de reporte
 

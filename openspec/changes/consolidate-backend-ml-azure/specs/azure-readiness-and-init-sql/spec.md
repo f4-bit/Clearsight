@@ -52,7 +52,7 @@ The system SHALL enhance `_download_image` in `ml/inference/pipeline.py` to supp
 
 ### Requirement: Database Feedback Source for Retraining
 
-The system SHALL treat `DatabaseFeedbackSource` and any SQLAlchemy-based feedback query as optional and pending explicit product decision. The system MUST NOT add `SQLAlchemy` to `ml/pyproject.toml` or implement the database feedback source automatically as part of this change. If the capability is implemented later, it MUST query only `clinical_feedback` rows where `is_gold_standard = TRUE`, joined with the necessary consultation data, when the corresponding CLI flag is provided.
+The system SHALL treat `DatabaseFeedbackSource` and any SQLAlchemy-based feedback query as explicitly out of scope for this milestone; this exclusion MUST NOT block the change. The system MUST NOT add `SQLAlchemy` to `ml/pyproject.toml` or implement the database feedback source as part of this change. If a future milestone implements it, it MUST query only `clinical_feedback` rows where `is_gold_standard = TRUE`, joined with the necessary consultation data, when the corresponding CLI flag is provided, and MUST declare the dependency explicitly in `ml/pyproject.toml`.
 
 #### Scenario: Feedback source not implemented
 
@@ -62,9 +62,9 @@ The system SHALL treat `DatabaseFeedbackSource` and any SQLAlchemy-based feedbac
 
 #### Scenario: Future database feedback source
 
-- **WHEN** the product approves and implements `DatabaseFeedbackSource`
+- **WHEN** a future milestone approves and implements `DatabaseFeedbackSource`
 - **THEN** it queries only gold-standard feedback joined with consultation data
-- **AND** the dependency is declared explicitly in `ml/pyproject.toml`.
+- **AND** the dependency is declared explicitly in `ml/pyproject.toml` outside this change.
 
 ### Requirement: Operational Dockerfiles for Auxiliary Services
 

@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** este change es de documentación. Todas las tareas de implementación quedan **sin marcar**. La única tarea marcada es la creación del registro documental de regresiones, ya entregada. Ninguna tarea se ejecutó en este change; los comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las que dependen de una decisión de producto se listan en la tabla final y **no deben activarse**.
+> **Estado:** este change es de documentación. Todas las tareas de implementación quedan **sin marcar**. Las tareas documentales entregadas (registro de regresiones y runbook de pruebas) se marcan `[x]`. Ninguna tarea productiva se ejecutó en este change; los comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -21,6 +21,12 @@
   - **When/Then:** WHEN arranca una cola con MinIO o Azure THEN solo se invoca un método existente del provider y no se repite el bug de master (`queue:73/146`).
   - **Test:** `python -m pytest ml/tests/test_service.py -q`.
   - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, “Contrato público estricto del servicio ML”.
+
+- [x] 0.4 Crear `contracts/testing-runbook.md` con fases, precondiciones, comandos verificados, comandos `FUTURO` y stop de pasos peligrosos.
+  - **Scope:** `contracts/testing-runbook.md`; sin código productivo ni tests fuente.
+  - **When/Then:** WHEN se prepara una fase THEN distingue objetivo, precondiciones, comandos actuales vs `FUTURO`, criterio de stop y verificación; WHEN un test falla THEN no se hace commit de esa fase.
+  - **Test:** `openspec validate consolidate-backend-ml-azure --strict` y `git diff --check` (comprobación documental).
+  - **Coverage:** D13, “Pruebas con recursos creados sin filtrar secretos”, “Separación entre bloqueo de deploy y bloqueo de diseño”.
 
 ## 1. Esquema y migraciones (grupos independientes)
 
@@ -99,19 +105,19 @@
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con casos de una/dos ejecuciones y mezcla de estados.
   - **Coverage:** “Estado agregado de consulta con precedencia determinista”, “Separación entre estado de ejecución, etapa, artefacto y consulta”.
 
-- [ ] 2.4 Tratar `REVIEW_REQUIRED` como terminal de espera automática y evitar cierre automático.
-  - **Scope:** `backend/src/workers/inference.worker.ts:33-47`, estado de revisión en repositorio.
-  - **When/Then:** WHEN el ML devuelve `REVIEW_REQUIRED` THEN el worker deja de esperar y persiste revisión; WHEN existe PDF THEN no cambia a `COMPLETED` sin resolución humana.
+- [ ] 2.4 Tratar `REVIEW_REQUIRED` como terminal de espera automática y evitar cierre o conversión automática.
+  - **Scope:** `backend/src/workers/inference.worker.ts:33-47`, estado de revisión en repositorio, caso de reanálisis en `backend/src/routes/inferences.ts`.
+  - **When/Then:** WHEN el ML devuelve `REVIEW_REQUIRED` THEN el worker deja de esperar y persiste revisión; WHEN el médico intenta cerrar sin resultado válido THEN no se convierte a `COMPLETED`; WHEN existe PDF THEN no cambia a `COMPLETED` ni se autoaprueba; la resolución es un reanálisis como ejecución nueva con PDF independiente vinculado, sin pisar la anterior.
   - **Depends on:** 2.3.
-  - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` (worker stub) y `python -m pytest ml/tests/test_service.py -q`.
-  - **Coverage:** “Revisión humana terminal sin cierre automático”, “Estados de job y resultado completo”.
+  - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` (worker stub) y `python -m pytest ml/tests/test_service.py -q`; ver guard de DB en `contracts/testing-runbook.md`.
+  - **Coverage:** “Revisión humana terminal sin cierre automático”, B1 como restricción aprobada, “Estados de job y resultado completo”.
 
 - [ ] 2.5 Fijar selección requerida al iniciar y excluir reanálisis históricos no seleccionados.
   - **Scope:** `backend/src/services/consultation-completion.ts`, `backend/src/repositories/consultation.repo.ts`, `backend/src/routes/consultations.ts`.
-  - **When/Then:** WHEN se inicia la consulta THEN `requiredExecutionIds` y `requiredSetVersion` quedan fijados; WHEN existe un reanálisis posterior no seleccionado THEN no cambia la completitud de la consulta cerrada.
+  - **When/Then:** WHEN se inicia la consulta THEN `requiredExecutionIds` y `requiredSetVersion` quedan fijados; WHEN existe un reanálisis posterior no seleccionado THEN no cambia la completitud de la consulta cerrada; WHEN se intenta promover o reemplazar un ID tras cierre THEN se rechaza por B2 (restricción aprobada) y no se reabre ni altera la consulta automáticamente.
   - **Depends on:** 2.2, 2.3.
-  - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts`.
-  - **Coverage:** “Selección explícita de ejecuciones requeridas y cambio tras cierre”, “Reanálisis enlazado sin sobrescribir evidencia”.
+  - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts`; ver guard de DB en `contracts/testing-runbook.md`.
+  - **Coverage:** “Selección explícita de ejecuciones requeridas y cambio tras cierre” como frozen set, “Reanálisis enlazado sin sobrescribir evidencia”, B2 como restricción aprobada.
 
 - [ ] 2.6 Exponer agregados de consulta sin enum DB nuevo.
   - **Scope:** `backend/src/services/consultation-completion.ts`, `backend/src/routes/consultations.ts`, `backend/src/schemas/consultation.ts`.
@@ -277,11 +283,11 @@
   - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts tests/repositories.test.ts` con fallo inyectado.
   - **Coverage:** “Auditoría append-only de acciones sensibles”.
 
-- [ ] 5.6 Implementar borrado excepcional y bloqueo de supresión sin política.
-  - **Scope:** repositorio/servicio de usuarios; validación de actividad; auditoría.
-  - **When/Then:** WHEN la cuenta tiene actividad THEN el borrado físico se deniega; WHEN no hay política de supresión THEN no se anonimiza ni elimina automáticamente.
-  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts`.
-  - **Coverage:** “Borrado físico excepcional y supresión de identidad”, “Desactivación y preservación de autoría”.
+- [ ] 5.6 Implementar desactivación segura y bloqueo de supresión; hard delete fuera de este hito.
+  - **Scope:** repositorio/servicio de usuarios; desactivación + revocación de sesiones; validación de actividad solo para una futura excepción; auditoría. **No implementar hard delete en este hito**, ni siquiera para cuentas sin actividad.
+  - **When/Then:** WHEN se desactiva una cuenta THEN conserva autoría/historial y se revocan sus sesiones; WHEN se solicita borrado físico THEN se rechaza o queda no disponible en este hito; WHEN no hay política de supresión THEN no se anonimiza ni elimina automáticamente; WHEN se procesan datos clínicos reales sin governance THEN fail closed.
+  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts`; ver guard de DB en `contracts/testing-runbook.md`.
+  - **Coverage:** “Desactivación y preservación de autoría”, “Borrado físico excepcional y supresión de identidad” como restricción, B3/B4/B5 solo producción.
 
 - [ ] 5.7 Implementar sesiones técnicas: JWT 15 min, `sessionId`, `tokenVersion`, store durable.
   - **Scope:** `backend/src/routes/auth.ts`, `backend/src/middleware/auth.ts`, `backend/src/repositories/user.repo.ts`, `backend/src/services/session.ts`.
@@ -298,11 +304,11 @@
   - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”.
 
 - [ ] 5.9 Implementar forgot/reset con token 30 min, hash, sin logs y proveedor configurable.
-  - **Scope:** `backend/src/routes/auth.ts`, `backend/src/services/password-reset.ts`; integración de envío configurable.
-  - **When/Then:** WHEN forgot THEN `202` uniforme con rate limit; WHEN reset THEN token single-use 30 min, hash, sin logs, revoca todas; WHEN no hay proveedor/remitente aprobado THEN el envío real queda deshabilitado sin bloquear el flujo.
+  - **Scope:** `backend/src/routes/auth.ts`, `backend/src/services/password-reset.ts`; integración de envío configurable con adaptador memory sink primero.
+  - **When/Then:** WHEN forgot THEN `202` uniforme con rate limit y sin user enumeration; WHEN reset THEN token single-use 30 min, hash, sin logs, revoca todas; WHEN se prueba THEN se usa primero el adaptador con sink en memoria; WHEN no hay direcciones/proveedor configurados THEN el envío real queda deshabilitado sin bloquear el flujo; WHEN se habilite envío real THEN solo a destinatarios autorizados explícitos, sin PHI ni enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales.
   - **Depends on:** 5.7, 5.8.
-  - **Test:** `npm --prefix backend run test -- tests/jwt.test.ts` con proveedor stub.
-  - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”.
+  - **Test:** `npm --prefix backend run test -- tests/jwt.test.ts` con proveedor stub/memory sink; ver guard de DB en `contracts/testing-runbook.md`.
+  - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”, B8 como restricción de provisioning.
 
 ## 6. PDF básico y reportes
 
@@ -336,15 +342,15 @@
 ## 7. Pruebas transversales y métricas
 
 - [ ] 7.1 Crear suite de contratos con stub ML y casos adversos.
-  - **Scope:** `backend/tests/` nuevos casos; `ml/tests/` stubs; sin Azure real.
+  - **Scope:** `backend/tests/` nuevos casos; `ml/tests/` stubs; sin Azure real; seguir `contracts/testing-runbook.md`.
   - **When/Then:** WHEN corre la suite THEN cubre URL expirada, host no permitido, etiqueta desconocida, payload inválido, `202` perdido, reinicio, duplicado, objeto ausente, upload OK/DB fail, storage caído, provider desconocido y auditoría fallida.
-  - **Test:** `npm --prefix backend run test` y `python -m pytest ml/tests -q` (solo en entorno aislado; no ejecutar en este change).
+  - **Test:** `npm --prefix backend run test` y `python -m pytest ml/tests -q` solo en entorno aislado; **no ejecutar en este change** y no tratar un test focalizado como libre del `globalSetup` destructivo.
   - **Coverage:** todas las capacidades adversas.
 
 - [ ] 7.2 Crear E2E completo con DB creada/adoptada explícitamente y ownership marker.
-  - **Scope:** suite E2E; `TEST_DATABASE_URL` con DB creada/adoptada para el run, marker de ownership, allowlist de target y deny producción; **no** basta que el nombre contenga `test`.
+  - **Scope:** suite E2E; `TEST_DATABASE_URL` con DB creada/adoptada para el run, marker de ownership, allowlist de target y deny producción; **no** basta que el nombre contenga `test`. Ver `contracts/testing-runbook.md` fase 3.
   - **When/Then:** WHEN corre el E2E THEN verifica marker/allowlist antes de tocar datos y cubre auth, paciente, consulta, upload sanitizado, request, polling, persistencia completa, artefactos firmados, feedback, export y PDF; nunca hace `DROP` por string `test`.
-  - **Test:** comando E2E con guard de ownership (prospectivo; no ejecutar en este change).
+  - **Test:** comando E2E con guard de ownership (prospectivo; no ejecutar en este change; no inventar `npm run e2e`).
   - **Coverage:** flujo prioritario completo; “Contrato HTTP único y explícito para frontend”.
 
 - [ ] 7.3 Verificar sanitización, tamaño, formato y lateralidad antes de persistir.
@@ -354,16 +360,16 @@
   - **Coverage:** RF02; “Nombres canónicos, mapeo y lateralidad”.
 
 - [ ] 7.4 Crear E2E real Azure posterior con autenticación, imagen → Blob → ML → mask/overlay → DB → PDF → URLs.
-  - **Scope:** E2E de Azure real solo con B6 aprobado; incluye stores ausentes.
-  - **When/Then:** WHEN se ejecuta en Azure autorizado THEN verifica el flujo completo y la firma/descarga; WHEN falta un store THEN reporta fallo explícito.
+  - **Scope:** E2E de Azure real solo con B6 confirmado (presupuesto/duración/scope y contexto/permisos) y cleanup final; incluye stores ausentes; ver `contracts/testing-runbook.md` fase 6.
+  - **When/Then:** WHEN se ejecuta en Azure autorizado THEN verifica el flujo completo, negative-auth y la firma/descarga; WHEN falta un store THEN reporta fallo explícito; WHEN termina THEN limpia con manifest y verifica residuos.
   - **Depends on:** 3.2, 3.4, 6.1, 6.2.
-  - **Test:** comando E2E Azure (no ejecutar en este change; bloqueado por B6).
+  - **Test:** comando E2E Azure (no ejecutar en este change; B6 parcial, no deployment ready).
   - **Coverage:** “Pruebas con recursos creados sin filtrar secretos”, “Abstracción de almacenamiento dual y firma por provider”.
 
 - [ ] 7.5 Crear medición reproducible de RNF sin declarar cumplimiento anticipado.
-  - **Scope:** benchmark de p95 carga→resultado, 50 concurrentes, cobertura, AUC y disponibilidad; documentación de entorno.
-  - **When/Then:** WHEN se ejecuta THEN reporta valores observados y metodología; WHEN no hay evidencia THEN no se afirma cumplimiento.
-  - **Test:** scripts de benchmark en entorno aprobado (no ejecutar en este change).
+  - **Scope:** benchmark de p95 carga→resultado **de flujo completo** (no solo forward), 50 concurrentes, cobertura, AUC y disponibilidad; documentación de entorno; `scripts/benchmark_latency.py` actual es baseline forward-only y no evidencia el p95 full-flow.
+  - **When/Then:** WHEN se ejecuta THEN reporta valores observados y metodología; WHEN no hay evidencia THEN no se afirma cumplimiento; los benchmarks se ejecutan separados de las fases funcionales.
+  - **Test:** scripts de benchmark en entorno aprobado (no ejecutar en este change; p95 full-flow es `FUTURO` hasta que exista el script).
   - **Coverage:** RNF medibles.
 
 ## 8. Azure aislado
@@ -380,11 +386,11 @@
   - **Test:** simulación con provider stub; no crear recursos reales.
   - **Coverage:** “Manifest de recursos y cleanup en `finally`”, “Verificación de borrado y recursos residuales”.
 
-- [ ] 8.3 Documentar y probar el bloqueo de deploy hasta confirmar suscripción, alcance, presupuesto y duración.
-  - **Scope:** script/README operativo; registro de decisiones.
-  - **When/Then:** WHEN faltan datos THEN el script no crea recursos y el hito no se declara listo para desplegar.
-  - **Test:** validación de precondiciones con valores ausentes.
-  - **Coverage:** “Separación entre bloqueo de deploy y bloqueo de diseño”, “Provisión aislada por ejecución con alcance confirmado”.
+- [ ] 8.3 Documentar y probar el bloqueo de deploy hasta confirmar suscripción, alcance, presupuesto, duración, contexto y permisos justo antes de crear.
+  - **Scope:** script/README operativo; registro de decisiones; sin IDs ni nombres de suscripción en docs.
+  - **When/Then:** WHEN faltan datos o no se confirmó el contexto default/permisos con dry-run o lecturas THEN el script no crea recursos y el hito no se declara listo para desplegar; WHEN solo existe el contexto CLI leído THEN se registra como prerequisito parcial, no como deployment ready.
+  - **Test:** validación de precondiciones con valores ausentes; lectura CLI read-only no crea recursos.
+  - **Coverage:** “Separación entre bloqueo de deploy y bloqueo de diseño”, “Provisión aislada por ejecución con alcance confirmado”, B6 parcialmente satisfecho.
 
 ## 9. Hito posterior — deferred, unchecked, NO bloqueado por producto
 
@@ -418,33 +424,35 @@
   - **Scope:** documentación y endpoints no prioritarios.
   - **Coverage:** “Contrato HTTP único y explícito para frontend”.
 
-## 10. Bloqueadas por decisión — NO ACTIVAR
+## 10. Decisiones, restricciones y fuera de alcance
 
-| ID | Tarea bloqueada | Bloqueo | Condición para activar |
+> No es una lista de tareas a activar. Las filas `RESUELTO/RESTRICCIÓN` se implementan como restricción; las filas `SOLO PRODUCCIÓN` no bloquean desarrollo ni pruebas sintéticas/PAPILA con acceso mínimo; `B6` está parcialmente satisfecho por CLI y no es deployment ready; `B9` queda fuera de alcance.
+
+| ID | Tarea / decisión | Estado | Efecto |
 |---|---|---|---|
-| BL-01 | Resolución humana de `REVIEW_REQUIRED` | B1 | Regla clínica aprobada: quién, evidencia y transición. |
-| BL-02 | Cambio/promoción de `requiredExecutionIds` tras cierre | B2 | Regla y versión documentadas; no asumir cierre retroactivo. |
-| BL-03 | Retención/purga numérica | B3 | Plazos aprobados por tipo de dato. |
-| BL-04 | Consentimiento, lectura de política de privacidad y anonimización | B4 | Política y base legal aprobadas; no afirmar anonimización por HMAC. |
-| BL-05 | Supresión de identidad/legal y excepción de borrado físico con actividad | B5 | Procedimiento, alcance y excepción aprobados. |
-| BL-06 | Ejecutar deploy real en Azure | B6 | Suscripción, scope, presupuesto y duración confirmados. |
-| BL-07 | RF07 unimodal / RF15 comparación | B7 | Aclaración de alcance y contrato. |
-| BL-08 | Habilitar envío real de email para forgot/reset | B8 | Proveedor, remitente, credenciales y política de envío aprobados; diseño/implementación no bloqueados. |
-| BL-09 | `DatabaseFeedbackSource` con SQLAlchemy | B9 | Decisión de producto y dependencia aprobadas. |
+| D-01 | Resolución de `REVIEW_REQUIRED` (B1) | **RESUELTO / RESTRICCIÓN APROBADA** | El médico no convierte una ejecución sin resultado válido en `COMPLETED`; `REVIEW_REQUIRED` se preserva y se resuelve por reanálisis como ejecución nueva con imagen/snapshot nuevos si procede y PDF independiente vinculado, sin pisar la anterior. No endpoint approve-review ejecutable ni auto-complete manual; el endpoint review queda deferred y no es target del producto actual. |
+| D-02 | Cambio/promoción de `requiredExecutionIds` tras cierre (B2) | **RESUELTO / RESTRICCIÓN APROBADA** | No se reabre ni altera automáticamente una consulta completada; no se promueven ni reemplazan IDs tras cierre; los reanálisis históricos independientes no modifican el frozen set. |
+| D-03 | Retención/purga numérica (B3) | PENDIENTE SOLO PRODUCCIÓN | No se fijan plazos ni se declara cumplimiento legal. No bloquea desarrollo ni pruebas sintéticas/PAPILA; bloquea purgas y producción real. |
+| D-04 | Consentimiento, privacidad y anonimización (B4) | PENDIENTE SOLO PRODUCCIÓN | No se afirma anonimización por HMAC ni cumplimiento legal. No bloquea desarrollo ni pruebas sintéticas/PAPILA; fail closed con datos clínicos reales sin governance. |
+| D-05 | Supresión de identidad/legal y hard delete (B5) | PENDIENTE SOLO PRODUCCIÓN | Desactivación + revocación es la acción del hito; no hay hard delete en este hito, ni siquiera sin actividad; sin cascada ni reasignación. La excepción futura requiere política. |
+| D-06 | Ejecutar deploy real en Azure (B6) | **PARCIALMENTE SATISFECHO (CLI) / NO DEPLOYMENT READY** | Lectura CLI read-only verificada sin crear/destruir recursos; faltan presupuesto numérico, duración, scope y confirmación de contexto/permisos. No se declaran capa gratuita, cuotas ni RBAC. El deploy real sigue bloqueado. |
+| D-07 | RF07 unimodal / RF15 comparación (B7) | DEFERRED / NO BLOQUEO | No se implementan ni simulan. |
+| D-08 | Envío real de email para forgot/reset (B8) | PENDIENTE SOLO PROVISIONING | Diseño/implementación y tests con sink en memoria no bloqueados; el envío real solo a destinatarios autorizados explícitos, sin PHI/enlaces secretos, sin versionar direcciones/datos personales/credenciales, con rate limit y sin user enumeration. |
+| D-09 | `DatabaseFeedbackSource` con SQLAlchemy (B9) | **FUERA DE ALCANCE / NO BLOQUEO** | No se añade la dependencia ni se implementa en este hito; no bloquea el change. |
 
 ## 11. Trazabilidad aceptación → spec → tarea → test
 
-> Códigos RF/HU usados solo cuando están citados por el encargo/SRS: RF02 (imagen), HU01 (login), HU08 (PDF), RF07/RF15 (bloqueados). Las filas sin código no inventan uno; se apoyan en el título de requirement y en el test planificado.
+> Códigos RF/HU usados solo cuando están citados por el encargo/SRS: RF02 (imagen), HU01 (login), HU08 (PDF), RF07/RF15 (diferidos). Las filas sin código no inventan uno; se apoyan en el título de requirement y en el test planificado. Los comandos con DB siguen el guard de `contracts/testing-runbook.md`.
 
 | Aceptación | Requirement existente | Tareas | Test planificado |
 |---|---|---|---|
 | Ejecución única, lateralidad y snapshot | “Una ejecución analiza una sola retinografía con lateralidad”; “Snapshot clínico inmutable por ejecución” | 1.1, 2.1, 2.2 | `npm --prefix backend run test -- tests/repositories.test.ts tests/schemas.test.ts` (nuevos casos) |
-| Reanálisis sin sobrescritura y reanálisis histórico excluido | “Reanálisis enlazado sin sobrescribir evidencia” | 2.2, 2.5 | `npm --prefix backend run test -- tests/repositories.test.ts` (nuevo caso histórico) |
-| IDs requeridos explícitos y cambio tras cierre | “Selección explícita de ejecuciones requeridas y cambio tras cierre” | 2.5, BL-02 | Test nuevo de selección/frozen; caso bloqueado B2 |
+| Reanálisis sin sobrescritura y reanálisis histórico excluido | “Reanálisis enlazado sin sobrescribir evidencia” | 2.2, 2.5, D-01, D-02 | `npm --prefix backend run test -- tests/repositories.test.ts` (nuevo caso histórico); PDF independiente |
+| IDs requeridos explícitos y cambio tras cierre | “Selección explícita de ejecuciones requeridas y cambio tras cierre” | 2.5, D-02 | Test de frozen set; B2 restricción aprobada (sin promoción tras cierre) |
 | Precedencia de estados y `REPORT_PENDING` | “Estado agregado de consulta con precedencia determinista” | 2.3, 2.6, 4.10 | `npm --prefix backend run test -- tests/repositories.test.ts` (mezcla FAILED/REVIEW/running) |
-| Revisión terminal sin autoaprobar | “Revisión humana terminal sin cierre automático” | 2.4, BL-01 | Worker stub; test de PDF de revisión |
+| Revisión terminal sin autoaprobar ni convertir | “Revisión humana terminal sin cierre automático”; “Reporte de revisión con limitación explícita” | 2.4, 6.3, D-01 | Worker stub; PDF de revisión; reanálisis con PDF independiente; B1 restricción aprobada |
 | Artefactos, estados y referencia única | “Catálogo de artefactos y obligatoriedad por ruta”; “Estado explícito por artefacto”; “Referencia de artefacto estructurada y estable” | 1.2, 3.3, 3.4 | `npm --prefix backend run test -- tests/schemas.test.ts tests/repositories.test.ts` |
-| Storage dual Azure/MinIO | “Abstracción de almacenamiento dual y firma por provider” | 3.1, 3.2, 3.8, 7.4 | Tests Azure fake/Azurite + MinIO; E2E real Azure bloqueado B6 |
+| Storage dual Azure/MinIO | “Abstracción de almacenamiento dual y firma por provider” | 3.1, 3.2, 3.8, 7.4 | Tests Azure fake/Azurite + MinIO; E2E real Azure condicionado a B6 (parcial, no deployment ready) |
 | URLs firmadas, permisos y logs | “Autorización y firma de descargas bajo demanda”; “Prohibición de persistir credenciales temporales y URLs arbitrarias” | 3.4, 3.7 | `npm --prefix backend run test -- tests/rbac.test.ts` |
 | Contrato ML estricto | “Contrato público estricto del servicio ML” | 4.1 | `python -m pytest ml/tests/test_service.py -q` |
 | Idempotencia obligatoria y `202` recuperable | “Idempotencia persistida del backend” | 1.3, 4.4, 4.5 | Test nuevo de pérdida de `202`, replay y concurrencia |
@@ -455,12 +463,14 @@
 | HU01 5 consecutivos/15 min | “Autenticación con bloqueo HU01 y rate limit” | 5.3 | `npm --prefix backend run test -- tests/jwt.test.ts` (reloj/concurrencia) |
 | Sesiones/refresh/reset técnicos | “Sesiones, refresh, logout y recuperación seguros” | 5.1, 5.7, 5.8, 5.9 | `npm --prefix backend run test -- tests/jwt.test.ts tests/rbac.test.ts` |
 | Último admin | “Protección del último administrador activo” | 5.4 | `npm --prefix backend run test -- tests/rbac.test.ts` (concurrencia) |
-| Auditoría/borrado | “Auditoría append-only de acciones sensibles”; “Borrado físico excepcional y supresión de identidad” | 5.5, 5.6, BL-04/BL-05 | `npm --prefix backend run test -- tests/rbac.test.ts` (fallo inyectado) |
+| Auditoría/desactivación/supresión | “Auditoría append-only de acciones sensibles”; “Desactivación y preservación de autoría”; “Borrado físico excepcional y supresión de identidad” | 5.5, 5.6, D-03/D-04/D-05 | `npm --prefix backend run test -- tests/rbac.test.ts` (fallo inyectado); sin hard delete en el hito |
 | PDF básico con original+mask+overlay | “PDF básico obligatorio para completitud”; “Contenido clínico y trazabilidad del PDF” | 6.1, 6.3 | Test nuevo de PDF real: texto, imágenes renderizadas, faltantes |
 | PDF versionado y HU08 | “Idempotencia y versionado del reporte”; “Criterio medible de generación institucional (HU08)” | 6.2, 6.4 | Test de versiones; benchmark HU08 |
 | DB/migración condicionada | “Database Schema Initialization (init.sql)” | 1.1, 1.2, 1.3, 1.5 | `npm --prefix backend run test -- tests/migrations.test.ts` |
-| Azure aislado/cleanup | “Provisión aislada por ejecución con alcance confirmado”; “Manifest de recursos y cleanup en `finally`”; “Verificación de borrado y recursos residuales” | 8.1, 8.2, 8.3, BL-06 | Dry-run/stub; deploy real bloqueado B6 |
+| Azure aislado/cleanup | “Provisión aislada por ejecución con alcance confirmado”; “Manifest de recursos y cleanup en `finally`”; “Verificación de borrado y recursos residuales” | 8.1, 8.2, 8.3, D-06 | Dry-run/stub; CLI solo prereq parcial; deploy real bloqueado hasta presupuesto/duración/scope/contexto/permisos |
 | Grad-CAM/SHAP diferidos | “Generador de explicabilidad Grad-CAM”; “Explicabilidad diferida explícita” | 9.5, 9.6 | Test de reporte independiente futuro |
 | Imagen JPEG/PNG >=512 px y <=20 MB (RF02) | “Nombres canónicos, mapeo y lateralidad”; “Endpoints prioritarios de la consolidación” | 7.3 | `npm --prefix backend run test -- tests/sanitizer.test.ts tests/schemas.test.ts` |
-| RF07 unimodal / RF15 comparación | No implementar ni simular; bloqueo B7 | BL-07 | Revisión de alcance; no se simula ni se declara implementado |
+| RF07 unimodal / RF15 comparación | No implementar ni simular; B7 diferido | D-07 | Revisión de alcance; no se simula ni se declara implementado |
+| Email real con governance (B8) | “Sesiones, refresh, logout y recuperación seguros”; “Envío real de email no configurado” | 5.9, D-08 | Memory sink; envío real solo a destinatarios autorizados, sin PHI/enlaces secretos ni versionado de direcciones/credenciales |
+| DB feedback/SQLAlchemy fuera de alcance (B9) | “Database Feedback Source for Retraining” | D-09 | Revisión de alcance; sin dependencia nueva |
 | RNF medidos | “Criterio medible de generación institucional (HU08)” + metas RNF del design | 6.4, 7.5 | Benchmarks aislados; no afirmar sin evidencia |
