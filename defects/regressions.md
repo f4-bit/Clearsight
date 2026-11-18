@@ -1,0 +1,32 @@
+# Registro de regresiones
+
+> Registro documental basado **solo en verificación estática** del código de la rama `feat/backend-ml-consolidation`. No contiene resultados de ejecución, recuentos de tests ni datos sensibles. Las entradas marcadas `activo` describen comportamiento observable en el código actual; las marcadas `resuelto` describen un incidente corregido. Ningún estado `cubierto` se declara sin un test de regresión verificable.
+
+| Campo | Contenido |
+|---|---|
+| ID | Identificador corto, por ejemplo REG-001. |
+| Fecha | Fecha del incidente o del hallazgo. |
+| Síntoma | Qué observó el usuario o el monitoreo. |
+| Causa raíz | Por qué ocurrió, con archivo:línea cuando aplique. |
+| Categoría de fallo | concurrencia, timeout, idempotencia, recursos, estado, tiempo, esquema, permisos, dependencia, precisión, encoding, otro. |
+| Condición límite | El escenario exacto que lo disparó. |
+| Test de regresión | Ruta del test que lo cubre. |
+| Estado | cubierto, pendiente o descartado. |
+
+Reglas:
+1. Un incidente, una entrada.
+2. Sin test de regresión, el estado es pendiente.
+3. El humano lo actualiza; el agente solo crea el archivo cuando falta.
+
+## Entradas
+
+| ID | Fecha | Síntoma | Causa raíz | Categoría | Condición límite | Test de regresión | Situación | Estado |
+|---|---|---|---|---|---|---|---|---|
+| REG-001 | 2026-11-18 | El servicio ML no arranca o falla al crear buckets cuando el storage configurado es Azure Blob. | `ensure_buckets` solo existe en `MinioArtifactStore` (`ml/service/storage.py:59-70`); `AzureBlobArtifactStore` no lo implementa (`ml/service/storage.py:95-166`), pero ambos arranques de cola lo invocan (`ml/service/queue.py:84,157`). | dependencia / recursos | Arranque del pipeline con endpoint Azure Blob y `ML_MINIO_REQUIRED=true`. | Pendiente: test de arranque con `ArtifactStore` Azure (stub) que verifique que no se llama un método inexistente. | activo | pendiente |
+| REG-002 | 2026-11-18 | El worker espera indefinidamente o falla un job que el ML terminó en revisión. | El bucle solo considera terminales `COMPLETED` y `FAILED` (`backend/src/workers/inference.worker.ts:33-47`); `REVIEW_REQUIRED` no es terminal para el worker. | estado | Resultado ML con `status=REVIEW_REQUIRED`. | Pendiente: test del worker con resultado `REVIEW_REQUIRED` que verifique el estado persistido y que no se lance como fallo genérico. | activo | pendiente |
+| REG-003 | 2026-11-18 | Una consulta aparece `COMPLETED` aunque falte la otra lateralidad, falte el PDF o una ejecución esté en revisión. | Tras un solo job, el worker actualiza la consulta a `COMPLETED` sin evaluar todas las ejecuciones requeridas (`backend/src/workers/inference.worker.ts:85-95`). | estado | Consulta con más de una ejecución requerida o con una sola ejecución en revisión. | Pendiente: test de agregación de consulta que exija todas las ejecuciones requeridas con resultado, evidencia y PDF. | activo | pendiente |
+| REG-004 | 2026-11-18 | El resultado persistido pierde CDR vertical, calidad, artefactos, tiempo y versiones; Grad-CAM queda vacío. | El worker escribe solo un subconjunto de campos (`backend/src/workers/inference.worker.ts:74-83`), aunque el repositorio soporta más (`backend/src/repositories/inference.repo.ts:30-45`); además lee `result.artifacts?.gradcam` (`backend/src/workers/inference.worker.ts:67`) mientras el pipeline publica `mask`/`overlay` (`ml/inference/pipeline.py:104-127`). | precisión / estado | Cualquier resultado con CDR, calidad, artefactos o versiones. | Pendiente: test de persistencia completa del `InferenceResult` y de artefactos `mask`/`overlay`. | activo | pendiente |
+| REG-005 | 2026-11-18 | Cualquier cliente puede registrarse como administrador. | `POST /auth/register` acepta `role` del body y crea el usuario sin restricción (`backend/src/routes/auth.ts:18-60`). | permisos | Alta pública con `role=ADMIN`. | Pendiente: test de alta pública que verifique que no se crea un `ADMIN`. | activo | pendiente |
+| REG-006 | 2026-11-18 | Una cuenta desactivada sigue usando un token válido hasta que expira. | `authenticate` solo verifica la firma y el payload del JWT; no consulta `isActive` (`backend/src/middleware/auth.ts:12-24`), aunque el campo existe (`backend/prisma/schema.prisma:34`). | permisos / estado | Login o uso de token de un usuario con `is_active=false`. | Pendiente: test de petición autenticada con cuenta inactiva que espere `401`. | activo | pendiente |
+| REG-007 | 2026-11-18 | Una base con esquema divergente puede quedar marcada como migrada sin serlo. | El comando cae a `prisma migrate resolve --applied 0_init` de forma indiscriminada (`docker/migrate.Dockerfile:18`) si falla `migrate deploy`. | esquema | `migrate deploy` falla por una causa distinta de la ausencia del baseline. | Pendiente: test del entrypoint de migración con esquema divergente que espere fallo explícito y no resolución automática. | activo | pendiente |
+| REG-008 | 2026-11-18 | Un job con payload malformado podía detener el consumidor de la cola o perder el round-trip del alias clínico. | El worker de Redis no aislaba el error de parseo y el alias `Phakic_Pseudophakic` no sobrevivía el round-trip (corregido en `ded48db`); el estado actual normaliza legacy y aísla payload inválido (`ml/service/queue.py:23-32,187-202`). | encoding / estado | Payload legacy o JSON inválido en la cola. | Pendiente: test de payload inválido que verifique que la cola sigue drenando y de round-trip del alias. | resuelto | pendiente |

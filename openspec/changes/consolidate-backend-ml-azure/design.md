@@ -1,0 +1,372 @@
+# Design: consolidate-backend-ml-azure
+
+## Context
+
+El repositorio contiene un backend Node/Fastify, un servicio ML Python/FastAPI, PostgreSQL con Prisma, Redis/BullMQ, MinIO y piezas de Azure. La rama activa parte de `origin/feat/backend-core` (`ce2b8c8`) y contiene los fixes ML `ded48db` y `92a6887`. `e5d184a` pertenece solo a `master` y es un subconjunto de trabajo ML; no se asume que deba cherry-pickearse a ciegas ni que forme parte de esta rama. El frontend existe, pero **no se implementa ni se modifica en este change**; los mocks actuales no son fuente de verdad.
+
+La consolidación busca una fuente de verdad documental y verificable. La evidencia estática revisada muestra brechas concretas:
+
+- El servicio ML crea buckets solo en MinIO, pero los dos caminos de arranque lo invocan sin distinguir Azure: `ml/service/storage.py:59-70`, `ml/service/storage.py:95-166`, `ml/service/queue.py:84,157`.
+- El worker backend solo espera `COMPLETED`/`FAILED`, ignora `REVIEW_REQUIRED`, persiste un subconjunto del resultado y marca la consulta como `COMPLETED` de forma prematura: `backend/src/workers/inference.worker.ts:33-47,67,74-83,91-95`.
+- El repositorio sí soporta más campos de resultado que los que el worker escribe: `backend/src/repositories/inference.repo.ts:30-45`.
+- El alta de usuarios es pública y acepta el rol enviado por el cliente: `backend/src/routes/auth.ts:18-60`; la autenticación no comprueba `isActive`: `backend/src/middleware/auth.ts:12-24`.
+- La migración cae a `prisma migrate resolve --applied 0_init` de forma indiscriminada: `docker/migrate.Dockerfile:18`.
+- Las rutas clínicas de lectura no aplican ownership completo: `backend/src/routes/consultations.ts:173-229`, `backend/src/routes/inferences.ts:93-143`.
+- No existe `defects/regressions.md` en la rama; este change crea el registro como primera tarea documental cuando aporta valor, sin inventar runtime.
+
+El SRS `SRS ClearSight.pdf` es un archivo local no trackeado del usuario. El arquitecto lo leyó completo mediante la herramienta de lectura en un turno anterior; sus requisitos RF/HU se citan desde esa lectura y el PDF **no se incluye, versiona ni modifica**. No se añade un hash al change para evitar confundir trazabilidad documental con versionado; la fuente sigue siendo el archivo local del usuario.
+
+Las specs bajo `openspec/specs/` también están ignoradas: `git ls-files -- openspec` devuelve vacío. Se consultaron solo como contexto local para redactar requisitos y no son baseline oficial ni dependencia de entrega. Por eso `azure-deployment-automation`, `azure-readiness-and-init-sql` y `ml-serving-optimization` se empaquetan como capacidades **iniciales** con `ADDED Requirements` completos; un clon limpio no necesita esos archivos locales para validar o archivar el change.
+
+## Goals / Non-Goals
+
+**Goals:**
+
+1. Fijar un contrato único para paciente, consulta y ejecución, incluyendo lateralidad, snapshot clínico, reanálisis y completitud.
+2. Definir el ciclo de vida de artefactos y su referencia estable, con autorización y firma de descargas en backend.
+3. Especificar el contrato público del servicio ML, la orquestación at-least-once y la persistencia completa e idempotente del resultado.
+4. Definir autenticación, roles, ownership, auditoría, bloqueo por intentos y protecciones de administración.
+5. Definir el PDF básico obligatorio, su idempotencia y versionado.
+6. Preparar Azure como despliegue aislado y limpiable, con decisiones faltantes explícitamente bloqueantes.
+7. Entregar una tabla de endpoints y estados suficiente para que frontend implemente sin leer código fuente.
+8. Dejar tareas ordenadas y trazables, sin marcar como hechas las que dependen de decisiones pendientes.
+
+**Non-Goals:**
+
+1. Implementar frontend, mocks o estilos.
+2. Simular o implementar RF07 unimodal ni RF15 comparación; ambos quedan pendientes de aclaración.
+3. Implementar Grad-CAM o SHAP ahora; se mantienen como requisitos SRS diferidos y entregables separados.
+4. Implementar historial/filtros/paginación, administración/auditoría operativa, PDF enriquecido o APIs/documentación adicionales en el primer hito.
+5. Desplegar en Azure, leer `.env.azure`, exponer secretos o ejecutar pruebas destructivas.
+6. Declarar cumplimiento de RNF sin medición reproducible.
+7. Añadir dependencias nuevas (por ejemplo `SQLAlchemy` o `DatabaseFeedbackSource`) mientras no exista decisión explícita.
+
+## Decisions
+
+### D1. Una ejecución analiza una retinografía y un snapshot clínico inmutable
+
+**Decisión (agreed):** La unidad de análisis es `execution` (ejecución). Una ejecución referencia:
+
+- exactamente un `image_id` y una lateralidad `eye_side` (`OD`/`OS`) como **metadato**, no como segundo archivo;
+- exactamente un `clinical_snapshot_id` inmutable, con payload crudo, payload normalizado, versión de esquema y revisiones de modelo;
+- el paciente y la consulta a los que pertenece.
+
+Un reanálisis crea una **nueva ejecución enlazada** (`reanalysis_of_execution_id`) y nunca modifica la evidencia, el resultado ni el PDF de una ejecución anterior.
+
+**Razón:** Evita perder trazabilidad clínica y permite auditar qué snapshot, modelo y artefactos produjeron cada resultado. Alternativa descartada: actualizar la fila `inferences` existente, que pisaría evidencia pasada.
+
+### D2. Paciente, consulta y ejecución tienen identidades y estados separados
+
+**Decisión (agreed):** Se distinguen tres niveles:
+
+| Nivel | Responsabilidad | Estado |
+|---|---|---|
+| Paciente | Identidad pseudónima y datos base | Sin estado de análisis |
+| Consulta | Agrupa ejecuciones y fija una selección explícita de ejecuciones requeridas | `analysisState` + `reportState` + `completionState` derivados |
+| Ejecución | Un análisis de una imagen y un snapshot | `JobStatus` de la ejecución y estados por artefacto |
+
+`COMPLETED` de una ejecución ML **no** es un valor de estado de consulta ni implica consulta completada. La consulta solo se considera completa cuando la selección explícita de ejecuciones requeridas no está vacía y todas ellas tienen resultado válido, evidencia obligatoria y PDF disponible. El estado de ejecución se mantiene separado del estado de entrega y del agregado de consulta.
+
+**Razón:** El pipeline puede completar una ejecución y fallar la publicación del PDF o la segunda lateralidad. Mezclar ambos estados produce falsos positivos de completitud.
+
+### D3. Selección explícita de ejecuciones requeridas y cambio tras cierre
+
+**Decisión (agreed):** La consulta declara una selección explícita de `requiredExecutionIds` y una `requiredSetVersion` (manifiesto) al iniciar el análisis. La selección puede cubrir uno (`OD` u `OS`) o ambos ojos; no se exige bilateralidad siempre. La completitud se evalúa **solo** sobre esos IDs y **nunca** por “latest” automático, porque un reanálisis posterior no debe cambiar la evidencia de un cierre.
+
+Un reanálisis crea una ejecución nueva enlazada y no modifica la selección de una consulta cerrada. Puede existir en el historial con su propio PDF y su propia trazabilidad, pero queda **excluido** de la completitud de la consulta cerrada. La promoción o reemplazo de un `requiredExecutionId` ante fallo o revisión queda bloqueada hasta que exista política clínica aprobada (B2); la ejecución del reanálisis en sí no está bloqueada. Si el producto permite cambiar el conjunto requerido después del cierre, la regla y la versión deben documentarse antes de implementar; mientras no exista decisión, **no se asume cierre retroactivo**.
+
+**Razón:** Un “último gana” silencioso reescribe la evidencia de cierre y hace imposible auditar qué ejecución sustentó la consulta.
+
+### D4. Estados por artefacto separados del estado de ejecución
+
+**Decisión (agreed):** Cada artefacto (`result`, `mask`, `overlay`, `pdf`, `gradcam`, `shap`) tiene un estado propio:
+
+`NOT_SUPPORTED` | `NOT_REQUESTED` | `PENDING` | `AVAILABLE` | `FAILED`
+
+Reglas:
+
+- `mask`, `overlay`, `result` y PDF básico son obligatorios para una ruta exitosa normal cuando el pipeline los produce.
+- `gradcam` y `shap` se reportan como `NOT_SUPPORTED` hasta su entrega diferida; nunca como `AVAILABLE` ni con enlaces ficticios.
+- `REVIEW_REQUIRED` puede devolver evidencia parcial (por ejemplo `mask`/`overlay` y `result` parcial) sin fingir éxito.
+- `FAILED` incluye una causa segura, un indicador `retryable` y ausencia explícita del artefacto.
+- Si un artefacto obligatorio falla, la ejecución no alcanza completitud normal; se registra el fallo y se permite reintentar la publicación sin reinferir cuando el resultado sea recuperable.
+- La respuesta de ejecución expone los estados por artefacto y un `completionState` derivado; no se crea un enum de base de datos nuevo para estados agregados ni se usa `PROCESSING` encubierto.
+
+**Razón:** Un único booleano “ok” oculta fallos parciales y produce PDFs o respuestas incompletas presentadas como válidas.
+
+### D5. Referencia de artefacto estable y almacenamiento lógico
+
+**Decisión (agreed):** Se persiste una referencia estructurada, nunca una URL firmada:
+
+```json
+{
+  "artifactType": "mask",
+  "status": "AVAILABLE",
+  "storageId": "azure-blob-default",
+  "bucketOrContainer": "mask-bucket",
+  "key": "inference-id/mask.png",
+  "contentType": "image/png",
+  "sizeBytes": 12345,
+  "checksumSha256": "hex",
+  "failureCode": null,
+  "retryable": null
+}
+```
+
+- `storageId` resuelve provider, cuenta y endpoint desde configuración confiable del backend. El backend actual solo implementa S3/MinIO (`backend/src/services/storage.ts:1-98`); Azure Blob requiere la abstracción dual descrita en D13.
+- La `key` se conserva **exactamente** como fue producida; no se normaliza de forma que cambie el objeto.
+- Prohibido persistir SAS, presigned URLs, claves personales o URLs externas arbitrarias.
+- El backend autoriza cada descarga y firma una URL nueva bajo demanda.
+- Si la URL expira, el frontend solicita otra; no la infiere ni la reconstruye.
+- El parser central acepta referencias legacy `s3://bucket/key` y `azure://container/key` sin `split` ingenuo: separa esquema, primer contenedor y key completa; valida contra ubicaciones allowlisted.
+- SAS de Azure debe ser read-only, sobre el objeto, HTTPS y de TTL corto configurable (propuesta técnica: 300 s por defecto). MinIO usa URL firmada equivalente. No se promete revocación inmediata: revocar una cuenta no revoca una URL ya emitida; un proxy revocable es una opción futura no implementada.
+- La forma de referencia de artefacto es única en diseño, contrato y API: camelCase en el contrato clínico; los campos nulos son explícitos y solo `AVAILABLE` tiene `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y checksum.
+- La abstracción de storage debe existir en backend y ML: Azure Blob con SAS read-only sobre objeto, HTTPS y existencia/verificación de upload; MinIO con presign equivalente y `ensure` de buckets. No se implementa un provider como caso especial del otro.
+
+**Razón:** Persistir URLs firmadas filtra credenciales temporales en DB, logs, backups y PDFs, y las vuelve obsoletas de forma inevitable.
+
+### D6. Contrato público del servicio ML: `signed image_url`, JSON estricto
+
+**Decisión (agreed):** El servicio ML mantiene estos invariantes:
+
+- `POST /v1/inferences` recibe JSON con `inference_id`, `image_url` (URL firmada), `eye_side`, `clinical_features` y `model_version` opcional.
+- No acepta multipart, no acepta un segundo archivo, no acepta CDR de entrada.
+- No normaliza etiquetas desconocidas a una clase inventada. Las clases canónicas son `0 Glaucoma`, `1 Non_Glaucoma`, `2 Suspicious_Glaucoma` (`ml/models/manifest.json`; `backend/src/schemas/common.ts:42-48`).
+- `202 Accepted` confirma aceptación, no resultado; el cliente puede consultar antes de reenviar.
+- `GET /v1/inferences/{job_id}` devuelve `JobStatus`, etapa, mensaje seguro y resultado completo cuando exista.
+- El token interno del ML es obligatorio fuera de desarrollo y de mínimo privilegio.
+- El contrato ML usa `snake_case`; el contrato clínico del backend usa `camelCase`. El mapeo se documenta en el contrato de frontend y no se mezclan ambos estilos en la misma API pública.
+
+La descarga firmada se valida contra allowlist de hosts y no sigue redirecciones. La URL firmada para el ML se genera **justo antes** de enviarla desde una referencia confiable, para no persistir una URL obsoleta en BullMQ.
+
+**Razón:** Un multipart con CDR de entrada rompe la trazabilidad y permite alterar la inferencia. Una URL firmada persistida expira durante la espera en cola.
+
+### D7. Idempotencia persistida, obligatoria y con alcance autenticado
+
+**Decisión (agreed):** El backend expone un mecanismo de idempotencia persistido, no solo en memoria:
+
+- `Idempotency-Key` es **obligatoria** en la creación canónica de ejecución (`POST /inferences`) y en cualquier alias de reanálisis que se exponga. No es “recomendada”.
+- Clave compuesta por alcance autenticado durable + recurso + `Idempotency-Key`.
+- Registro con hash canónico del payload; la URL firmada dinámica **no** forma parte del payload ni del fingerprint.
+- Misma clave + mismo payload ⇒ se reproduce el mismo `202` con el mismo `inferenceId`/`jobId` de servidor. Si se perdió el `202`, el cliente reintenta con la misma key y **no** necesita un ID que nunca recibió.
+- Misma clave + payload distinto ⇒ `409 Conflict` con código seguro.
+- El modelo resuelto se fija en la primera solicitud y no cambia por defaults de reintentos.
+- Concurrencia resuelta con restricción única y transacción; nunca con “comprobar luego insertar” sin protección.
+- Mientras B3 no esté aprobado, **no se purgan** registros de idempotencia, tombstones ni vínculos de inferencia necesarios para replay. Cuando B3 se apruebe, la retención podrá acotarse sin romper el horizonte de replay definido; la política vigente no promete replay eterno arbitrario, pero tampoco purga.
+
+El hash SHA-256 de bytes **sanitizados** verifica el contenido exacto de la imagen. El fingerprint clínico (imagen + `OD/OS` + snapshot normalizado + versión/config de modelos) detecta duplicados técnicos, pero **nunca** se usa para negar un reanálisis legítimo ni para revelar a un usuario que otro usuario subió la misma imagen. Deshabilitar el botón en frontend es UX, no seguridad.
+
+**Razón:** Sin persistencia, un reintento tras timeout crea trabajos duplicados; sin un `202` recuperable, el cliente no puede reintentar de forma segura sin inventar un ID.
+
+### D8. Orquestación at-least-once, recuperación y persistencia completa
+
+**Decisión (agreed):**
+
+- BullMQ entrega al menos una vez; los efectos deben ser idempotentes.
+- El job referencia la ejecución y una referencia de almacenamiento confiable; no un SAS de larga vida.
+- El worker persiste la intención de encolado de forma consistente con la creación de la ejecución (outbox o reconciliación sólida) y un identificador de inferencia estable.
+- Si se pierde la respuesta `accepted` del ML, el worker consulta el job existente antes de reenviar.
+- Ante reinicio, el worker recupera o consulta el job ML existente; no inventa un nuevo trabajo para la misma ejecución.
+- La persistencia del resultado es idempotente y cubre todos los campos: `predicted_class`, `confidence`, `probabilities`, `cdr`, `cdr_vertical`, `quality`, `artifacts`, `elapsed_seconds`, `model_versions`, estado.
+- `jobTerminal` es true solo si el `JobStatus` de la ejecución es `COMPLETED`, `REVIEW_REQUIRED` o `FAILED`. `deliveryTerminal` es true solo cuando todas las publicaciones solicitadas terminaron `AVAILABLE` o en fallo terminal explícito y ninguna queda `PENDING`. `delivery.complete` nunca es true si el ML está en `REVIEW_REQUIRED` o `FAILED`.
+- El polling HTTP al ML para en `jobTerminal`. El polling de la API clínica no para solo por `jobTerminal`: continúa si quedan artefactos o PDF `PENDING`, y para en `deliveryTerminal=true`, `pollingStop` terminal (`COMPLETE`/`ACTION_REQUIRED`/`FAILED`), auth/error acotado o deadline/timeout global con acción de nueva consulta. No se usa un booleano `terminal` indefinido.
+- `REVIEW_REQUIRED` no se autoaprueba. Si la evidencia/PDF se sigue publicando, el cliente continúa hasta que la entrega conocida no tenga `PENDING`; el reporte de revisión no se declara completo ni se corta antes de una entrega terminal conocida.
+- La consulta expone `pollingStop`: `CONTINUE`, `COMPLETE`, `ACTION_REQUIRED` o `FAILED`. Para en `COMPLETE` (completionState completo), `ACTION_REQUIRED` (revisión/bloqueo que exige acción) o `FAILED` con reporte terminal sin `PENDING`. Un timeout global configurable dispara aviso y no marca la inferencia como `FAILED` por sí solo.
+- La entrega continúa después de que el ML devuelve `COMPLETED`: publicación de artefactos y PDF hasta que la ejecución requerida esté completa. `COMPLETED` de ML no cierra la consulta.
+- El polling del cliente usa intervalo/backoff propuesto configurable: 2 s inicial, techo 10 s, `Retry-After` si el servidor lo indica.
+- Se permiten reintentos acotados con backoff solo para errores transitorios. Timeout y cancelación tienen semántica explícita; no se permite un job huérfano silencioso.
+
+**Precedencia de `analysisState` (derivada, no enum DB):**
+
+1. Sin `requiredExecutionIds` (conjunto vacío) ⇒ `OPEN`; nunca `COMPLETED` por vacuidad.
+2. Todas las ejecuciones requeridas con resultado válido y evidencia obligatoria ⇒ `COMPLETED`.
+3. Alguna ejecución requerida `FAILED` sin recuperación pendiente ⇒ `FAILED`.
+4. Alguna ejecución requerida `REVIEW_REQUIRED` ⇒ `REVIEW_REQUIRED`.
+5. Alguna ejecución requerida no terminal o artefacto obligatorio `PENDING` ⇒ `IN_PROGRESS`.
+6. Al menos una ejecución requerida con resultado/evidencia pero no todas ⇒ `PARTIAL`.
+7. En otro caso ⇒ `OPEN`.
+
+`reportState` es formal y separado: `NOT_REQUESTED` si `requiredExecutionIds` está vacío; `AVAILABLE` solo si el conjunto requerido no está vacío y **todos** los `pdfStatus` están `AVAILABLE`; `REPORT_PENDING` si alguno está en generación/publicación y ninguno es fallo terminal; `FAILED` si alguno es fallo terminal. Precedencia: `FAILED > REPORT_PENDING > AVAILABLE`; nunca `AVAILABLE` por vacuidad. `completionState = COMPLETE` solo si el conjunto no está vacío y todas las ejecuciones requeridas tienen resultado, artefactos obligatorios y PDF disponible; no basta “algún reporte” ni un reporte histórico. Cada delivery de ejecución registra su propia completitud y la agregación no sobrescribe histórico. `analysisState` evalúa resultado/ML y no mete PDF en el enum ML.
+
+**Razón:** El comportamiento actual del worker (`backend/src/workers/inference.worker.ts:33-47`) pierde `REVIEW_REQUIRED` y puede marcar la consulta completa antes de que exista evidencia válida.
+
+### D9. Roles, autenticación y matriz de autorización
+
+**Decisión (agreed):**
+
+- `ADMIN` gestiona usuarios y operación, sin lectura clínica por defecto. Cualquier acceso a export/dataset clínico requiere un grant explícito al conjunto de datos; no existe permiso global implícito por rol.
+- `OFTALMOLOGO` accede a sus propios casos.
+- `INVESTIGADOR` accede solo a conjuntos explícitamente autorizados para investigación, con permiso de research dataset y mínimo PHI.
+- No se comparten casos entre médicos en el primer hito.
+- Default deny; la autorización se evalúa por endpoint, acción, recurso y dato, incluyendo artefactos, PDF, feedback, export e historial.
+- El bootstrap del primer administrador es controlado (procedimiento de despliegue/CLI), no un endpoint público que acepte `role=ADMIN`.
+- Altas por invitación solo si se implementan en el hito; la invitación no se inventa como requisito obligatorio.
+- La desactivación de un usuario conserva autoría e historial, bloquea login y sesiones emitidas.
+- **HU01:** cinco fallos de login **consecutivos** bloquean la cuenta durante 15 minutos. Un éxito intermedio reinicia el contador de fallos; un éxito durante el bloqueo no desbloquea ni concede sesión. El bloqueo se complementa con rate limit por IP y mensajes genéricos. El hash de contraseña es robusto (bcrypt/Argon2 según estándar del proyecto).
+- El último administrador activo no puede desactivarse ni perder el rol, incluso con carreras: se verifica dentro de una transacción con bloqueo.
+- **Sesiones (decisión técnica propuesta por el arquitecto dentro de la delegación industry, no decisión exacta de producto ni funcionalidad implementada):** JWT de acceso breve con default 15 min, `sessionId` y `tokenVersion`; en cada request el servidor consulta la sesión activa, la versión y el usuario activo/rol vigente en un store durable y aplica **fail closed** si no puede verificar. Refresh opaco generado con CSPRNG, hash en reposo, rotación atómica de un solo uso y detección de reutilización que revoca la familia; expiración absoluta simple de 7 días, sin extensión por idle salvo configuración explícita. Logout revoca la sesión de inmediato. Desactivar revoca todas las sesiones e incrementa la versión. Cambios de rol invalidan tokens/permisos de inmediato. Reset de contraseña usa token de un solo uso, 30 min, hash, sin logs, y revoca todas las sesiones; `forgot` responde `202` uniforme con rate limit y proveedor de envío configurable.
+- Para web, el refresh se transporta en cookie `HttpOnly; Secure; SameSite` y no en JSON; si es cross-site se evalúa origen/CSRF. El access bearer no se sugiere guardar en `localStorage`. El cliente backend no-browser queda fuera de alcance. La respuesta de refresh no expone el refresh token. El envío real de email requiere datos de proveedor no acordados: eso bloquea solo la habilitación real del envío, no el diseño ni la implementación del flujo. No se introduce una dependencia bloqueante nueva para esta seguridad prioritaria: se usan primitivas criptográficas y almacenamiento durable existentes en el stack.
+
+**Razón:** `backend/src/routes/auth.ts:18-60` permite que cualquier cliente se registre como `ADMIN`; `backend/src/middleware/auth.ts:12-24` no valida `is_active`. El payload JWT actual (`sub` + `role`) y la firma HS256 sí son correctos (`backend/src/routes/auth.ts:58-60,114-117`) y se conservan; la brecha está en el alta pública, la comprobación de cuenta activa y la autorización por recurso, no en el formato del token.
+
+### D10. Auditoría append-only y borrado
+
+**Decisión (agreed):** Se auditan acciones sensibles con actor, target, acción, resultado y timestamp. El registro es append-only; no se actualiza ni se borra desde la aplicación. No contiene secretos, tokens, URLs firmadas ni PHI innecesaria. Si falla la auditoría de una operación sensible, la operación no se considera exitosa (transacción o compensación explícita).
+
+El borrado físico es una excepción limitada a cuentas sin actividad, conforme a la política aplicable; no hay cascadas ni reasignación de historial. La supresión de identidad/legal es distinta de la desactivación; su política está pendiente y **no se elimina automáticamente nada** hasta aprobación (B4/B5).
+
+### D11. PDF básico obligatorio, idempotente y versionado
+
+**Decisión (agreed):** El PDF básico es obligatorio para la completitud de cada ejecución requerida. Contiene:
+
+- identificación pseudónima de caso, consulta y ojo;
+- `inference_id`, versión de snapshot clínico y versiones de modelo;
+- información clínica con unidades solo cuando el mapeo esté verificado; si no, se marca como no interpretable;
+- calidad, CDR y **tres imágenes embebidas** para la ruta exitosa normal: fotografía original sanitizada almacenada (sin EXIF del upload original), `mask` y `overlay`;
+- fecha de análisis y fecha de generación del PDF;
+- warnings, limitaciones y aviso de apoyo a investigación, no sustituto del criterio médico;
+- ausencia explícita de Grad-CAM/SHAP hasta su entrega.
+
+No incluye secretos ni URLs temporales. En una ruta exitosa normal no se usan referencias o enlaces como reemplazo visual de las imágenes embebidas. Un reporte parcial de `REVIEW_REQUIRED` documenta qué imagen o artefacto falta y no declara completitud. Reintentar el PDF usa el mismo `inference_id` y la misma versión inmutable de datos: es idempotente y no reinfiere. Feedback posterior o explicaciones nuevas generan una **nueva versión** del reporte, sin pisar la anterior ni recalcular silenciosamente.
+
+**Razón:** El PDF es la evidencia entregable al usuario; si se regenera sobre datos mutables o se presenta como diagnóstico validado, la trazabilidad se pierde.
+
+### D12. Azure aislado por ejecución, nunca recursos compartidos ni `.env.azure`
+
+**Decisión (agreed):** El despliegue futuro:
+
+- crea recursos por ejecución, con prefijo y tags de entorno;
+- escribe un manifest de recursos creados durante el run;
+- limpia en `finally` y, si hay interrupción, en una ejecución de limpieza separada;
+- nunca borra recursos existentes ajenos;
+- verifica el borrado, que puede ser asíncrono, y revisa recursos residuales (discos, ACR, storage, DB, IPs);
+- si el cleanup falla, reporta `pending` con acciones, sin declarar “destruido” sin verificación.
+
+Suscripción, alcance de recursos, presupuesto numérico y duración **no están acordados**; esos datos bloquean el deploy, no el diseño. No se garantiza capa gratuita. `.env.azure` está prohibido: no se lee, no se imprime y no se usa como evidencia. Cualquier script futuro consumirá configuración solo tras un procedimiento seguro aprobado.
+
+**Razón:** El recurso persistente y compartido descrito en el archivo local `openspec/specs/azure-deployment-automation/spec.md` contradice el aislamiento y el cleanup verificable. Ese archivo **no está versionado** (`git ls-files -- openspec` vacío) y se usó solo como contexto; no es baseline oficial ni dependencia de entrega. Además, credenciales locales no son evidencia de un despliegue reproducible.
+
+### D13. Pruebas por contratos antes de Azure real
+
+**Decisión (agreed):** Se prueban primero contratos con stub ML y casos adversos: URL expirada, host no permitido, etiqueta desconocida, payload inválido, pérdida de `accepted`, reinicio de worker, resultado duplicado, objeto ausente, upload OK con DB fallida, storage caído y error de auditoría. Después se prueba contra Azure real solo con aprobación y alcance definido.
+
+Las pruebas E2E cubren autenticación, paciente, consulta, upload sanitizado, request, polling, persistencia completa, artefactos firmados, feedback, export y completitud con PDF. Las pruebas que destruyen datos se ejecutan solo en una base creada o adoptada explícitamente para el run, con marcador de ownership, allowlist de target y denegación de producción; **el nombre que contiene `test` no es garantía suficiente**. El `global-setup` actual hace `DROP SCHEMA public CASCADE` (`backend/tests/global-setup.ts:40-47`): es un comportamiento destructivo del test actual, no una protección; no se ejecuta contra una base ajena o de desarrollo. En este change no se ejecuta ninguna. Los datos de prueba deben ser sintéticos o de un dataset de uso autorizado (por ejemplo PAPILA); no se usa PHI real sin base legal.
+
+La cobertura de storage dual incluye Azure fake/Azurite sin Azure real y un E2E posterior contra Azure real autenticado: imagen → backend Blob → descarga ML → mask/overlay → DB → PDF → URLs, incluyendo almacenes ausentes. Los tests de PDF parsean el PDF real, extraen texto, cuentan imágenes renderizadas y verifican encabezado/numeración de HU08; no se limitan a un mock de snapshot. Las unidades clínicas solo se muestran si su mapeo/codebook está verificado; un mapeo no demostrado bloquea la interpretación clínica de esa etiqueta, no la totalidad del contrato.
+
+**Metas RNF del SRS (no afirmaciones de cumplimiento):**
+
+| RNF | Meta | Regla de evidencia |
+|---|---|---|
+| Latencia | p95 carga→resultado ≤ 10 s en el 95% de casos | Medir con benchmark reproducible; no afirmar sin resultados. |
+| Concurrencia | 50 solicitudes concurrentes soportadas | Medir con carga controlada; no inferir de pruebas unitarias. |
+| Cobertura | ≥ 70% | Medir con la herramienta del proyecto; no confundir cobertura con corrección. |
+| AUC | ≥ 0.85 | Evidencia real de validación clínica; un gate de MLflow o la aceptación de torch 2.7 por Node no son evidencia de AUC. |
+| Disponibilidad | 95% mensual | No demostrable con una prueba efímera; requiere monitoreo y ventana observada. |
+| PDF institucional HU08 | ≤ 15 s | Medir generación con numeración/plantilla y registrar entorno y volumen. |
+
+Los gates de MLflow son criterios de promoción, no métricas demostradas. La disponibilidad mensual no se declara a partir de un despliegue de prueba.
+
+## ADR Registry
+
+| ID | Decisión | Estado | Fuente |
+|---|---|---|---|
+| ADR-001 | Ejecución única por imagen + lateralidad y snapshot inmutable | agreed | D1, D2 |
+| ADR-002 | Reanálisis crea nueva ejecución enlazada | agreed | D1 |
+| ADR-003 | Selección explícita de `requiredExecutionIds`; uno o ambos ojos, sin latest automático | agreed | D3 |
+| ADR-004 | Cambio/promoción de IDs requeridos tras cierre | blocking | D3, B2 |
+| ADR-005 | Estados por artefacto separados del estado de ejecución | agreed | D4 |
+| ADR-006 | Referencia de artefacto estructurada; sin SAS persistido | agreed | D5 |
+| ADR-007 | Parser legacy `s3://`/`azure://` central y allowlisted | agreed | D5 |
+| ADR-008 | `POST /v1/inferences` con `signed image_url` JSON estricto | agreed | D6 |
+| ADR-009 | Idempotencia persistida con alcance autenticado | agreed | D7 |
+| ADR-010 | Worker at-least-once, recuperación y persistencia completa | agreed | D8 |
+| ADR-011 | Roles y ownership con default deny | agreed | D9 |
+| ADR-012 | Bootstrap de admin controlado, sin registro público de rol | agreed | D9 |
+| ADR-013 | Bloqueo HU01: 5 fallos consecutivos/15 min, éxito intermedio reinicia contador | agreed | D9 |
+| ADR-014 | Sesiones: JWT 15 min + sessionId/tokenVersion, refresh opaco rotado, cookie web | technical decision (architect; not implemented) | D9 |
+| ADR-015 | Auditoría append-only; fallo bloquea operación sensible | agreed | D10 |
+| ADR-016 | Borrado físico solo cuentas sin actividad | agreed | D10 |
+| ADR-017 | Supresión de identidad y política de retención | blocking | D10, B4, B5 |
+| ADR-018 | PDF básico obligatorio, con original sanitizada + mask + overlay embebidas | agreed | D11 |
+| ADR-019 | Grad-CAM/SHAP diferidos y explícitamente ausentes | agreed | D4, D11 |
+| ADR-020 | Deploy Azure aislado con cleanup verificado | agreed (deploy bloqueado por B6) | D12, B6 |
+| ADR-021 | No leer `.env.azure` ni usarlo como evidencia | agreed | D12 |
+| ADR-022 | Resolución de `0_init` condicionada a esquema verificado | agreed | D12, Migration Plan |
+| ADR-023 | RF07 unimodal y RF15 comparación no se implementan ni simulan | blocking | B7 |
+| ADR-024 | Métricas RNF solo tras medición reproducible | agreed | D13, Risks |
+| ADR-025 | `requiredExecutionIds` explícitos y precedencia determinista de consulta | agreed | D3, D8 |
+| ADR-026 | `Idempotency-Key` obligatoria, replay del mismo `202` y modelo fijado | agreed | D7 |
+| ADR-027 | Abstracción dual de storage backend/ML (Azure Blob y MinIO) | agreed (implementación pendiente) | D5, D13 |
+
+## Risks / Trade-offs
+
+| Riesgo | Mitigación |
+|---|---|
+| URL firmada ya emitida sigue válida tras revocar una cuenta | TTL corto, documentar la limitación y evaluar proxy revocable futuro; no prometer revocación inmediata. |
+| Revisión humana sin regla clínica de resolución | `REVIEW_REQUIRED` no cierra automáticamente; transición de resolución bloqueada hasta decisión (B1). |
+| Cambio del conjunto de ojos tras cierre | No asumir retroactividad; bloqueo delimitado B2 y versión documentada antes de implementar. |
+| Reanálisis legítimo bloqueado por fingerprint | El fingerprint solo detecta duplicados técnicos; nunca deniega ni revela a otros usuarios. |
+| URLs o tokens en logs/PDF/DB | Referencias estructuradas, prohibición de SAS persistido, redacción de logs y pruebas de fuga. |
+| Pérdida del `202` y reintento | `Idempotency-Key` obligatoria y replay del mismo `202` con el mismo ID de servidor; no exigir un ID nunca recibido. |
+| Store de sesiones no verificable | Fail closed; no emitir/validar acceso si no se puede comprobar sesión, versión y usuario activo/rol. |
+| Precedencia de estados ambigua | `requiredExecutionIds` explícitos y precedencia FAILED > REVIEW_REQUIRED > IN_PROGRESS > PARTIAL > OPEN; COMPLETED solo con todo satisfecho. |
+| Unidades clínicas no verificadas | No mostrar etiquetas/unidades como validadas; marcar el mapeo como no demostrado y bloquear la interpretación clínica de ese campo. |
+| Objeto en storage sin fila DB o fila DB sin objeto | Reconciliación y estado `FAILED`/incidente; nunca URL ficticia. |
+| Upload OK y fallo de DB | Reconciliación y limpieza controlada de huérfanos; no éxito parcial silencioso. |
+| Worker reiniciado y job ML huérfano | Recuperación por `inference_id` estable y consulta antes de reenviar. |
+| Migración `0_init` indiscriminada | Resolver solo tras verificar el esquema real; no enmascarar divergencias. |
+| Merge con master introduce `ensure_buckets` sin método | No repetir el bug de master (`queue:73/146`): toda llamada debe usar el método existente y el provider correcto. |
+| Deploy Azure sin presupuesto/suscripción/alcance | B6 bloquea deploy; el diseño no se declara listo para ejecutar. |
+| Costos residuales o borrado asíncrono incompleto | Manifest, verificación post-delete y reporte `pending` con acciones. |
+| RNF declarados sin medición | Prohibido afirmar p95, concurrencia, AUC, cobertura o disponibilidad; se exige evidencia real. |
+| PDF presentado como diagnóstico validado | Aviso explícito, pseudonimización y lenguaje de apoyo; reportes de revisión no declaran completitud. |
+| Retención y consentimiento sin política | B4/B5 bloquean tareas puntuales; no se elimina ni anonimiza automáticamente. |
+| Pruebas destructivas contra DB compartida | Solo base aislada por prueba; no ejecutar en este change. |
+
+## Migration Plan
+
+1. **Documentación primero:** proposal, design, specs, contrato de frontend y tareas. Este change no implementa.
+2. **Registro de regresiones:** crear `defects/regressions.md` con entradas solo estáticas y verificadas, distinguiendo activas y resueltas.
+3. **Esquema y migración:** añadir tablas/columnas de ejecución, evidencia, PDF, auditoría e idempotencia mediante migraciones incrementales; cambiar la resolución de `0_init` a un chequeo de esquema verificado, sin enmascarar fallos.
+4. **Compatibilidad:** mantener lectura de referencias legacy `s3://`/`azure://` y aceptar payloads clínicos con alias canónico; no romper clientes actuales sin aviso.
+5. **Storage:** implementar la abstracción dual backend/ML (Azure Blob y MinIO), `ensure` por provider, referencias estructuradas, verificación de existencia/upload y firma de descargas bajo demanda; conservar el comportamiento local actual.
+6. **ML/worker:** fijar contrato JSON, recuperación, persistencia completa, estados terminales y revisión; reintentos solo transitorios.
+7. **Seguridad:** cerrar registro público de rol, validar `is_active`, implementar ownership, bloqueo HU01, sesiones con `sessionId`/`tokenVersion`, protecciones del último admin y auditoría.
+8. **PDF:** generar básico idempotente y versionado con original sanitizada + mask + overlay embebidas; bloquear completitud si falta un artefacto obligatorio.
+9. **Azure:** preparar scripts aislados y manifest de cleanup; ejecutar solo tras aprobación de B6.
+10. **Rollback:** conservar datos y evidencia; deshabilitar nuevas rutas/flags sin borrar historial. La migración de datos legacy debe ser reversible o mantener lectura dual.
+
+## Open Questions / Blockers
+
+| ID | Vacío | Efecto | Decisión necesaria |
+|---|---|---|---|
+| B1 | Regla clínica de resolución de `REVIEW_REQUIRED` | La ejecución no puede cerrarse automáticamente; solo se especifica que espera resolución humana. | Definir quién, con qué evidencia y qué transición cierra la revisión. |
+| B2 | Cambio del conjunto requerido o promoción/reemplazo de `requiredExecutionId` tras cierre | No se puede implementar la transición sin inventar cierre retroactivo; el reanálisis puede ejecutarse, pero no altera la completitud cerrada. | Definir regla y versión; mientras tanto, no permitir el cambio ni la promoción de IDs seleccionados. |
+| B3 | Retención numérica de evidencia, PDF, auditoría y export | Bloquea tareas de purga/retención, no el diseño. | Aprobar plazos por tipo de dato. |
+| B4 | Consentimiento, privacidad y anonimización | No se puede afirmar cumplimiento ni “anonimización por HMAC”. | Aprobar política y base legal. |
+| B5 | Supresión de identidad/legal | No se puede eliminar ni reasignar historial automáticamente. | Aprobar procedimiento y alcance. |
+| B6 | Suscripción, resource scope, presupuesto numérico y duración de Azure | Bloquea el deploy, no el diseño. | Confirmar datos antes de crear recursos. |
+| B7 | RF07 unimodal y RF15 comparación | No se implementan ni simulan hasta aclaración. | Aclarar alcance y contrato. |
+| B8 | Datos de proveedor de email para forgot/reset | Bloquea solo la habilitación del envío real, no el diseño ni la implementación del flujo. | Aprobar proveedor, remitente, credenciales y política de envío. |
+| B9 | `DatabaseFeedbackSource` y `SQLAlchemy` | No se añaden dependencias ni se prioriza. | Decidir si se implementará y con qué dependencia. |
+
+## Evidence Map (static, not runtime)
+
+| Tema | Evidencia |
+|---|---|
+| Storage solo MinIO crea buckets | `ml/service/storage.py:59-70`; Azure no implementa `ensure_buckets` (`ml/service/storage.py:95-166`); arranque lo invoca (`ml/service/queue.py:84,157`). |
+| Normalización y aislamiento de payload | `ml/service/queue.py:16-32,187-202`; helper `request_to_dict` sin llamador. |
+| Pipeline y revisión | `ml/inference/pipeline.py:104-127,184-186`. |
+| Worker incompleto | `backend/src/workers/inference.worker.ts:33-47,51-64,67,74-83,91-95`. |
+| Persistencia disponible | `backend/src/repositories/inference.repo.ts:30-45`; contrato `backend/src/schemas/inference.ts:27-40`. |
+| Auth y roles | `backend/src/routes/auth.ts:18-60,93-112`; `backend/src/middleware/auth.ts:12-24`; `backend/src/middleware/rbac.ts:5-11`. |
+| Ownership incompleto | `backend/src/routes/consultations.ts:173-229`; `backend/src/routes/inferences.ts:93-143`. |
+| Migración indiscriminada | `docker/migrate.Dockerfile:18`. |
+| Compose y red externa | `docker-compose.yml:27-37,197-200`. |
+| Contrato clínico estricto y alias | `backend/src/schemas/clinical.ts:8-65`; `ml/service/schemas.py:30-49`. |
+| Clases canónicas | `backend/src/schemas/common.ts:42-48`; `ml/service/schemas.py:19-27`. |
+| Estado de artefactos actual | `ml/inference/pipeline.py:163-183`; `backend/src/schemas/inference.ts:28-39`. |
+| Suite de pruebas destructiva | `backend/tests/global-setup.ts:40-47` (`DROP SCHEMA public CASCADE`); es comportamiento destructivo actual, no una salvaguarda; requiere DB creada/adoptada con ownership marker, allowlist de target y deny producción. |
+| Storage backend actual | `backend/src/services/storage.ts:1-98` solo S3/MinIO; Azure Blob no está implementado en backend y requiere abstracción dual. |
+| Fixes ML de la rama | `ded48db`, `92a6887`; `e5d184a` es solo de `master`, subconjunto, y no se cherry-pickea a ciegas. |
