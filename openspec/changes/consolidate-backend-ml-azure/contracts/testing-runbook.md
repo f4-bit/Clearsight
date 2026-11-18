@@ -92,6 +92,22 @@
 | Residual G1 | El arranque exitoso real ejercita el camino feliz, pero **no** simula un fallo dentro de `container.start()` antes de obtener el handle; el residual G1 no se declara cerrado por esta integración. |
 | Validación documental | `openspec validate consolidate-backend-ml-azure --strict` → `Change 'consolidate-backend-ml-azure' is valid` (exit 0); `git diff --check` → exit 0, sin errores de whitespace (solo avisos LF→CRLF de Git). |
 
+## 1.5 Evidencia HITO 4 — migración A de esquema (2026-11-18)
+
+> Evidencia local de la tarea 1.1. Solo se usó PostgreSQL efímero de Testcontainers con ownership; no se usó Azure, `.env.azure`, una DB real ni datos clínicos reales. No se modificaron dependencias ni lockfiles. La evidencia HITO 3 se conserva como histórica (8 files / 62 tests); HITO 4 amplía el recuento por los casos nuevos de migración A.
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | Migración aditiva `20261118000000_execution`: `clinical_snapshots` inmutable; `Consultation.requiredExecutionIds` (`UUID[]` default `{}`), `requiredSetVersion`/`requiredSetFrozenAt` nullable; `Inference.consultationId`/`eyeSide`/`clinical_snapshot_id`/`status`/`reanalysisOfId` nullable; constraints y triggers SQL. `docker/init.sql` quedó idéntico a `0_init`. |
+| Migraciones | `npm --prefix backend run test:integration -- tests/migrations.test.ts` → **1 file passed, 25 tests passed**, duración `7.46 s`, exit 0. Incluye upgrade legacy con todas las migraciones, replay de A, casos SQL de snapshot/selección/reanálisis y regresiones F1/F2/F3. |
+| Integración completa | `npm --prefix backend run test:integration` → **8 files passed, 83 tests passed**, duración `19.37 s`, exit 0. |
+| Unitario | `npm --prefix backend run test:unit` → **6 files passed, 57 tests passed**, duración `600 ms`, exit 0. |
+| Typecheck/build | `npm --prefix backend run typecheck` → exit 0; `npm --prefix backend run build` → exit 0. |
+| Prisma | `prisma validate --config <temp-config-sin-dotenv>` → schema válido; `prisma generate --config <temp-config-sin-dotenv>` → cliente generado. `@@index([requiredExecutionIds], type: Gin, map: "idx_consultations_required_execution_ids")` coincide con el índice SQL. El config temporal declaró schema/migrations absolutos y una URL sintética; no cargó `.env`/`.env.azure` ni se conectó a una DB real. |
+| Regresiones F1/F2/F3 | Añadidas primero contra el SQL previo: **4 failed / 21 passed** (rojo esperado, sin mutar workspace). Tras corregir los triggers: **25 passed** (verde). R1 verificado con introspección `pg_indexes` (`USING gin` sobre `required_execution_ids`). |
+| Docker/cleanup | Inventario previo y posterior con `docker ps -a` filtrado por `com.clearsight.test.owner=backend-integration` y `org.testcontainers=true`, y `docker volume ls` por el label de ownership: sin salida. Solo se consultaron recursos con esas etiquetas; no se borró nada manualmente ni se tocaron recursos ajenos. |
+| Límites | No cubre consumidores de aplicación 2.x, migración B/C, PDF/artefactos, Azure real ni E2E clínico completo. Diferido explícitamente a 1.4: serialización con locks de freeze/borrado concurrente (sin declarar inmutabilidad concurrente completa), guard de reparentado directo de `images.consultation_id`/`eye_side` y denegación de `TRUNCATE` al rol de aplicación. F4 (TRUNCATE privilegiado) no es defecto de los guards `UPDATE`/`DELETE`; no se añade `BEFORE TRUNCATE` porque rompería los fixtures con ownership. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

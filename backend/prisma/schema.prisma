@@ -63,17 +63,45 @@ model Consultation {
   // Same vocabulary as ml/service/schemas.py JobStatus (enforced by a CHECK).
   status       String   @default("QUEUED") @db.VarChar(32)
   clinicalData Json     @default("{}") @map("clinical_data") @db.JsonB
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Explicit required-execution selection; empty + NULL version/frozenAt = open
+  // legacy state (not a phantom v1). Frozen rows reject later changes in SQL.
+  requiredExecutionIds String[]  @default([]) @map("required_execution_ids") @db.Uuid
+  requiredSetVersion   String?   @map("required_set_version") @db.VarChar(128)
+  requiredSetFrozenAt  DateTime? @map("required_set_frozen_at") @db.Timestamptz(6)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  patient  Patient            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  doctor   User               @relation(fields: [doctorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  images   Image[]
-  feedback ClinicalFeedback[]
+  patient   Patient            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  doctor    User               @relation(fields: [doctorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  images    Image[]
+  inferences Inference[]
+  snapshots ClinicalSnapshot[]
+  feedback  ClinicalFeedback[]
 
   @@index([patientId], map: "idx_consultations_patient_id")
   @@index([doctorId], map: "idx_consultations_doctor_id")
   @@index([status], map: "idx_consultations_status")
+  @@index([requiredExecutionIds], type: Gin, map: "idx_consultations_required_execution_ids")
   @@map("consultations")
+}
+
+/// Immutable clinical snapshot captured by an execution. The SQL migration
+/// enforces jsonb objects, a non-empty schema version and rejects UPDATE/DELETE;
+/// those triggers are intentionally not representable in the Prisma schema.
+model ClinicalSnapshot {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  consultationId    String   @map("consultation_id") @db.Uuid
+  rawPayload        Json     @map("raw_payload") @db.JsonB
+  normalizedPayload Json     @map("normalized_payload") @db.JsonB
+  schemaVersion     String   @map("schema_version") @db.VarChar(128)
+  // Exact resolved versions when known; `{}` means "not resolved", never a fake registry.
+  modelVersions     Json     @default("{}") @map("model_versions") @db.JsonB
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  inferences   Inference[]
+
+  @@index([consultationId], map: "idx_clinical_snapshots_consultation_id")
+  @@map("clinical_snapshots")
 }
 
 model Image {
@@ -110,13 +138,29 @@ model Inference {
   elapsedSeconds Float?   @map("elapsed_seconds")
   gradcamPath    String?  @map("gradcam_path")
   modelVersion   String?  @map("model_version") @db.VarChar(128)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Execution metadata added by migration A. Legacy rows stay NULL; the SQL
+  // trigger validates any non-NULL copy against the authoritative Image.
+  consultationId    String?  @map("consultation_id") @db.Uuid
+  eyeSide           String?  @map("eye_side") @db.VarChar(2)
+  // Canonical column is clinical_snapshot_id; the client property is snapshotId.
+  snapshotId        String?  @map("clinical_snapshot_id") @db.Uuid
+  // Exact JobStatus vocabulary, enforced by a SQL CHECK (no PROCESSING).
+  status            String?  @db.VarChar(32)
+  reanalysisOfId    String?  @map("reanalysis_of_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  image    Image              @relation(fields: [imageId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  feedback ClinicalFeedback[]
+  image        Image              @relation(fields: [imageId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  consultation Consultation?      @relation(fields: [consultationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  snapshot     ClinicalSnapshot?  @relation(fields: [snapshotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reanalysisOf Inference?         @relation("InferenceReanalysis", fields: [reanalysisOfId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reanalyses   Inference[]        @relation("InferenceReanalysis")
+  feedback     ClinicalFeedback[]
 
   @@index([imageId], map: "idx_inferences_image_id")
   @@index([predictedClass], map: "idx_inferences_predicted_class")
+  @@index([consultationId], map: "idx_inferences_consultation_id")
+  @@index([snapshotId], map: "idx_inferences_clinical_snapshot_id")
+  @@index([reanalysisOfId], map: "idx_inferences_reanalysis_of_id")
   @@map("inferences")
 }
 

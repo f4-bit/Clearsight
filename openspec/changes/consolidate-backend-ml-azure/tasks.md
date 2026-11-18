@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migración 1.1 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -30,11 +30,11 @@
 
 ## 1. Esquema y migraciones (grupos independientes)
 
-- [ ] 1.1 Migración A: snapshot clínico, ejecución y selección requerida.
-  - **Scope:** `backend/prisma/schema.prisma` (`ClinicalSnapshot`, extensión de `Inference` con `consultationId`, lateralidad, snapshot, `requiredExecutionIds`, `requiredSetVersion`, estados de entrega), `backend/prisma/migrations/<timestamp>_execution/migration.sql`, `docker/init.sql`.
-  - **When/Then:** WHEN se aplica sobre baseline verificado THEN existen tablas/columnas/índices de ejecución y snapshot; WHEN se lee una ejecución THEN no hay `PROCESSING` ni un enum DB de estados agregados.
-  - **Test:** `npm --prefix backend run test -- tests/migrations.test.ts` con casos nuevos de upgrade/re-ejecución.
-  - **Coverage:** “Una ejecución analiza una sola retinografía con lateralidad”, “Snapshot clínico inmutable por ejecución”, “Selección explícita de ejecuciones requeridas y cambio tras cierre”.
+- [x] 1.1 Migración A: snapshot clínico, ejecución y selección requerida.
+  - **Scope:** `backend/prisma/schema.prisma` (`ClinicalSnapshot`; en `Consultation`: `requiredExecutionIds`/`requiredSetVersion`/`requiredSetFrozenAt`; en `Inference`: `consultationId`, `eyeSide`, `snapshotId` mapeado a `clinical_snapshot_id`, `status` y `reanalysisOfId`), `backend/prisma/migrations/20261118000000_execution/migration.sql`; `docker/init.sql` sin cambios (baseline `0_init` inmutable). El deploy Azure actual no ejecuta migraciones incrementales; esa deuda queda en 1.5/8.x. Los estados de entrega/PDF y los agregados derivados quedan para la migración B/2.x, no para A.
+  - **When/Then:** WHEN se aplica sobre baseline verificado THEN existen tabla/columnas/índices/constraints/triggers de snapshot y ejecución, incluido el índice GIN de `requiredExecutionIds`; WHEN se lee una ejecución THEN no hay `PROCESSING` ni enum DB de estados agregados; WHEN una fila legacy se conserva THEN snapshot/metadatos quedan NULL/vacíos y la selección requerida vacía, sin backfill falso; WHEN una ejecución congelada cambia imagen/consulta/ojo, snapshot o procedencia THEN se rechaza, aunque el cambio sea dentro del mismo caso/ojo.
+  - **Test:** `npm --prefix backend run test:integration -- tests/migrations.test.ts` → **25 tests passed** (upgrade legacy, replay A, invariantes SQL y regresiones F1/F2/F3); `npm --prefix backend run test:integration` → **8 files / 83 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `npm --prefix backend run typecheck` y `build` → exit 0; Prisma `validate`/`generate` válidos con `@@index` GIN.
+  - **Coverage:** “Una ejecución analiza una sola retinografía con lateralidad”, “Snapshot clínico inmutable por ejecución”, “Selección explícita de ejecuciones requeridas y cambio tras cierre”, “Reanálisis enlazado sin sobrescribir evidencia” (persistencia SQL; los consumidores de aplicación quedan en 2.x).
 
 - [ ] 1.2 Migración B: referencias de artefacto y versiones de PDF.
   - **Scope:** `backend/prisma/schema.prisma` (`ArtifactRecord`, `PdfReport`), migración B, `docker/init.sql`.

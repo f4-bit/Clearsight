@@ -267,6 +267,20 @@ La cobertura de storage dual incluye Azure fake/Azurite sin Azure real y un E2E 
 
 Los gates de MLflow son criterios de promoción, no métricas demostradas. La disponibilidad mensual no se declara a partir de un despliegue de prueba.
 
+### D14. Persistencia local de la migración A (1.1)
+
+**Decisión (implementación local, no contrato nuevo de producto):** La migración A materializa el snapshot y los metadatos de ejecución de forma **aditiva**:
+
+- `clinical_snapshots` es una tabla append-only: payload crudo y normalizado JSONB obligatorios y objetos, `schema_version` no vacío, `model_versions` JSONB objeto (`{}` significa “no resuelto”, nunca un registro inventado), `consultation_id` con FK `ON DELETE RESTRICT` y triggers que rechazan `UPDATE` y `DELETE`.
+- `Consultation.requiredExecutionIds` se persiste como `UUID[] NOT NULL DEFAULT '{}'` con índice GIN (`idx_consultations_required_execution_ids`, mismo nombre/tipo en Prisma y SQL); `requiredSetVersion` y `requiredSetFrozenAt` son NULL en legacy. El conjunto no vacío exige versión no vacía y freeze; después del freeze solo se permiten actualizaciones ajenas a la selección. El conjunto vacío permanece abierto y nunca completa por vacuidad.
+- `Inference` recibe `consultation_id`, `eye_side`, `clinical_snapshot_id`, `status` y `reanalysis_of_id` **nullable**. No hay backfill: el legado conserva NULL y la imagen sigue siendo la fuente autoritativa para validar copias no nulas. `status` usa exactamente el vocabulario `JobStatus`, sin default ni `PROCESSING`.
+- La evidencia congelada tiene identidad inmutable: si una ejecución aparece en `requiredExecutionIds`, cualquier `UPDATE` que cambie `image_id`, `consultation_id` o `eye_side` se rechaza, aunque la nueva imagen comparta consulta/ojo. Los cambios de `status`/resultado siguen permitidos.
+- El vínculo `clinical_snapshot_id` es inmutable una vez no nulo (incluido intento de ponerlo a NULL). Una fila legacy con NULL y **no seleccionada** puede recibir su primer snapshot real; una ejecución seleccionada no puede enlazarlo tarde. `reanalysis_of_id` es append-only tras el INSERT: cualquier `UPDATE` que lo cambie (incluido NULL→padre o repunte) se rechaza; el reanálisis es una fila nueva.
+- Los triggers SQL validan pertenencia de la selección, duplicados, freeze, identidad de ejecución seleccionada, contexto de reanálisis/lateralidad/consulta, snapshot de la misma consulta y vínculo de snapshot. Las relaciones Prisma son FK simples; los checks por trigger se documentan como no representables en Prisma. Los triggers de fila no protegen frente a `TRUNCATE`/DDL de un owner o schema privilegiado; no se declara inmutabilidad universal.
+- `docker/init.sql` se mantiene idéntico a `0_init`; la migración A es incremental. No se reescribe el contrato de producto ni se adelantan artefactos/PDF, estados agregados o consumidores de aplicación (2.x/B).
+- El despliegue Azure actual sigue aplicando solo `init.sql` y no ejecuta migraciones incrementales; esa deuda queda para 1.5/8.x y no se cambia en esta tarea.
+- **Diferido a 1.4 con evidencia explícita:** serialización con locks de freeze/borrado concurrente (no se declara inmutabilidad concurrente completa), guard de reparentado directo de `images.consultation_id`/`eye_side` y denegación de `TRUNCATE` al rol de aplicación. El cascade legacy sin snapshot se conserva sin cambios; `F4` (TRUNCATE privilegiado) no se trata como defecto de los guards `UPDATE`/`DELETE` y no se añade un trigger `BEFORE TRUNCATE` que rompería los fixtures con ownership.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -304,6 +318,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-031 | B8: sink en memoria primero; envío real solo a destinatarios autorizados, sin PHI/enlaces secretos, sin versionar direcciones/credenciales | agreed (restriction) | D9, B8 |
 | ADR-032 | Runbook de pruebas incremental con fases, precondiciones y stop de pasos peligrosos | agreed | D13, `contracts/testing-runbook.md` |
 | ADR-033 | B9: `DatabaseFeedbackSource` y SQLAlchemy fuera de alcance, no bloquean el change | out of scope | Open Questions |
+| ADR-034 | Migración A aditiva: snapshot inmutable, selección `UUID[]` con freeze, metadatos legacy nullable y `init.sql` baseline sin cambios | agreed (implemented 1.1) | D14, D1, D3 |
 
 ## Risks / Trade-offs
 
