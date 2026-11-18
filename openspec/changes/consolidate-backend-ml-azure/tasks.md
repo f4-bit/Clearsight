@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** este change es de documentación. Las tareas de implementación quedan **sin marcar**, salvo la subtarea 7.0 de aislamiento del runner backend, verificada y marcada en este hito. Las tareas documentales entregadas (registro de regresiones y runbook de pruebas) se marcan `[x]`. Ninguna tarea productiva se ejecutó en este change; los comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -347,11 +347,11 @@
   - **Test:** `npm --prefix backend run test:unit` (6 files / 57 tests, incluyendo la ampliación QA de marker/ownership/env), `npm --prefix backend run test` (6 / 57), `npm --prefix backend run test:unit -- tests/repositories.test.ts` (no tests, exit 1), `npm --prefix backend run typecheck` (exit 0).
   - **Coverage:** aislamiento de runner y guard de ownership; no cubre E2E real ni las tareas 7.1/7.2.
 
-- [ ] 7.0.1 Ejecutar `test:integration` real cuando haya daemon Docker local, sin `TEST_DATABASE_URL`, y registrar el resultado.
+- [x] 7.0.1 Ejecutar `test:integration` real cuando haya daemon Docker local, sin `TEST_DATABASE_URL`, y registrar el resultado.
   - **Scope:** entorno local con Docker; sin Azure ni DB externa.
   - **When/Then:** WHEN exista daemon Docker THEN los 8 archivos de integración se ejecutan contra el contenedor efímero con ownership y cleanup verificado.
-  - **Test:** `npm --prefix backend run test:integration`.
-  - **Coverage:** pendiente; no ejecutado en este hito por ausencia de Docker.
+  - **Test:** `npm --prefix backend run test:integration` → **8 files passed, 62 tests passed**, Vitest 5.1.0, inicio 17:09:59, duración 18.61 s, exit 0 (2026-11-18).
+  - **Coverage:** ejecutado localmente con PostgreSQL 16-alpine de Testcontainers y ownership; setup/migraciones/fixtures, queries de test y cleanup según el harness verificado por QA de seguridad. Tras el run, `docker ps -a` con los filtros `com.clearsight.test.owner=backend-integration` y `org.testcontainers=true`, y `docker volume ls` con el label de ownership, no devolvieron salida. Solo se consultaron recursos con esas etiquetas; no se inspeccionaron todos los volúmenes/recursos del host ni se eliminó nada manualmente o ajeno. No cubre 7.1 (adversos nuevos), 7.2 (E2E clínico completo), 7.4 (Azure) ni la suite completa de auth/sesión.
 
 - [ ] 7.1 Crear suite de contratos con stub ML y casos adversos.
   - **Scope:** `backend/tests/` nuevos casos; `ml/tests/` stubs; sin Azure real; seguir `contracts/testing-runbook.md`.

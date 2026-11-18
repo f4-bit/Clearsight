@@ -19,7 +19,7 @@
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
 | 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado |
-| 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | Config/guard listos; NO EJECUTADA localmente (daemon Docker ausente) |
+| 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
 | 6 | E2E Azure completo y cleanup | Azure real | Muy alto | FUTURO, bloqueado por B6 |
@@ -75,6 +75,22 @@
 | Límites | No se ejecutó `test:integration` real: el daemon Docker local no está disponible. Los tests de integración (8 archivos) no se declaran verdes. El runner unitario no cubre flujos de negocio/seguridad ni Prisma/Redis/SQL. |
 | Residual G1 | El cleanup de `global-setup` cubre fallos posteriores a obtener el handle del contenedor (connect, migración, marker, provide). Un rechazo dentro de `container.start()` antes del handle depende del reaper/Testcontainers y no se ejerce aquí por ausencia de Docker; no se endurecen internals del provider en este hito. |
 | Fuera de alcance | E2E real Azure/Postgres, arreglos de inyección de dependencias de rutas y tareas 7.1/7.2. |
+
+## 1.4 Evidencia HITO 3 — backend integration real local (2026-11-18)
+
+> Evidencia de la primera ejecución real de `test:integration` contra PostgreSQL efímero con Testcontainers. No se usó Azure ni se leyó `.env.azure`; no se inspeccionaron recursos globales del host ni se eliminó nada de forma manual o ajena. La evidencia **HITO 2** se conserva como histórica: registraba la ausencia de daemon Docker en ese momento. HITO 3 **supersede únicamente la disponibilidad** del daemon, no los resultados previos ni el residual G1.
+
+| Elemento | Resultado observado |
+|---|---|
+| Entorno | Docker server/engine `28.5.1` respondía (ya arrancado externamente; el arquitecto no inició Docker Desktop). `TEST_DATABASE_URL` ausente (`presence=False`). No se encontró `backend/.env`. Inventario previo con `docker ps -a` filtrado por `com.clearsight.test.owner=backend-integration` y `org.testcontainers=true`, sin salida. |
+| Comando | `npm --prefix backend run test:integration` |
+| Resultado exacto | Vitest `5.1.0` backend: **8 files passed, 62 tests passed**, inicio `17:09:59`, duración `18.61 s`, **exit 0**. |
+| Runner y ownership | El runner creó su propio PostgreSQL `16-alpine` por Testcontainers con ownership; ejecutó setup, migraciones, fixtures, queries de test y cleanup según el harness ya verificado por QA de seguridad. No hubo cambios de fuente ni fixes necesarios. |
+| Cleanup comprobado | Tras el run, `docker ps -a` con los mismos dos filtros de labels y `docker volume ls` filtrado por el label de ownership no devolvieron salida. |
+| Límite de la comprobación | Solo se consultaron recursos con esas etiquetas; **no** se inspeccionaron todos los volúmenes ni todos los recursos del host, no se eliminó nada manualmente y no se tocaron recursos ajenos. |
+| Cobertura | Cierra la ejecución local pendiente de 7.0.1 para PostgreSQL/Testcontainers. No cubre 7.1 (adversos nuevos), 7.2 (E2E clínico completo), 7.4 (Azure) ni la suite completa de auth/sesión. |
+| Residual G1 | El arranque exitoso real ejercita el camino feliz, pero **no** simula un fallo dentro de `container.start()` antes de obtener el handle; el residual G1 no se declara cerrado por esta integración. |
+| Validación documental | `openspec validate consolidate-backend-ml-azure --strict` → `Change 'consolidate-backend-ml-azure' is valid` (exit 0); `git diff --check` → exit 0, sin errores de whitespace (solo avisos LF→CRLF de Git). |
 
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
@@ -154,8 +170,10 @@ npm --prefix backend run test:integration
 ```
 
 - `backend/vitest.integration.config.ts` es la única config con `globalSetup`; el setup crea un contenedor efímero, rechaza `TEST_DATABASE_URL` antes de crear cliente/contenedor y verifica el marker `test_meta`.
-- En este entorno **no se ejecutó** porque el daemon Docker local no está disponible. No se declara integración real verde.
+- En el HITO 2 no se ejecutó porque el daemon Docker local no estaba disponible; la ejecución real posterior se registra en §1.4 (HITO 3). No se declara integración real verde en el HITO 2.
 - La cobertura de negocio/seguridad/DB sigue siendo responsabilidad de la integración/E2E; el runner unitario no la sustituye.
+
+> **Nota de vigencia:** este apartado conserva el estado del HITO 2. La ejecución real posterior se registra en §1.4 (HITO 3).
 
 **Stop:** si el comando intenta conectarse a una DB no aislada, si el contenedor no puede crearse o si aparece un error preexistente no registrado.
 
@@ -172,14 +190,14 @@ npm --prefix backend run test:integration
 - Compose test-only verificado con puertos, red y volúmenes aislados, o Testcontainers con ownership explícito; el compose raíz no se usa.
 - No se usa `.env.azure`.
 
-**Estado local (2026-11-18):** **NO EJECUTADA**. `test:integration` ya tiene config explícita, Testcontainers, marker `test_meta` y guards de cleanup, pero el daemon Docker local no está disponible; no se levantó ningún contenedor ni compose. Los guards de rechazo/cleanup se verificaron con mocks en el runner unitario (`tests/unit/integration-setup.test.ts`).
+**Estado local (2026-11-18):** **EJECUTADA para PostgreSQL** con `test:integration` (ver §1.4, HITO 3): 8 archivos / 62 tests, contenedor `16-alpine` de Testcontainers con marker y cleanup etiquetado verificado. Redis y MinIO no se levantaron; los guards de rechazo/cleanup también se verificaron con mocks en el runner unitario (`tests/unit/integration-setup.test.ts`). El compose raíz sigue **NO LISTO** por las razones de aislamiento siguientes.
 
 **Aislamiento del proyecto compose (verificado en `docker-compose.yml`):**
 
 - `name: clearsight` (línea 1) fija el nombre base del proyecto; `docker compose` sin `-p` puede reutilizar el proyecto de desarrollo.
 - Los volúmenes nombrados `postgres-data`, `redis-data`, `minio-data`, etc. (líneas 189-195) no llevan labels de run/ownership por defecto.
 - La red `clearsight` es `external: true` (líneas 197-200) y puede ser compartida; **no se borra jamás** desde el run.
-- Por eso la receta CURRENT con el compose raíz **NO está lista para ejecución segura** si no se pueden aislar puertos, red y volúmenes sin cambios de fuente. No se usa `docker compose up` literal. La vía preferida es Testcontainers con ownership explícito, ya implementada en `test:integration`; la ejecución real de esta fase sigue **NO EJECUTADA** por ausencia del daemon Docker local.
+- Por eso la receta CURRENT con el compose raíz **NO está lista para ejecución segura** si no se pueden aislar puertos, red y volúmenes sin cambios de fuente. No se usa `docker compose up` literal. La vía preferida es Testcontainers con ownership explícito, ya implementada en `test:integration`; PostgreSQL se ejecutó realmente con esa vía en el HITO 3, mientras que Redis/MinIO y el compose raíz siguen **NO EJECUTADOS**.
 
 **Comandos CURRENT ilustrativos (placeholders, NO ejecutar literal):**
 
@@ -340,13 +358,13 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `npm --prefix backend run test` / `test:unit` | CURRENT | Runner unitario aislado: allowlist pura, sin `globalSetup`/DB/red. |
 | `npm --prefix backend run test:unit -- tests/schemas.test.ts` | CURRENT | Seguro; un filtro solo reduce la allowlist. |
 | `npm --prefix backend run test:watch` | CURRENT | Watch del runner unitario; sin DB. |
-| `npm --prefix backend run test:integration` | CURRENT (config) / NO EJECUTADO localmente | Requiere Docker; crea Testcontainers con ownership y rechaza `TEST_DATABASE_URL`. |
+| `npm --prefix backend run test:integration` | CURRENT (ejecutado en HITO 3) | Requiere Docker; crea un PostgreSQL efímero Testcontainers con ownership, rechaza `TEST_DATABASE_URL` y su cleanup solo se verifica sobre recursos etiquetados. |
 | `TEST_DATABASE_URL=... test:integration` | **RECHAZADO** | Cualquier presencia de la variable aborta antes de cliente/contenedor. |
 | `python -m pytest ml/tests/test_service.py -q` | CURRENT | Stubs, sin cloud real. |
 | `python -m pytest ml/tests/test_onnx_serving.py -q` | CURRENT | Requiere pesos locales. |
 | `docker compose -p <proyecto> config --quiet` / `config --services` | CURRENT | Valida merge efectivo sin imprimir secretos. |
 | `docker compose -p <proyecto> up ...` sobre el compose raíz | **NO LISTO** | `name: clearsight`, volúmenes sin labels y red externa compartida; no ejecutar literal. |
-| Testcontainers con ownership explícito | CURRENT (config/guard) | Usado por `test:integration`; no ejecutado localmente por daemon ausente. |
+| Testcontainers con ownership explícito | CURRENT (ejecutado en HITO 3) | Usado por `test:integration`: PostgreSQL `16-alpine`, 8 files / 62 tests; el compose raíz no se usó. |
 | `scripts/e2e-backend.ps1` | CURRENT | E2E local parcial; requiere stack/seed; no usar contra producción. |
 | `scripts/test_azure_e2e.py` | CURRENT PARCIAL | Solo ML service; no flujo backend completo. |
 | `scripts/benchmark_latency.py` | CURRENT | Solo forward; no p95 full-flow. |
