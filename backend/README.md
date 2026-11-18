@@ -70,11 +70,23 @@ python ../scripts/retrain_cycle.py --samples data/gold.csv
 
 ## Tests
 
+El runner está dividido en dos allowlists explícitas:
+
 ```bash
-npm test                                   # levanta postgres:16-alpine con Testcontainers (requiere Docker)
-TEST_DATABASE_URL=postgresql://u:p@host:5432/clearsight_test npm test   # o usa un Postgres existente
+npm test                 # runner unitario por defecto (seguro, sin DB/Redis/red)
+npm run test:unit        # idéntico: schemas, sanitizer y tests/unit/**
+npm run test:watch       # watch del runner unitario
+npm run test:integration # explícito; requiere Docker/Testcontainers
 ```
 
-Con `TEST_DATABASE_URL` el nombre de la BD debe contener `test`: se **recrea su esquema `public`**.
-Las migraciones se aplican leyendo `prisma/migrations/*/migration.sql` en orden. Un test
-reproduce además la actualización de una BD `init.sql` con datos (esquema aparte).
+- `npm test` y `test:unit` no ejecutan `globalSetup`, no abren DB ni levantan servicios. Un filtro
+  CLI solo puede reducir la allowlist (p. ej. `npm run test:unit -- tests/repositories.test.ts`
+  termina con «No test files found», exit 1).
+- `test:integration` conserva los archivos originales de integración/mocks locales y **siempre** crea
+  un PostgreSQL efímero en Testcontainers con nombre único, label y marker de ownership. No adopta
+  bases externas: si `TEST_DATABASE_URL` está presente (aunque esté vacía o contenga `test`), falla
+  antes de crear cliente/contenedor y no imprime la URL.
+- El setup cierra cliente y contenedor ante fallo de connect/migración/provide; `resetDb` verifica el
+  marker `test_meta` antes de truncar.
+- Límites: el runner unitario no cubre flujos de negocio/seguridad ni Prisma/Redis/SQL. La
+  integración real no se ejecutó en este entorno porque el daemon Docker local no está disponible.

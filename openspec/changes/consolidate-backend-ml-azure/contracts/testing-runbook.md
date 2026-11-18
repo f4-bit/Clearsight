@@ -18,8 +18,8 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | DB efímera solo si aplica | Medio | CURRENT parcial / FUTURO aislado |
-| 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | **NO LISTA con compose raíz**; FUTURO compose test-only/Testcontainers |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado |
+| 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | Config/guard listos; NO EJECUTADA localmente (daemon Docker ausente) |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
 | 6 | E2E Azure completo y cleanup | Azure real | Muy alto | FUTURO, bloqueado por B6 |
@@ -58,6 +58,23 @@
 | Validación documental | `openspec validate consolidate-backend-ml-azure --strict` → `Change 'consolidate-backend-ml-azure' is valid`; `git diff --check` sin errores de whitespace. |
 | Fuera de alcance | No se ejecutó Azure ni MinIO reales, ni E2E, ni tests con pesos/DB/Redis. El test de readiness usa `InMemoryJobQueue` y `build_runtime` stub; prueba 200/503 por preparación de storage, no un E2E Azure. |
 | Deuda conocida | `MinioArtifactStore.ensure_buckets` mantiene el comportamiento actual: solo crea en 404 y no propaga otros errores de `head_bucket` (p. ej. 403); no se declara fail-closed para MinIO en este hito. |
+
+## 1.3 Evidencia HITO 2 — backend test isolation (2026-11-18)
+
+> Evidencia de ejecución local del hito de aislamiento de runners backend. No se usó Azure, Docker/Testcontainers real, `.env` ni datos clínicos. La evidencia anterior se conserva sin cambios.
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | `npm test` y `test:unit` usan una allowlist pura (`tests/schemas.test.ts`, `tests/sanitizer.test.ts`, `tests/unit/**/*.test.ts`) sin `globalSetup`; el runner unitario instala un trap de red. `test:integration` es explícito y conserva los 8 archivos originales de integración/mocks locales. |
+| Unit runner | `npm --prefix backend run test:unit` → **6 files passed, 57 tests passed**, sin DB, Redis ni Docker. |
+| Default runner | `npm --prefix backend run test` → **6 files passed, 57 tests passed**. `npx vitest run tests/repositories.test.ts` → **No test files found, exit 1**. |
+| Filtros focalizados | `test:unit -- tests/sanitizer.test.ts` → **1 file, 1 test passed**; `test:unit -- tests/schemas.test.ts` → **1 file, 16 tests passed**; `test:unit -- tests/repositories.test.ts` → **No test files found, exit 1** (sin setup ni DB). |
+| Guard de integración | Rechazo de `TEST_DATABASE_URL` presente/vacía/whitespace/malformada antes de crear cliente/contenedor; URL no se imprime; cleanup de cliente/contenedor en fallo de connect/migración/provide; teardown idempotente. Verificado con mocks en `tests/unit/integration-setup.test.ts`. |
+| Ownership | Nombre de BD único por run, label `com.clearsight.test.run-id`, marker `test_meta`; `resetDb` verifica el marker antes del `TRUNCATE`. Contenedor fresco: no se hace `DROP SCHEMA public`. |
+| Typecheck | `npm --prefix backend run typecheck` → **exit 0** tras `prisma generate` con config temporal sin dotenv. |
+| Límites | No se ejecutó `test:integration` real: el daemon Docker local no está disponible. Los tests de integración (8 archivos) no se declaran verdes. El runner unitario no cubre flujos de negocio/seguridad ni Prisma/Redis/SQL. |
+| Residual G1 | El cleanup de `global-setup` cubre fallos posteriores a obtener el handle del contenedor (connect, migración, marker, provide). Un rechazo dentro de `container.start()` antes del handle depende del reaper/Testcontainers y no se ejerce aquí por ausencia de Docker; no se endurecen internals del provider en este hito. |
+| Fuera de alcance | E2E real Azure/Postgres, arreglos de inyección de dependencias de rutas y tareas 7.1/7.2. |
 
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
@@ -108,46 +125,37 @@ git diff --stat
 
 **Objetivo:** probar contratos puros (schemas, normalización, manifiesto, servicio ML con stubs) sin tocar cloud real.
 
-**Precondiciones:** fase 1 verde. Para comandos que usan DB, leer la sección de peligro de `globalSetup`.
+**Precondiciones:** fase 1 verde. El runner unitario no requiere DB ni Docker; la integración real se trata en la fase 3.
 
-### 4.1 Peligro del runner backend (verificado)
+### 4.1 Runner unitario aislado (verificado)
 
-- `backend/package.json` define `test: "vitest run"`.
-- `backend/vitest.config.ts:6` fuerza `globalSetup: ["tests/global-setup.ts"]` para **toda** ejecución, incluso si se pasa un archivo focalizado.
-- `backend/tests/global-setup.ts:24-47`:
-  - si existe `TEST_DATABASE_URL`, exige que el nombre de la base contenga `test` y ejecuta `DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;`;
-  - si no existe, levanta un contenedor PostgreSQL efímero (testcontainers).
-- Por tanto, **`npm --prefix backend run test -- tests/schemas.test.ts` NO es un comando aislado seguro**: dispara el setup destructivo igualmente. No se recomienda contra una DB compartida o de desarrollo.
+- `backend/package.json`: `test`/`test:unit` usan `vitest.unit.config.ts`; `test:watch` también; `test:integration` usa `vitest.integration.config.ts`.
+- `backend/vitest.unit.config.ts` define una allowlist explícita y **no** declara `globalSetup`; `tests/unit/network-guard.ts` bloquea TCP directo, `fetch`, `http.request` y `https.get`.
+- `backend/vitest.config.ts` reexporta la config unitaria, por lo que `npx vitest` sin `--config` sigue siendo seguro.
+- Un filtro CLI solo reduce la allowlist: `npm run test:unit -- tests/repositories.test.ts` termina con «No test files found» (exit 1) sin cargar setup ni DB.
 
-### 4.2 Comandos CURRENT seguros o acotados
+### 4.2 Comandos CURRENT (verificados)
 
 ```powershell
-# Estático, sin DB ni servicios
-npm --prefix backend run typecheck
-
-# ML con stubs; no usa Azure real ni DB
-python -m pytest ml/tests/test_service.py -q
-python -m pytest ml/tests/test_clinical_normalization.py -q
-python -m pytest ml/tests/test_manifest.py -q
-```
-
-### 4.3 Comandos CURRENT que requieren DB efímera/ownership
-
-```powershell
-# Solo con contenedor efímero (por defecto) o TEST_DATABASE_URL creada/adoptada para el run.
-# No usar una DB de desarrollo/compartida.
-npm --prefix backend run test -- tests/repositories.test.ts
-npm --prefix backend run test -- tests/schemas.test.ts
-```
-
-**FUTURO (no escribir ahora):** un `backend/vitest.unit.config.ts` sin `globalSetup` y un script `test:unit` para tests puros. Hasta que exista, no se debe afirmar que un test focalizado está libre del setup destructivo.
-
-**Comando FUTURO propuesto (no disponible):**
-
-```powershell
-# FUTURO: requiere crear backend/vitest.unit.config.ts y el script test:unit
+npm --prefix backend run test:unit
+npm --prefix backend run test
 npm --prefix backend run test:unit -- tests/schemas.test.ts
+npm --prefix backend run test:unit -- tests/sanitizer.test.ts
+npm --prefix backend run typecheck
 ```
+
+Resultado observado: `test:unit`/`test` → **6 files / 57 tests passed**; schemas → **16 passed**; sanitizer → **1 passed**; typecheck → **exit 0** (tras `prisma generate` con config temporal sin dotenv).
+
+### 4.3 Integración explícita (no ejecutada aquí)
+
+```powershell
+# Requiere un daemon Docker local; conserva los 8 archivos de integración/mocks locales.
+npm --prefix backend run test:integration
+```
+
+- `backend/vitest.integration.config.ts` es la única config con `globalSetup`; el setup crea un contenedor efímero, rechaza `TEST_DATABASE_URL` antes de crear cliente/contenedor y verifica el marker `test_meta`.
+- En este entorno **no se ejecutó** porque el daemon Docker local no está disponible. No se declara integración real verde.
+- La cobertura de negocio/seguridad/DB sigue siendo responsabilidad de la integración/E2E; el runner unitario no la sustituye.
 
 **Stop:** si el comando intenta conectarse a una DB no aislada, si el contenedor no puede crearse o si aparece un error preexistente no registrado.
 
@@ -158,18 +166,20 @@ npm --prefix backend run test:unit -- tests/schemas.test.ts
 **Precondiciones:**
 
 - Fase 2 verde en los contratos que no requieren DB.
-- Run ID explícito, por ejemplo `CLEARSIGHT_TEST_OWNERSHIP=<run-id>`.
-- DB creada o adoptada para el run y marcada; `TEST_DATABASE_URL` no apunta a desarrollo/producción.
+- Run ID generado por el setup del run; no se adopta una DB externa.
+- `TEST_DATABASE_URL` debe estar ausente: si la variable existe (aunque esté vacía), el setup falla antes de crear cliente/contenedor.
 - Docker local disponible; puertos libres o configuración aislada.
 - Compose test-only verificado con puertos, red y volúmenes aislados, o Testcontainers con ownership explícito; el compose raíz no se usa.
 - No se usa `.env.azure`.
+
+**Estado local (2026-11-18):** **NO EJECUTADA**. `test:integration` ya tiene config explícita, Testcontainers, marker `test_meta` y guards de cleanup, pero el daemon Docker local no está disponible; no se levantó ningún contenedor ni compose. Los guards de rechazo/cleanup se verificaron con mocks en el runner unitario (`tests/unit/integration-setup.test.ts`).
 
 **Aislamiento del proyecto compose (verificado en `docker-compose.yml`):**
 
 - `name: clearsight` (línea 1) fija el nombre base del proyecto; `docker compose` sin `-p` puede reutilizar el proyecto de desarrollo.
 - Los volúmenes nombrados `postgres-data`, `redis-data`, `minio-data`, etc. (líneas 189-195) no llevan labels de run/ownership por defecto.
 - La red `clearsight` es `external: true` (líneas 197-200) y puede ser compartida; **no se borra jamás** desde el run.
-- Por eso la receta CURRENT con el compose raíz **NO está lista para ejecución segura** si no se pueden aislar puertos, red y volúmenes sin cambios de fuente. No se usa `docker compose up` literal. La fase queda **NO LISTA PARA EJECUTAR** hasta disponer de un compose test-only verificado o de Testcontainers con ownership explícito.
+- Por eso la receta CURRENT con el compose raíz **NO está lista para ejecución segura** si no se pueden aislar puertos, red y volúmenes sin cambios de fuente. No se usa `docker compose up` literal. La vía preferida es Testcontainers con ownership explícito, ya implementada en `test:integration`; la ejecución real de esta fase sigue **NO EJECUTADA** por ausencia del daemon Docker local.
 
 **Comandos CURRENT ilustrativos (placeholders, NO ejecutar literal):**
 
@@ -194,21 +204,21 @@ docker compose -p <proyecto-efimero-unico> -f <compose-test-only-verificado.yml>
 - Verificar que la red no sea la `clearsight` externa compartida; si lo es, no borrar la red ni tocar recursos fuera del manifest.
 - Verificar labels `project`/`run`/ownership en volúmenes y recursos; el nombre único del proyecto **no** es garantía suficiente.
 
-**Preferencia segura:** Testcontainers con ownership explícito para tests backend, en lugar de levantar el compose raíz. No se crea infraestructura en este change.
+**Preferencia segura:** Testcontainers con ownership explícito para tests backend, ya implementado en `test:integration`, en lugar de levantar el compose raíz. No se creó infraestructura real en este hito.
 
 **Regla de ownership (obligatoria):**
 
-- Antes de truncar/borrar, el runner debe comprobar el marcador de ownership y el target permitido. **No se permite `DROP`/`TRUNCATE` solo porque el nombre contenga `test`.**
-- El `global-setup` actual no implementa ese marcador; su único guard es el nombre de la DB. Por eso no se usa contra una DB ajena.
-- **FUTURO:** script/helper de guard que verifique `CLEARSIGHT_TEST_OWNERSHIP`, cree una tabla/marker y aborte si no coincide. No se escribe en este change.
+- Antes de truncar/borrar, el runner comprueba el marcador de ownership y el target permitido. **No se permite `DROP`/`TRUNCATE` solo porque el nombre contenga `test`.**
+- El `global-setup` actual crea un contenedor nuevo con nombre único y label `com.clearsight.test.run-id`, y escribe el marker `test_meta`; no hay branch de adopción externa.
+- `resetDb` verifica que el marker coincida con el run ID inyectado antes de truncar. `TEST_DATABASE_URL` se rechaza antes de crear cliente/contenedor.
 
-**Tests CURRENT que usan esta fase:**
+**Tests de integración que usan esta fase (config explícita):**
 
 ```powershell
-# Solo con stack/DB aislados y ownership verificado
-npm --prefix backend run test -- tests/migrations.test.ts
-npm --prefix backend run test -- tests/repositories.test.ts
-npm --prefix backend run test -- tests/rbac.test.ts
+# Requiere Docker/Testcontainers; no ejecutar sin daemon local y sin TEST_DATABASE_URL.
+npm --prefix backend run test:integration -- tests/migrations.test.ts
+npm --prefix backend run test:integration -- tests/repositories.test.ts
+npm --prefix backend run test:integration -- tests/rbac.test.ts
 ```
 
 **Cleanup (solo con ownership verificado):**
@@ -327,19 +337,22 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `node --version`, `npm --version`, `python --version`, `docker --version`, `az version` | CURRENT | Seguro, read-only. |
 | `openspec validate consolidate-backend-ml-azure --strict` | CURRENT | Seguro, documental. |
 | `npm --prefix backend run typecheck` | CURRENT | Estático, sin DB. |
-| `npm --prefix backend run test` | CURRENT | **Destructivo**: dispara `globalSetup`; requiere DB efímera/ownership. |
-| `npm --prefix backend run test -- tests/schemas.test.ts` | CURRENT | **También dispara `globalSetup`**; no es aislado. |
+| `npm --prefix backend run test` / `test:unit` | CURRENT | Runner unitario aislado: allowlist pura, sin `globalSetup`/DB/red. |
+| `npm --prefix backend run test:unit -- tests/schemas.test.ts` | CURRENT | Seguro; un filtro solo reduce la allowlist. |
+| `npm --prefix backend run test:watch` | CURRENT | Watch del runner unitario; sin DB. |
+| `npm --prefix backend run test:integration` | CURRENT (config) / NO EJECUTADO localmente | Requiere Docker; crea Testcontainers con ownership y rechaza `TEST_DATABASE_URL`. |
+| `TEST_DATABASE_URL=... test:integration` | **RECHAZADO** | Cualquier presencia de la variable aborta antes de cliente/contenedor. |
 | `python -m pytest ml/tests/test_service.py -q` | CURRENT | Stubs, sin cloud real. |
 | `python -m pytest ml/tests/test_onnx_serving.py -q` | CURRENT | Requiere pesos locales. |
 | `docker compose -p <proyecto> config --quiet` / `config --services` | CURRENT | Valida merge efectivo sin imprimir secretos. |
 | `docker compose -p <proyecto> up ...` sobre el compose raíz | **NO LISTO** | `name: clearsight`, volúmenes sin labels y red externa compartida; no ejecutar literal. |
-| Testcontainers con ownership explícito / compose test-only verificado | FUTURO | Preferido para Fase 3; no crear infraestructura en este change. |
+| Testcontainers con ownership explícito | CURRENT (config/guard) | Usado por `test:integration`; no ejecutado localmente por daemon ausente. |
 | `scripts/e2e-backend.ps1` | CURRENT | E2E local parcial; requiere stack/seed; no usar contra producción. |
 | `scripts/test_azure_e2e.py` | CURRENT PARCIAL | Solo ML service; no flujo backend completo. |
 | `scripts/benchmark_latency.py` | CURRENT | Solo forward; no p95 full-flow. |
 | `npm run e2e` | **NO EXISTE** | No usar ni documentar como disponible. |
-| `backend/vitest.unit.config.ts` + `test:unit` | FUTURO | Aislaría tests puros sin `globalSetup`. No crear en este change. |
-| Guard de ownership marker | FUTURO | Requerido antes de automatizar fases destructivas. |
+| `backend/vitest.unit.config.ts` + `test:unit` | CURRENT | Runner puro sin `globalSetup`; verificado 6 files / 57 tests. |
+| Guard de ownership marker | CURRENT | `test_meta` + label de run; verificado con mocks. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

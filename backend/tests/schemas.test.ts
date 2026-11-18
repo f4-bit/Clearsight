@@ -4,7 +4,7 @@ import { CLASS_LABELS } from "../src/schemas/common.js";
 import { CLINICAL_FEATURE_NAMES, ClinicalFeaturesSchema, extractClinicalFeatures } from "../src/schemas/clinical.js";
 import { FeedbackCreate } from "../src/schemas/feedback.js";
 import { patientCreateSchema, registerRequestSchema } from "../src/schemas/index.js";
-import { FEATURES } from "./helpers/db.js";
+import { FEATURES } from "./fixtures/clinical.js";
 
 const base = () => ({ consultation_id: randomUUID(), inference_id: randomUUID(), validated_class: 1 });
 

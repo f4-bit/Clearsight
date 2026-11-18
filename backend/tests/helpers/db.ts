@@ -3,30 +3,47 @@ import { inject } from "vitest";
 import { createPrismaClient, type PrismaClient } from "../../src/lib/prisma.js";
 import { createRepositories } from "../../src/repositories/index.js";
 import type { UserRole } from "../../src/generated/prisma/enums.js";
+import { FEATURES } from "../fixtures/clinical.js";
+import { assertOwnershipRunId, TEST_OWNERSHIP_TABLE } from "./ownership.js";
+
+export { FEATURES };
+
+function injectedDatabaseUrl(): string {
+  const url = inject("databaseUrl");
+  if (typeof url !== "string" || url.length === 0) {
+    throw new Error("Integration test context is missing the ephemeral database URL");
+  }
+  return url;
+}
+
+function injectedOwnershipRunId(): string {
+  const runId = inject("databaseOwnership");
+  if (typeof runId !== "string" || runId.length === 0) {
+    throw new Error("Integration test context is missing the ownership run id");
+  }
+  return runId;
+}
 
 export function createTestPrisma(): PrismaClient {
-  return createPrismaClient(inject("databaseUrl"));
+  const url = injectedDatabaseUrl();
+  injectedOwnershipRunId();
+  return createPrismaClient(url);
+}
+
+export async function assertTestDatabaseOwnership(prisma: PrismaClient): Promise<void> {
+  const runId = injectedOwnershipRunId();
+  const rows = await prisma.$queryRawUnsafe<Array<{ run_id: string }>>(
+    `SELECT run_id FROM ${TEST_OWNERSHIP_TABLE}`,
+  );
+  assertOwnershipRunId(rows, runId);
 }
 
 export async function resetDb(prisma: PrismaClient): Promise<void> {
+  await assertTestDatabaseOwnership(prisma);
   await prisma.$executeRawUnsafe(
     "TRUNCATE TABLE clinical_feedback, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE",
   );
 }
-
-export const FEATURES = {
-  Age: 63,
-  Gender: 1,
-  dioptre_1: -1.5,
-  dioptre_2: 0.5,
-  astigmatism: 90,
-  "Phakic/Pseudophakic": 1,
-  Pneumatic: 18,
-  Perkins: 17,
-  Pachymetry: 540,
-  Axial_Length: 24.1,
-  VF_DM: -3.2,
-} as const;
 
 export async function makeUser(prisma: PrismaClient, role: UserRole = "OFTALMOLOGO") {
   return prisma.user.create({
