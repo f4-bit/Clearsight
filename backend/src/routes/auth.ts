@@ -7,69 +7,36 @@ import { authenticate } from "../middleware/auth.js";
 import {
   currentUserSchema,
   loginRequestSchema,
-  registerRequestSchema,
   tokenResponseSchema,
 } from "../schemas/auth.js";
 import { errorResponseSchema } from "../schemas/common.js";
 
+/** Public self-registration is retired for security (REG-005). */
+const PUBLIC_REGISTRATION_GONE = {
+  error: "Gone",
+  message: "Public registration has been retired",
+  statusCode: 410,
+} as const;
+
 export async function authRoutes(app: FastifyInstance) {
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
 
-  // POST /auth/register
+  // POST /auth/register — unconditionally retired. No body schema is installed
+  // on purpose: any valid JSON shape gets the same 410 and malformed JSON is
+  // rejected by the transport parser before any account logic could run.
   typedApp.post(
     "/register",
     {
       schema: {
         tags: ["Auth"],
-        summary: "Register a new clinical user",
-        body: registerRequestSchema,
+        summary: "Public registration (retired)",
         response: {
-          201: tokenResponseSchema,
-          400: errorResponseSchema,
-          409: errorResponseSchema,
+          410: errorResponseSchema,
         },
       },
     },
-    async (request, reply) => {
-      const { email, password, role, fullName } = request.body;
-
-      const existing = await prisma.user.findUnique({
-        where: { email },
-      });
-
-      if (existing) {
-        return reply.status(409).send({
-          error: "Conflict",
-          message: "User with this email already exists",
-          statusCode: 409,
-        });
-      }
-
-      const passwordHash = await bcrypt.hash(password, 10);
-      const user = await prisma.user.create({
-        data: {
-          email,
-          passwordHash,
-          fullName: fullName ?? email.split("@")[0] ?? email,
-          role,
-        },
-      });
-
-      const accessToken = app.jwt.sign(
-        { sub: user.id, role: user.role },
-        { expiresIn: env.JWT_EXPIRES_IN }
-      );
-
-      return reply.status(201).send({
-        accessToken,
-        tokenType: "bearer",
-        expiresIn: env.JWT_EXPIRES_IN,
-        user: {
-          id: user.id,
-          email: user.email,
-          role: user.role,
-        },
-      });
+    async (_request, reply) => {
+      return reply.status(410).send(PUBLIC_REGISTRATION_GONE);
     }
   );
 

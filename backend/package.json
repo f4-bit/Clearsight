@@ -22,6 +22,7 @@
     "prisma:deploy": "tsx scripts/migrate-deploy.ts",
     "prisma:seed": "tsx prisma/seed.ts",
     "seed": "prisma db seed",
+    "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "etl:feedback": "tsx scripts/etl-feedback.ts"
   },
   "prisma": {

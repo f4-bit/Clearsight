@@ -11,9 +11,11 @@ src/
   schemas/                    contrato Zod (common, clinical, patient, consultation, image, inference, feedback, auth)
   repositories/               CRUD Prisma: user, patient, consultation, image, inference, feedback
   services/gold-standard-export.ts   export anonimizado JSON/CSV (lo usan la ruta y el ETL)
+  services/admin-bootstrap.ts  bootstrap controlado del primer ADMIN (transacción + auditoría)
   middleware/                 auth (JWT HS256) y rbac — mínimos, reemplazables por los del módulo de auth
   routes/feedback.ts          POST /feedback · GET /export/gold-standard
 prisma/                       schema.prisma · migrations/ · seed.ts
+scripts/bootstrap-admin.ts    CLI env-only del primer administrador
 scripts/etl-feedback.ts       ETL feedback validado -> dataset de reentrenamiento
 tests/                        Vitest + Postgres efímero
 ```
@@ -29,6 +31,42 @@ npm run prisma:deploy                # preflight auditable + aplica prisma/migra
 npx prisma db seed                   # datos sintéticos (nunca en production)
 npm run dev
 ```
+
+## Bootstrap del primer administrador
+
+El alta pública `POST /auth/register` está **retirada** y responde `410 Gone`: no acepta
+rol, no consulta la base, no hashea contraseñas y no emite tokens. El primer `ADMIN` se
+crea con un CLI controlado contra una base owned/aprobada:
+
+```bash
+cd backend
+export MIGRATION_DATABASE_URL='postgresql://...'   # o DATABASE_URL; sin fallback localhost
+export BOOTSTRAP_ADMIN_EMAIL='<email-operador>'
+export BOOTSTRAP_ADMIN_FULL_NAME='<nombre-completo>'
+export BOOTSTRAP_ADMIN_PASSWORD='<secreto-gestionado>'
+npm run admin:bootstrap
+```
+
+- Las credenciales se leen **solo** de `BOOTSTRAP_ADMIN_*`; no existe `--password` por argv
+  ni carga de `.env`/dotenv en la ruta del CLI.
+- La contraseña debe tener al menos 12 code points Unicode y como máximo 72 bytes UTF-8
+  (límite de bcrypt: se rechaza en vez de truncar). El hash usa bcrypt cost 12.
+- Solo se crea el **primer** administrador. Si ya existe cualquier `ADMIN` (activo o no) o
+  el email normalizado ya pertenece a otro usuario, el comando falla cerrado sin escribir.
+- Usuario y auditoría `ADMIN_BOOTSTRAP` (`SYSTEM`/`USER`/`SUCCESS`) se escriben en la misma
+  transacción bajo un lock global; si la auditoría falla, no queda ningún admin.
+- La salida no imprime email, contraseña, hash ni DSN. Los tests usan credenciales
+  sintéticas y una base efímera de Testcontainers; no se usan datos reales.
+- Códigos de salida: `0` = commit confirmado y cleanup completo; `1` = fallo de operación
+  (el error primario se conserva aunque el cleanup también falle); `2` = commit confirmado
+  con cleanup pendiente. En el caso `2` el recibo sigue siendo
+  `[bootstrap] ok userId=... role=ADMIN operationStatus=COMMITTED cleanup=PENDING` y stderr
+  solo emite el aviso constante `BOOTSTRAP_DISCONNECT_FAILED`; no se declara rollback.
+- Un error de red ambiguo no se presenta como rollback garantizado: la base pudo haber
+  confirmado antes de perderse la respuesta. El CLI no reintenta el bootstrap ni crea un
+  segundo administrador automáticamente.
+- `POST /admin/users` y las sesiones/revocación son tareas posteriores (1.8/5.5); este CLI
+  no implementa el ciclo de vida completo de cuentas.
 
 ## Migraciones
 

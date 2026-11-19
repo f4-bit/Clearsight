@@ -64,7 +64,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | Método | Ruta | Auth actual | Request actual | Response actual | Limitaciones actuales |
 |---|---|---|---|---|---|
 | GET | `/health` | Público | — | `{ status: string, service: string, timestamp: ISO }` | Estable. |
-| POST | `/auth/register` | Público | `{ email: string(email), password: string(>=8), fullName?: string(1..255), role?: "OFTALMOLOGO"\|"INVESTIGADOR"\|"ADMIN" = "OFTALMOLOGO" }` | `201 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` | **Alta pública con rol elegible: insegura. No usar para crear ADMIN.** |
+| POST | `/auth/register` | Público | Cualquier JSON válido; sin validación de `role` (JSON malformado lo rechaza el parser HTTP con `400`) | `410 { error: "Gone", message: string, statusCode: 410 }` | **Retirado: no crea cuentas, no consulta la base y no emite token. El alta del primer admin es un CLI controlado (bootstrap), no un endpoint público.** |
 | POST | `/auth/login` | Público | `{ email: string(email), password: string }` | `200 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` | `accessToken` sí existe actualmente; no hay lockout HU01 ni sesión verificada por request. |
 | GET | `/auth/me` | Bearer | — | `{ id: UUID, email: string, role }` | No valida `isActive` ni sesión. |
 | POST | `/patients` | Bearer, rol OFTALMOLOGO/ADMIN | `{ externalCode?: string(<=64)\|null, age?: number(int 0..130)\|null, gender?: string(<=16)\|null, clinicalHistoryFlags?: object = {}, clinicalData?: object = {} }` | `201 { id: UUID, externalCode: string\|null, age: number\|null, gender: string\|null, clinicalHistoryFlags: object, clinicalData: object\|null, createdAt: ISO }` | Admin puede crear sin ownership clínico definido. |
@@ -319,7 +319,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 
 ## 11. Reglas de consumo para frontend
 
-1. No usar el `POST /auth/register` actual para crear administradores; es inseguro.
+1. `POST /auth/register` está retirado (`410`); no usarlo para crear cuentas ni administradores. El primer admin se crea con el bootstrap controlado; el alta administrativa `POST /admin/users` sigue pendiente (1.8).
 2. No guardar access tokens en `localStorage`; el refresh web va en cookie HttpOnly/Secure/SameSite.
 3. No enviar `imageUrl`; no construir URLs de storage; pedir URL nueva al backend si expira.
 4. No asumir que `GET /inferences/:id` actual devuelve estado/artefactos; en TARGET sí, pero marcado `proposed`.

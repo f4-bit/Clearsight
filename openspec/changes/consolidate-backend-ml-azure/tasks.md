@@ -63,11 +63,11 @@
   - **Test:** `npm --prefix backend run test:unit` → **8 files / 109 tests passed**; `npm --prefix backend run test:integration -- tests/migration-deploy.integration.test.ts` → **1 file / 27 tests passed** (histórico previo: 26); `npm --prefix backend run test:integration` → **12 files / 182 tests passed** (histórico previo: 180); `typecheck`/`build` → exit 0; Prisma `validate`/`generate` con `prisma.migrate.config.ts` y URL sintética → exit 0; Docker build + árbol LF + URL inválida → readiness gate OK, `MIGRATION_CONNECTION_FAILED`, exit 1 sin filtrar el DSN.
   - **Coverage:** “Database Schema Initialization (init.sql)”, resolución condicionada, fallo cerrado, portabilidad CRLF/LF y objetos inesperados. No declara verificado el deploy real en Azure ni una base de producción.
 
-- [ ] 1.6 Implementar bootstrap de administrador controlado y eliminar el alta pública con rol.
+- [x] 1.6 Implementar bootstrap de administrador controlado y eliminar el alta pública con rol.
   - **Scope:** `backend/prisma/seed.ts`, `backend/src/routes/auth.ts:18-60`, `backend/src/schemas/auth.ts`; nuevo script de bootstrap.
   - **When/Then:** WHEN un cliente público envía `role=ADMIN` THEN no se crea un administrador; WHEN se ejecuta el bootstrap aprobado THEN se crea el primer admin de forma auditable.
-  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts tests/jwt.test.ts` con casos nuevos.
-  - **Coverage:** “Bootstrap de administrador controlado”, “Tres roles con mínimo privilegio y default deny”.
+  - **Test:** `npm --prefix backend run test:unit` → **11 files / 138 tests passed**; `npm --prefix backend run test:integration -- tests/admin-bootstrap.integration.test.ts` → **1 file / 32 tests passed**; `npm --prefix backend run test:integration` → **13 files / 214 tests passed**; `typecheck`/`build` → exit 0. Incluye la regresión real de `result` conocido + `$disconnect` que falla: exit `2`, `operationStatus=COMMITTED cleanup=PENDING`, aviso constante y sin secreto.
+  - **Coverage:** “Bootstrap de administrador controlado”, “Tres roles con mínimo privilegio y default deny”. No implementa `POST /admin/users` (1.8), sesiones/refresh/revocación (5.5) ni el ciclo de vida completo de administración.
 
 - [ ] 1.7 Backfill y compatibilidad de datos legacy.
   - **Scope:** migraciones A/B; normalización de `consultations.status`, referencias `s3://`/`azure://`, alias `Phakic_Pseudophakic`, `hashMd5` actual vs `checksumSha256` target.

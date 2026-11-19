@@ -158,6 +158,23 @@
 | Rol/cleanup | `SET ROLE clearsight_app` permite SELECT/INSERT/UPDATE seguros y auditoría/snapshot INSERT; deniega UPDATE/DELETE de historial, DELETE/TRUNCATE, DDL y `test_meta`. La migración falla si PUBLIC/otro rol concede efectivamente DELETE/TRUNCATE/UPDATE de historial; no modifica el ACL de PUBLIC. `RESET ROLE` permite al owner truncar fixtures/limpiar. Inventario Docker con labels propios sin residuos. |
 | Únicos/límites | No crea LOGIN runtime, no cambia `DATABASE_URL` y no afirma mínimo privilegio del DSN actual; provisioning/login y readiness son 8.x. Owner/superuser y `TRUNCATE`/DDL privilegiado siguen fuera de triggers de fila. No cubre outbox 4.6 ni servicios auth. |
 
+## 1.9 Evidencia HITO 9 — bootstrap admin y retiro del alta pública (2026-11-18)
+
+> Evidencia local de la tarea 1.6. Solo PostgreSQL efímero de Testcontainers con ownership; sin Azure, `.env.azure`, DB real, PHI, correos reales ni secretos. No se modificaron dependencias, lockfiles ni SQL histórico. Las credenciales de prueba son sintéticas.
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | `POST /auth/register` responde `410 Gone` con `errorResponseSchema` para cualquier JSON válido, sin body schema, DB, bcrypt ni JWT (JSON malformado: `400` del parser). Se añadió `bootstrapAdmin` inyectado y el CLI `npm run admin:bootstrap` con env-only, lock `clearsight:admin-lifecycle:v1`, transacción `ReadCommitted`, bcrypt cost 12 y auditoría `ADMIN_BOOTSTRAP` en la misma transacción. |
+| Unitario | `npm --prefix backend run test:unit` → **11 files passed, 138 tests passed**, duración `1.93 s`, exit 0. Incluye validadores (normalización, 12 code points, 72 bytes UTF-8), errores seguros, control de flujo con cliente inyectado, bordes adversarios y ramas del CLI (`0/1/2`, primario vs cleanup). |
+| Integración focalizada | `npm --prefix backend run test:integration -- tests/admin-bootstrap.integration.test.ts` → **1 file passed, 32 tests passed**, duración `18.67 s`, exit 0. Cubre bootstrap real, bcrypt cost 12, datos normalizados, auditoría sin PII, segundo bootstrap con admin inactivo, conflicto case-insensitive, concurrencia, rollback por fallo de auditoría, CLI éxito/errores seguros sin secretos, registro `410` sin efectos, argv ignorado, schema MIGRATION y F01 cleanup. |
+| Integración completa | `npm --prefix backend run test:integration` → **13 files passed, 214 tests passed**, duración `98.52 s`, exit 0. |
+| Typecheck/build | `npm --prefix backend run typecheck` → exit 0; `npm --prefix backend run build` → exit 0. |
+| F01 cleanup | Regresión real en PostgreSQL owned: el bootstrap confirma usuario + auditoría y luego `$disconnect` lanza un error sintético con URL/credencial/host canary; el CLI devuelve **exit 2**, stdout conocido `operationStatus=COMMITTED cleanup=PENDING`, stderr constante `BOOTSTRAP_DISCONNECT_FAILED` sin interpolar el driver ni declarar rollback. La consulta independiente verifica 1 `ADMIN` y 1 auditoría `SYSTEM`/`ADMIN_BOOTSTRAP` con el mismo `targetUserId`. |
+| CLI/secretos | El CLI no imprime email, contraseña, hash ni DSN; stdout solo `userId`/`role` más estado/cleanup. Configuración o input inválido fallan antes de construir el cliente/red con códigos `BOOTSTRAP_*`. Exit `0` = commit+cleanup, `1` = fallo primario (sin reemplazo por cleanup), `2` = commit+cleanup pendiente. No se acepta `--password` por argv ni se lee `.env`; no hay reintento automático. |
+| Docker/cleanup | Inventario posterior con `docker ps -a` filtrado por `com.clearsight.test.owner=backend-integration` y `docker volume ls` por el label de ownership: sin salida. No se borró nada manualmente ni ajeno. |
+| Registro | REG-005 actualizado a `resuelto`/`cubierto` con permiso explícito del arquitecto y test de regresión. REG-006 (JWT/sesión sin `isActive`/revocación) **sigue activo**: login/me/JWT no cambiaron en esta tarea. |
+| Límites | No implementa `POST /admin/users` (1.8), el servicio general de auditoría (5.5) ni sesiones/refresh/revocación. No declara el ciclo de vida completo de cuentas ni el despliegue seguro de auth. El bootstrap solo crea el primer `ADMIN`; no hay recuperación, reactivación ni escalado operativo. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
