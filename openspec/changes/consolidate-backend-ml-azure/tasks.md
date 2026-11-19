@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migraciones 1.1/1.2/1.3 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migraciones 1.1/1.2/1.3/1.4 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -50,12 +50,12 @@
   - **Test:** `npm --prefix backend run test:integration -- tests/identity-migrations.test.ts` → **1 file / 18 tests passed**; `npm --prefix backend run test:integration` → **10 files / 129 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `typecheck`/`build` → exit 0; Prisma `validate`/`generate` con config temporal sin dotenv.
   - **Coverage:** “Idempotencia persistida del backend” (solo unicidad/replay DB; servicio 4.4), “Auditoría append-only de acciones sensibles” (servicio 5.5), “Sesiones, refresh, logout y recuperación seguros” (comportamiento 5.7/5.8/5.9). El registro no convierte estas operaciones en implementadas.
 
-- [ ] 1.4 Constraints e índices de integridad.
-  - **Scope:** migraciones A/B/C; `@@unique`, índices y triggers/permisos de auditoría.
-  - **When/Then:** WHEN dos inserciones concurrentes violan unicidad THEN una falla de forma segura; WHEN se intenta mutar auditoría THEN se impide.
+- [x] 1.4 Constraints e índices de integridad.
+  - **Scope:** `backend/prisma/migrations/20261118030000_integrity_hardening/migration.sql`, `backend/tests/integrity-migrations.test.ts`, allowlists; A/B/C sin editar. Incluye locks deterministas de selección/contexto, guard de reparentado de imagen y rol global `clearsight_app` con grants mínimos. No crea LOGIN, no cambia runtime/DSN ni credenciales.
+  - **When/Then:** WHEN freeze y borrado/contexto compiten THEN las dos órdenes terminan con rechazo explícito y sin estado inconsistente; WHEN una imagen con inferencias intenta cambiar consulta/ojo THEN se rechaza; WHEN la app ejecuta DML permitido THEN funciona, pero auditoría/snapshot no se mutan, no hay DELETE/TRUNCATE ni DDL; WHEN D se reaplica THEN no reescribe evidencia ni degrada el rol.
   - **Depends on:** 1.2, 1.3.
-  - **Test:** `npm --prefix backend run test -- tests/migrations.test.ts tests/repositories.test.ts`.
-  - **Coverage:** “Idempotencia persistida del backend”, “Auditoría append-only de acciones sensibles”, “Referencia de artefacto estructurada y estable”.
+  - **Test:** `npm --prefix backend run test:integration -- tests/integrity-migrations.test.ts` → **1 file / 25 tests passed**; `npm --prefix backend run test:integration` → **11 files / 154 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `typecheck`/`build` → exit 0; Prisma `validate` con schema sin cambios.
+  - **Coverage:** “Idempotencia persistida del backend”, “Auditoría append-only de acciones sensibles”, “Referencia de artefacto estructurada y estable”, integridad transaccional freeze/delete/contexto y mínimo privilegio DB. No declara todas las carreras/superuser/TRUNCATE resueltas.
 
 - [ ] 1.5 Condicionar la resolución de `0_init` a un esquema verificado.
   - **Scope:** `docker/migrate.Dockerfile:18`, posible `docker/migrate.sh`; test de entrypoint.
@@ -387,7 +387,7 @@
 ## 8. Azure aislado
 
 - [ ] 8.1 Implementar script de despliegue aislado con tags, manifest y prohibición de `.env.azure`.
-  - **Scope:** `scripts/deploy_azure.ps1` o nuevo script; configuración solo por procedimiento seguro aprobado.
+  - **Scope:** `scripts/deploy_azure.ps1` o nuevo script; configuración solo por procedimiento seguro aprobado. Incluye provisioning futuro de un LOGIN distinto con membresía en `clearsight_app` para runtime; no leer credenciales/`DATABASE_URL` actuales en esta tarea.
   - **When/Then:** WHEN se ejecuta con decisiones confirmadas THEN crea recursos con prefijo/tags y escribe manifest; WHEN falta presupuesto/alcance THEN aborta antes de crear.
   - **Test:** dry-run/stub; revisión de logs sin secretos.
   - **Coverage:** “Provisión aislada por ejecución con alcance confirmado”, “Prohibición de leer o exponer `.env.azure`”, “Azure Infrastructure Provisioning Automation”.

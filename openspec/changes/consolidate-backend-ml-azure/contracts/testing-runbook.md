@@ -141,6 +141,23 @@
 | Docker/cleanup | Inventario previo y posterior con filtros de ownership/Testcontainers y volúmenes: sin salida tras el cleanup. Solo se consultaron recursos etiquetados; no se borró nada manualmente ni ajeno. |
 | Límites | No implementa login/registro/refresh/reset/auditoría/idempotencia de aplicación; solo DB. El outbox de 4.6 requiere migración incremental propia. `TRUNCATE`/DDL privilegiado y carreras siguen en 1.4. No se añadió entrada al registro de regresiones. |
 
+## 1.8 Evidencia HITO 7 — integridad concurrente y rol app (2026-11-18)
+
+> Evidencia local de la tarea 1.4. Solo PostgreSQL efímero de Testcontainers con ownership; sin Azure, `.env.azure`, DB real ni datos clínicos reales. No se modificaron dependencias ni lockfiles. La evidencia HITO 6 se conserva como histórica (10 files / 129 tests QA).
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | Migración aditiva `20261118030000_integrity_hardening`: locks `FOR SHARE` deterministas y schema-qualified en selección/contexto, guard de reparentado de `images` sin locks de hijos (solo EXISTS tras el write lock propio), verificación efectiva de ACL y grupo global `clearsight_app` NOLOGIN con grants mínimos por `current_schema()`. A/B/C sin editar. |
+| Migración focalizada | `npm --prefix backend run test:integration -- tests/integrity-migrations.test.ts` → **1 file passed, 25 tests passed**, duración `11.91 s`, exit 0. Incluye ambas órdenes freeze/delete, identidad seleccionada, reparentado, reanálisis, multi-ID, replay, SET ROLE, decoys de `search_path`, deadlock regression y matriz de ACL efectiva. |
+| Integración completa | `npm --prefix backend run test:integration` → **11 files passed, 154 tests passed**, duración `43.12 s`, exit 0. |
+| Unitario | `npm --prefix backend run test:unit` → **6 files passed, 57 tests passed**, duración `630 ms`, exit 0. Allowlist integración con 11 archivos; runner unitario sin ampliar. |
+| Typecheck/build | `npm --prefix backend run typecheck` → exit 0; `npm --prefix backend run build` → exit 0. |
+| Prisma | Sin cambios de modelos; `prisma validate --schema=<abs backend/prisma/schema.prisma>` → schema válido. |
+| Concurrencia | Dos conexiones reales, `lock_timeout` 3–5 s y observación de `pg_stat_activity`/`pg_blocking_pids`; todas las carreras probadas terminaron con rechazo explícito y estado final consistente. El regression de inversión image/child ya no produce `40P01`: el guard de imagen rechaza por hijos existentes sin esperar locks de filas hijas. No se declara ausencia universal de deadlocks. |
+| Correcciones QA | QA reportó **21/23 focused (2 red)**. Q1/Q2: locks/EXISTS de D resuelven relaciones vía `EXECUTE format('%I...', TG_TABLE_SCHEMA)`, verificado con `search_path` decoy. H1: se eliminaron los `PERFORM` de self-image y filas hijas del guard, dejando solo `EXISTS` schema-qualified tras el write lock propio; regression sin `40P01`. R3: se verifica el privilegio efectivo de `clearsight_app` (incluido PUBLIC) y se falla cerrado sin reescribir ACL de PUBLIC. Resultado tras fix: **25/25 focused**. |
+| Rol/cleanup | `SET ROLE clearsight_app` permite SELECT/INSERT/UPDATE seguros y auditoría/snapshot INSERT; deniega UPDATE/DELETE de historial, DELETE/TRUNCATE, DDL y `test_meta`. La migración falla si PUBLIC/otro rol concede efectivamente DELETE/TRUNCATE/UPDATE de historial; no modifica el ACL de PUBLIC. `RESET ROLE` permite al owner truncar fixtures/limpiar. Inventario Docker con labels propios sin residuos. |
+| Únicos/límites | No crea LOGIN runtime, no cambia `DATABASE_URL` y no afirma mínimo privilegio del DSN actual; provisioning/login y readiness son 8.x. Owner/superuser y `TRUNCATE`/DDL privilegiado siguen fuera de triggers de fila. No cubre outbox 4.6 ni servicios auth. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

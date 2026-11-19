@@ -305,6 +305,17 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 - `TRUNCATE`/DDL de owner privilegiado siguen fuera de los triggers de fila y pertenecen a 1.4. No se declara detección universal de PII/secretos: las comprobaciones URI/firma son acotadas y el servicio futuro deberá usar campos tipados.
 - El outbox de 4.6 no se incluye en C; requerirá su propia migración incremental al ejecutar 4.6. `docker/init.sql` permanece inmutable.
 
+### D17. Integrity hardening y rol de aplicación mínimo (1.4)
+
+**Decisión (SQL/tests, sin runtime auth):** La migración D refuerza carreras y prepara el rol DB de aplicación:
+
+- El freeze de `requiredExecutionIds` bloquea las inferencias existentes con `FOR SHARE` en orden UUID determinista y **schema-qualified** (sin agregados con lock), y después revalida pertenencia/duplicados contra un snapshot fresco READ COMMITTED. Delete-first hace esperar al freeze y este rechaza la fila desaparecida; freeze-first hace esperar al delete y el guard A ve la selección confirmada. Las identidades seleccionadas siguen siendo inmutables.
+- El contexto de inferencia conserva los `FOR SHARE` de imagen/padre (padre→imágenes) para validar y serializar. El guard de reparentado **no** toma locks de self-image ni de filas hijas: el UPDATE ya posee el write lock propio y un `EXISTS` schema-qualified detecta hijos comprometidos; así se evita la inversión image→child que producía `40P01`. Un `images` con inferencias no puede cambiar `consultation_id`/`eye_side`; una imagen sin referencias sí puede. No se declara ausencia universal de deadlocks.
+- `clearsight_app` es un grupo global `NOLOGIN`, no superuser/createdb/createrole/replication/bypassrls. Si ya existe con atributos inseguros o como miembro de otro rol, la migración falla; no degrada roles ajenos. La creación requiere `CREATEROLE` explícito del login de despliegue.
+- Los grants se aplican solo a `current_schema()`: USAGE sin CREATE; SELECT/INSERT/UPDATE en tablas mutables conocidas; SELECT/INSERT en `audit_events`/`clinical_snapshots`; DELETE/TRUNCATE/TRIGGER/REFERENCES revocados. Después se verifica el privilegio **efectivo** de `clearsight_app` (incluido lo heredado de PUBLIC u otro rol) y se falla cerrado sin reescribir ACL de PUBLIC. `test_meta`, `_prisma_migrations` y objetos futuros no reciben grant. No se añade `BEFORE TRUNCATE`.
+- El rol es una preparación de seguridad: el runtime actual no cambia de DSN. El provisioning futuro (8.x) debe crear un LOGIN distinto, miembro de `clearsight_app`, y la readiness de producción debe verificar que la sesión no es owner/superuser. No se declara que la `DATABASE_URL` actual sea de mínimo privilegio.
+- Los triggers de fila siguen sin proteger `TRUNCATE`/DDL de owner privilegiado; el test owner conserva cleanup. D no reclama integridad concurrente universal ni resuelve retención/B3, outbox 4.6 o servicios de aplicación.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -345,6 +356,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-034 | Migración A aditiva: snapshot inmutable, selección `UUID[]` con freeze, metadatos legacy nullable y `init.sql` baseline sin cambios | agreed (implemented 1.1) | D14, D1, D3 |
 | ADR-035 | Migración B aditiva: artifact records versionados, PDF versionado inmutable, `result` inline y sin URLs/SAS persistidas | agreed (implemented 1.2) | D15, D4, D5, D11 |
 | ADR-036 | Migración C aditiva: sesiones/credenciales hash-only, auditoría append-only e idempotencia DB; outbox diferido a 4.6 | agreed (implemented 1.3) | D16, D7, D9, D10 |
+| ADR-037 | Migración D: locks deterministas freeze/contexto, guard de reparentado de imagen y rol `clearsight_app` mínimo; LOGIN runtime queda 8.x | agreed (implemented 1.4) | D17, ADR-004, ADR-015 |
 
 ## Risks / Trade-offs
 
