@@ -195,6 +195,27 @@
 - El guard de produccion rechaza los placeholders publicos de `.env.example` (`replace-me...`), variantes `change-me`/`changeme` y valores vacios o cortos; una clave valida no-placeholder de 32+ caracteres sigue aceptada. No se leen `.env` reales ni `.env.azure`.
 - Este hito **no** declara toda la autenticacion como asegurada: 5.2, 5.3, 5.6, 5.8 y 5.9 siguen pendientes.
 
+## 1.11 Evidencia HITO 11 - login protection 5.3 (2026-11-19)
+
+> Cierre acotado tras QA PASSED y reviewer sin defectos. Solo PostgreSQL efímero de Testcontainers con ownership; sin Azure, `.env.azure`, DB real, credenciales reales ni datos clínicos. Fuente de producción ya aprobada; este hito añade únicamente la evidencia de cierre y dos pruebas de contrato.
+
+| Elemento | Resultado observado |
+|---|---|
+| Unit | **16 files / 283 tests passed** |
+| Login guard integration | **1 file / 35 tests passed** |
+| Full integration | **15 files / 281 tests passed** |
+| Typecheck/build | exit 0 |
+| OpenSpec strict | Pendiente del CLI del parent (el agente tiene denegado el comando); documentos actualizados de forma nativa |
+| Docker/cleanup | labels `com.clearsight.test.owner=backend-integration` y `org.testcontainers=true` y volúmenes de ownership vacíos antes/después; no se tocaron recursos preexistentes (`redkeep_db`), red ni `SRS ClearSight.pdf` |
+
+- **HU01:** cinco fallos consecutivos -> `429` con contador 5 y bloqueo 15 min; 4 fallos -> `401`; éxito previo al umbral -> reset 0 y el siguiente fallo cuenta 1; éxito durante el bloqueo -> `429` sin sesión, sin reset y sin extender `lockedUntil`; boundary exacto -> login correcto y reset. Fallos concurrentes en el umbral -> un solo lock y contador 5.
+- **Atomicidad:** el fallo se confirma en su propia transacción antes de lanzar el `401/429`; el reset de éxito ocurre dentro de la tx de sesión/audit/firma, por lo que un fallo de signer/audit revierte el reset y conserva el contador previo. La prueba stale re-registra exactamente un fallo; un intento throttled no duplica el conteo.
+- **Desconocidos:** misma secuencia `401/429` y mismo vencimiento que un identificador conocido, sin usuario falso; el estado user/bucket se mantiene coherente y el `max` de ambos sobrevive a la rotación del secreto. Un lock expirado reinicia el contador.
+- **IP complementaria:** `IP_RATE_LIMIT=100` intentos por `IP_RATE_WINDOW_SECONDS=60` s; enteros positivos dentro de un cap operativo (0/negativo no desactiva). Cuota compartida por NAT entre cuentas; el peer real de Fastify (`trustProxy:false`) se usa como clave y un `X-Forwarded-For` falsificado no cambia la cuota. `Retry-After` positivo desde la ventana/bloqueo restante; llamadas internas sin metadata usan el bucket `INTERNAL` y no omiten la cuota.
+- **Almacenamiento:** buckets pseudónimos HMAC-SHA256 con subclave derivada por propósito (`clearsight:auth-login-protection:v1`) y separador kind+NUL; no se almacenan ni registran emails/IP/secretos/contraseñas crudas. No se declara anonimización universal ni igualdad estricta de timing; la cuota IP es complementaria y no una garantía anti-DoS. El reset es lógico (ventana/lock), no una purga de evidencia clínica.
+- **Rol restringido:** `clearsight_app` recibe S/I/U en D+E. Un Prisma real con `-c role=clearsight_app` ejecutó login fallido `401` (contador 1), login correcto `200`, reset de user/bucket a 0, `UserSession` + `AuditEvent` (`AUTH_SESSION_CREATED`, `USER`/`SUCCESS`) y `GET /auth/me` `200`; `CURRENT_USER` siguió siendo `clearsight_app` y `session_user` el owner. `TRUNCATE auth_login_buckets` bajo el rol falló con SQLSTATE `42501` sin perder filas. No se otorgó TRUNCATE, no se creó LOGIN/rol de producción ni se desplegó credencial real; el cleanup lo hizo el owner.
+- **Pendientes sin cambios:** 5.6 desactivación/supresión, 5.8 refresh/logout/cookies, 5.9 reset de contraseña, 1.8 alta admin y 5.2 ownership/grants de recursos. Este hito no los declara implementados.
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

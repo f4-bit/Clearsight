@@ -6,6 +6,12 @@ import {
   KNOWN_DEV_JWT_SECRET,
   parseAccessTtl,
 } from "../services/auth-policy.js";
+import {
+  DEFAULT_IP_RATE_LIMIT,
+  DEFAULT_IP_RATE_WINDOW_SECONDS,
+  MAX_IP_RATE_LIMIT,
+  MAX_IP_RATE_WINDOW_SECONDS,
+} from "../services/login-guard.js";
 
 dotenv.config();
 
@@ -38,6 +44,20 @@ const envSchema = z
   // Auth / JWT
   JWT_SECRET: z.string().default(KNOWN_DEV_JWT_SECRET),
   JWT_EXPIRES_IN: z.string().default(DEFAULT_JWT_ACCESS_TTL),
+  // Complementary per-IP login quota. Positive integers only: zero/negative is
+  // rejected in every environment instead of disabling production protection.
+  IP_RATE_LIMIT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_IP_RATE_LIMIT)
+    .default(DEFAULT_IP_RATE_LIMIT),
+  IP_RATE_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_IP_RATE_WINDOW_SECONDS)
+    .default(DEFAULT_IP_RATE_WINDOW_SECONDS),
 
   // ML Service
   ML_SERVICE_URL: z.string().default("http://localhost:8000"),

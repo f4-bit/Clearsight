@@ -1,27 +1,36 @@
 import bcrypt from "bcryptjs";
 import type { PrismaClient } from "../generated/prisma/client.js";
 import type { UserRole } from "../generated/prisma/enums.js";
+import {
+  assertValidDatabaseSchema,
+  DEFAULT_DATABASE_SCHEMA,
+} from "../lib/postgres-schema.js";
 import type { JwtPayload } from "../schemas/auth.js";
 import { MAX_ACCESS_TTL_SECONDS } from "./auth-policy.js";
+import {
+  type AuthLoginProtection,
+  LoginProtectionThrottledError,
+} from "./login-guard.js";
 import { PASSWORD_DUMMY_HASH } from "./password-policy.js";
+
+export { assertValidDatabaseSchema, DEFAULT_DATABASE_SCHEMA };
 
 /** Access token policy is owned by `auth-policy`; the service only consumes it. */
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_LOGIN_PASSWORD_UTF8_BYTES = 72;
-export const DEFAULT_DATABASE_SCHEMA = "public";
 
 const LOGIN_AUDIT_ACTION = "AUTH_SESSION_CREATED";
 const LOGIN_AUDIT_METADATA = { channel: "password" } as const;
 const INVALID_CREDENTIALS_MESSAGE = "Invalid credentials";
+const LOGIN_THROTTLED_MESSAGE = "Too many login attempts";
 const INVALID_SESSION_MESSAGE = "Invalid or expired session";
 const STORE_UNAVAILABLE_MESSAGE = "Authentication store is temporarily unavailable";
 const TOKEN_ISSUE_MESSAGE = "Access token could not be issued";
 const INVALID_ACCESS_TTL_MESSAGE = "accessTtl.seconds must be a positive integer no greater than 900";
 const INVALID_SESSION_TTL_MESSAGE =
   "sessionTtlMs must be a positive integer no greater than seven days";
-const INVALID_DATABASE_SCHEMA_MESSAGE = "databaseSchema must be a valid PostgreSQL identifier";
-const POSTGRES_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const MAX_POSTGRES_IDENTIFIER_BYTES = 63;
+const MISSING_LOGIN_PROTECTION_MESSAGE =
+  "loginProtection is required; the auth service never falls back to an unprotected path";
 
 const USER_AUTH_SELECT = {
   id: true,
@@ -60,6 +69,7 @@ interface SessionWithUser {
 
 export type AuthSessionErrorCode =
   | "AUTH_INVALID_CREDENTIALS"
+  | "AUTH_LOGIN_THROTTLED"
   | "AUTH_SESSION_INVALID"
   | "AUTH_STORE_UNAVAILABLE"
   | "AUTH_TOKEN_ISSUE_FAILED";
@@ -67,16 +77,22 @@ export type AuthSessionErrorCode =
 /** Stable service error surface; messages never include account or store details. */
 export class AuthSessionError extends Error {
   readonly code: AuthSessionErrorCode;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: AuthSessionErrorCode, message: string) {
+  constructor(code: AuthSessionErrorCode, message: string, retryAfterSeconds?: number) {
     super(message);
     this.name = "AuthSessionError";
     this.code = code;
+    if (retryAfterSeconds !== undefined) {
+      this.retryAfterSeconds = retryAfterSeconds;
+    }
   }
 }
 
 const invalidCredentials = () =>
   new AuthSessionError("AUTH_INVALID_CREDENTIALS", INVALID_CREDENTIALS_MESSAGE);
+const loginThrottled = (retryAfterSeconds: number) =>
+  new AuthSessionError("AUTH_LOGIN_THROTTLED", LOGIN_THROTTLED_MESSAGE, retryAfterSeconds);
 const invalidSession = () => new AuthSessionError("AUTH_SESSION_INVALID", INVALID_SESSION_MESSAGE);
 const storeUnavailable = () =>
   new AuthSessionError("AUTH_STORE_UNAVAILABLE", STORE_UNAVAILABLE_MESSAGE);
@@ -86,6 +102,11 @@ const tokenIssueFailed = () =>
 export interface LoginCredentials {
   readonly email: string;
   readonly password: string;
+}
+
+/** Optional request context; direct callers get the synthetic internal IP bucket. */
+export interface LoginRequestMetadata {
+  readonly clientIp?: string;
 }
 
 export interface LoginUser {
@@ -125,12 +146,18 @@ export interface AuthSessionServiceOptions {
   readonly databaseSchema?: string;
   readonly now?: () => Date;
   readonly sessionTtlMs?: number;
+  /** Mandatory durable guard; there is no no-op or NODE_ENV test bypass. */
+  readonly loginProtection: AuthLoginProtection;
 }
 
 export interface AuthSessionService {
   readonly accessTtlSeconds: number;
   readonly accessTtlLabel: string;
-  login(credentials: LoginCredentials, issueAccessToken: AccessTokenIssuer): Promise<LoginResult>;
+  login(
+    credentials: LoginCredentials,
+    issueAccessToken: AccessTokenIssuer,
+    metadata?: LoginRequestMetadata,
+  ): Promise<LoginResult>;
   verifySession(claims: JwtPayload): Promise<SafePrincipal>;
 }
 
@@ -154,22 +181,6 @@ function isPasswordWithinBcryptBound(password: unknown): password is string {
 }
 
 /**
- * Validates a schema name before it is embedded in a qualified raw query.
- * Only ASCII PostgreSQL identifiers of at most 63 bytes are accepted, which
- * excludes NUL, quotes, semicolons and other injection/truncation cases.
- */
-export function assertValidDatabaseSchema(schema: string): void {
-  if (
-    typeof schema !== "string" ||
-    schema.length === 0 ||
-    Buffer.byteLength(schema, "utf8") > MAX_POSTGRES_IDENTIFIER_BYTES ||
-    !POSTGRES_IDENTIFIER_PATTERN.test(schema)
-  ) {
-    throw new Error(INVALID_DATABASE_SCHEMA_MESSAGE);
-  }
-}
-
-/**
  * Creates the durable-session auth service on top of an injected database
  * client. Construction is lazy: it never connects, so building the app (or
  * hitting a retired route) performs no database work.
@@ -178,6 +189,11 @@ export function createAuthSessionService(
   db: PrismaClient,
   options: AuthSessionServiceOptions,
 ): AuthSessionService {
+  const loginProtection = options.loginProtection;
+  if (loginProtection === undefined || loginProtection === null) {
+    throw new Error(MISSING_LOGIN_PROTECTION_MESSAGE);
+  }
+
   const now = options.now ?? (() => new Date());
   const sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
   const accessTtlSeconds = options.accessTtl.seconds;
@@ -197,14 +213,43 @@ export function createAuthSessionService(
     throw new Error(INVALID_SESSION_TTL_MESSAGE);
   }
 
+  async function failWithGuard(email: string): Promise<never> {
+    let decision;
+    try {
+      decision = await loginProtection.recordFailure(email);
+    } catch {
+      throw storeUnavailable();
+    }
+    if (decision.blocked) {
+      throw loginThrottled(decision.retryAfterSeconds ?? 1);
+    }
+    throw invalidCredentials();
+  }
+
   async function login(
     credentials: LoginCredentials,
     issueAccessToken: AccessTokenIssuer,
+    metadata?: LoginRequestMetadata,
   ): Promise<LoginResult> {
     const issuedAt = now();
     const email = normalizeEmail(credentials?.email);
-    if (email === null || !isPasswordWithinBcryptBound(credentials?.password)) {
+    // Malformed/non-string transport values stay a cheap generic 401 and never
+    // touch the store or consume a bucket.
+    if (email === null || typeof credentials?.password !== "string") {
       throw invalidCredentials();
+    }
+
+    // All valid-schema credential attempts consume the complementary IP quota
+    // before any bcrypt work. It commits in its own short transaction first, so
+    // no user/identifier lock is held while the KDF runs.
+    let ipDecision;
+    try {
+      ipDecision = await loginProtection.reserveIpAttempt(metadata?.clientIp ?? null);
+    } catch {
+      throw storeUnavailable();
+    }
+    if (ipDecision.blocked) {
+      throw loginThrottled(ipDecision.retryAfterSeconds ?? 1);
     }
 
     let initial: AuthUserRecord | null;
@@ -217,26 +262,42 @@ export function createAuthSessionService(
       throw storeUnavailable();
     }
 
+    // Cheap precheck before bcrypt: the identifier bucket and any known user
+    // lock share the same constant generic 429, so unknown and known accounts
+    // follow the same observable sequence.
+    let precheck;
+    try {
+      precheck = await loginProtection.precheckIdentifier(email, initial?.lockedUntil ?? null);
+    } catch {
+      throw storeUnavailable();
+    }
+    if (precheck.blocked) {
+      throw loginThrottled(precheck.retryAfterSeconds ?? 1);
+    }
+
+    // A valid email with a password outside the bcrypt bound is still a failed
+    // credential attempt and must count toward HU01.
+    if (!isPasswordWithinBcryptBound(credentials.password)) {
+      return failWithGuard(email);
+    }
+
     if (initial === null) {
       // Unknown accounts compare against a precomputed current-policy hash.
       // This approximates the cost-12 path only; malformed/disabled legacy rows
       // and older-cost hashes may differ, so no universal timing-oracle
       // guarantee is claimed.
       await bcrypt.compare(credentials.password, PASSWORD_DUMMY_HASH).catch(() => false);
-      throw invalidCredentials();
+      return failWithGuard(email);
     }
 
     const passwordMatches = await bcrypt
       .compare(credentials.password, initial.passwordHash)
       .catch(() => false);
     if (!passwordMatches) {
-      throw invalidCredentials();
+      return failWithGuard(email);
     }
     if (!initial.isActive) {
-      throw invalidCredentials();
-    }
-    if (initial.lockedUntil !== null && initial.lockedUntil.getTime() > issuedAt.getTime()) {
-      throw invalidCredentials();
+      return failWithGuard(email);
     }
 
     try {
@@ -266,9 +327,6 @@ export function createAuthSessionService(
           if (!current.isActive) {
             throw invalidCredentials();
           }
-          if (current.lockedUntil !== null && current.lockedUntil.getTime() > issuedAt.getTime()) {
-            throw invalidCredentials();
-          }
           if (
             current.passwordHash !== initial.passwordHash ||
             current.tokenVersion !== initial.tokenVersion ||
@@ -276,6 +334,11 @@ export function createAuthSessionService(
           ) {
             throw invalidCredentials();
           }
+
+          // The user row is already locked first; this locks the identifier
+          // bucket second, rechecks any inherited lock and only then resets the
+          // counters. A later audit/sign failure rolls the reset back.
+          await loginProtection.assertAndResetForSuccess(tx, email, current.id);
 
           const session = await tx.userSession.create({
             data: {
@@ -333,7 +396,17 @@ export function createAuthSessionService(
         { isolationLevel: "ReadCommitted" },
       );
     } catch (error) {
+      if (error instanceof LoginProtectionThrottledError) {
+        // Thrown inside the login transaction, so no session was committed and
+        // the inherited lock is not reset or extended.
+        throw loginThrottled(error.retryAfterSeconds);
+      }
       if (error instanceof AuthSessionError) {
+        if (error.code === "AUTH_INVALID_CREDENTIALS") {
+          // A stale proof detected after the bcrypt check becomes exactly one
+          // recorded failure in its own committed transaction.
+          return failWithGuard(email);
+        }
         throw error;
       }
       throw storeUnavailable();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PrismaClient } from "../../src/generated/prisma/client.js";
 import { MAX_ACCESS_TTL_SECONDS } from "../../src/services/auth-policy.js";
+import type { AuthLoginProtection } from "../../src/services/login-guard.js";
 import {
   assertValidDatabaseSchema,
   createAuthSessionService,
@@ -8,7 +9,18 @@ import {
   SESSION_TTL_MS,
 } from "../../src/services/session.js";
 
-const baseOptions = { accessTtl: { seconds: 900, label: "15m" } };
+/**
+ * Pure wiring double: every method is coherent and returns a constant. It never
+ * runs the real guard; integration tests prove the production behavior.
+ */
+const loginProtection: AuthLoginProtection = {
+  reserveIpAttempt: async () => ({ blocked: false }),
+  precheckIdentifier: async () => ({ blocked: false }),
+  recordFailure: async () => ({ blocked: false }),
+  assertAndResetForSuccess: async () => undefined,
+};
+
+const baseOptions = { accessTtl: { seconds: 900, label: "15m" }, loginProtection };
 const fakeDb = {} as PrismaClient;
 
 function trapDb(): PrismaClient {
@@ -20,12 +32,27 @@ function trapDb(): PrismaClient {
 }
 
 describe("auth session constructor policy", () => {
+  it("requires an injected durable guard and never falls back to no protection", () => {
+    expect(() =>
+      createAuthSessionService(trapDb(), {
+        accessTtl: { seconds: 900, label: "15m" },
+      } as unknown as Parameters<typeof createAuthSessionService>[1]),
+    ).toThrow(/loginProtection is required/);
+    expect(() =>
+      createAuthSessionService(trapDb(), {
+        accessTtl: { seconds: 900, label: "15m" },
+        loginProtection: null,
+      } as unknown as Parameters<typeof createAuthSessionService>[1]),
+    ).toThrow(/loginProtection is required/);
+  });
+
   it("accepts the default and shorter trusted TTLs", () => {
     expect(() => createAuthSessionService(fakeDb, baseOptions)).not.toThrow();
     expect(() =>
       createAuthSessionService(fakeDb, {
         accessTtl: { seconds: 60, label: "1m" },
         sessionTtlMs: 60 * 60 * 1000,
+        loginProtection,
       }),
     ).not.toThrow();
     expect(MAX_ACCESS_TTL_SECONDS).toBe(900);

@@ -263,6 +263,24 @@ model UserSession {
   @@map("user_sessions")
 }
 
+/// Durable login-protection counters (HU01 + complementary per-IP quota).
+/// Only purpose-scoped HMAC pseudonymous hashes are stored; no raw email, IP,
+/// secret or password column exists. There is intentionally no FK to users:
+/// unknown identifiers are counted and account deletion must not evict state.
+model AuthLoginBucket {
+  kind            String    @db.VarChar(16)
+  keyHash         String    @map("key_hash") @db.VarChar(64)
+  failureCount    Int       @default(0) @map("failure_count")
+  windowStartedAt DateTime? @map("window_started_at") @db.Timestamptz(6)
+  lockedUntil     DateTime? @map("locked_until") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([kind, keyHash])
+  @@index([lockedUntil], map: "idx_auth_login_buckets_locked_until")
+  @@index([updatedAt], map: "idx_auth_login_buckets_updated_at")
+  @@map("auth_login_buckets")
+}
+
 /// Append-only audit record. Actor/target identity, action, outcome, timestamp
 /// and metadata are immutable; SQL rules enforce actor/target pairing and the
 /// bounded metadata defense. No tokens, SAS or URLs are expected.

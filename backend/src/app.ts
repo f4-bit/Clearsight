@@ -26,16 +26,31 @@ import {
   DEFAULT_JWT_ACCESS_TTL,
   parseAccessTtl,
 } from "./services/auth-policy.js";
+import { createAuthLoginProtection } from "./services/login-guard.js";
 import {
   createAuthSessionService,
+  DEFAULT_DATABASE_SCHEMA,
   type AuthSessionService,
 } from "./services/session.js";
 
 export interface AppDeps {
   env: Pick<Env, "JWT_SECRET" | "EXPORT_HMAC_SECRET"> &
-    Partial<Pick<Env, "NODE_ENV" | "CORS_ORIGIN" | "JWT_EXPIRES_IN">>;
+    Partial<
+      Pick<
+        Env,
+        | "NODE_ENV"
+        | "CORS_ORIGIN"
+        | "JWT_EXPIRES_IN"
+        | "IP_RATE_LIMIT"
+        | "IP_RATE_WINDOW_SECONDS"
+      >
+    >;
   prisma: PrismaClient;
   logger?: boolean;
+  /** Explicit target schema shared by the auth service and the login guard. */
+  databaseSchema?: string;
+  /** Trusted clock seam shared by session issuance and login protection. */
+  now?: () => Date;
   /** Trusted test seam; the default is always built from the injected prisma. */
   authService?: AuthSessionService;
 }
@@ -57,6 +72,9 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
 
   const app = Fastify({
     logger: deps?.logger ?? (nodeEnv === "development" && !deps),
+    // request.ip is the actual socket peer; reverse-proxy XFF trust is a
+    // deliberate future 8.x trusted-CIDR decision, never a global bypass.
+    trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
 
   // 1. Zod compiler setup
@@ -90,11 +108,27 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     verify: { algorithms: ["HS256"], requiredClaims: ["exp", "iat"] },
   });
 
+  // The login guard is mandatory and always built from the injected client and
+  // server secret. Construction only derives an HMAC subkey; it never connects.
+  const databaseSchema = deps?.databaseSchema ?? DEFAULT_DATABASE_SCHEMA;
+  const loginProtection = createAuthLoginProtection(prisma, {
+    jwtSecret: cfg.JWT_SECRET,
+    databaseSchema,
+    now: deps?.now,
+    ipRateLimit: cfg.IP_RATE_LIMIT,
+    ipRateWindowSeconds: cfg.IP_RATE_WINDOW_SECONDS,
+  });
+
   // The auth service is always built from the injected client; construction is
   // lazy and performs no connection or query.
   const authService =
     deps?.authService ??
-    createAuthSessionService(prisma, { accessTtl });
+    createAuthSessionService(prisma, {
+      accessTtl,
+      databaseSchema,
+      now: deps?.now,
+      loginProtection,
+    });
   app.decorate("authService", authService);
 
   // 3. Swagger / OpenAPI documentation

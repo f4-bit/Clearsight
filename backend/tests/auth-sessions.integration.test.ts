@@ -9,6 +9,10 @@ import { PrismaClient as GeneratedPrismaClient } from "../src/generated/prisma/c
 import type { UserRole } from "../src/generated/prisma/enums.js";
 import { prisma as defaultPrisma, type PrismaClient } from "../src/lib/prisma.js";
 import { createAuthSessionService } from "../src/services/session.js";
+import {
+  createAuthLoginProtection,
+  type AuthLoginProtectionOptions,
+} from "../src/services/login-guard.js";
 import { bearer, buildTestApp, TEST_ENV } from "./helpers/app.js";
 import {
   createTestPrisma,
@@ -76,10 +80,18 @@ async function me(target: FastifyInstance, token: string) {
   });
 }
 
+function buildGuard(
+  db: PrismaClient,
+  overrides: Omit<AuthLoginProtectionOptions, "jwtSecret"> = {},
+) {
+  return createAuthLoginProtection(db, { jwtSecret: TEST_ENV.JWT_SECRET, ...overrides });
+}
+
 function beforeTransactionClient(
   base: PrismaClient,
   mutate: () => Promise<unknown>,
 ): PrismaClient {
+  let transactions = 0;
   return new Proxy(base, {
     get(target, property, receiver) {
       if (property === "$transaction") {
@@ -87,7 +99,14 @@ function beforeTransactionClient(
           ...args: unknown[]
         ) => Promise<unknown>;
         return async (callback: unknown, options?: unknown) => {
-          await mutate();
+          transactions += 1;
+          // The first transaction is the guard's independent IP reservation,
+          // committed before the password KDF. The login transaction is the
+          // second: mutate only there, after the bcrypt proof, so the stale
+          // proof is re-checked under the real user row lock.
+          if (transactions === 2) {
+            await mutate();
+          }
           return transaction(callback, options);
         };
       }
@@ -338,16 +357,14 @@ describe("durable access sessions", () => {
     expect(afterMe.lastUsedAt).toBeNull();
   });
 
-  it("returns the same generic 401 for every invalid login without writes", async () => {
+  it("returns the same generic 401 for invalid credentials and never issues a session", async () => {
     const active = await createUser();
     const inactive = await createUser({ isActive: false });
-    const locked = await createUser({ lockedUntil: new Date(Date.now() + 3_600_000) });
 
     const attempts = [
       { label: "unknown", payload: { email: "missing-login@clearsight.test", password: PASSWORD } },
       { label: "wrong password", payload: { email: active.email, password: "wrong-password" } },
       { label: "inactive", payload: { email: inactive.email, password: PASSWORD } },
-      { label: "locked", payload: { email: locked.email, password: PASSWORD } },
       { label: "over 72 bytes", payload: { email: active.email, password: "x".repeat(73) } },
     ];
 
@@ -366,6 +383,28 @@ describe("durable access sessions", () => {
       expect(response.body, attempt.label).not.toContain("accessToken");
     }
 
+    expect(await prisma.userSession.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+  });
+
+  it("returns the documented 429 with Retry-After for an already-locked identifier", async () => {
+    const locked = await createUser({ lockedUntil: new Date(Date.now() + 3_600_000) });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { email: locked.email, password: PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.json()).toEqual({
+      error: "Too Many Requests",
+      message: "Too many login attempts",
+      statusCode: 429,
+    });
+    expect(Number(response.headers["retry-after"])).toBeGreaterThan(0);
+    expect(response.body).not.toContain("accessToken");
+    expect(response.body).not.toContain(locked.email);
     expect(await prisma.userSession.count()).toBe(0);
     expect(await prisma.auditEvent.count()).toBe(0);
   });
@@ -622,6 +661,7 @@ describe("durable access sessions", () => {
     const user = await createUser();
     const service = createAuthSessionService(prisma, {
       accessTtl: { seconds: 900, label: "15m" },
+      loginProtection: buildGuard(prisma),
     });
 
     await expect(
@@ -874,12 +914,13 @@ describe("adversarial corners: lockout vs deactivation policy", () => {
       url: "/auth/login",
       payload: { email: user.email, password: PASSWORD },
     });
-    expect(blocked.statusCode).toBe(401);
+    expect(blocked.statusCode).toBe(429);
     expect(blocked.json()).toEqual({
-      error: "Unauthorized",
-      message: "Invalid credentials",
-      statusCode: 401,
+      error: "Too Many Requests",
+      message: "Too many login attempts",
+      statusCode: 429,
     });
+    expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(0);
 
     // The pre-lockout session is still valid (lockout != deactivation)...
     expect((await me(app, token)).statusCode).toBe(200);
@@ -931,6 +972,7 @@ describe("adversarial corners: token issuer failure modes", () => {
     const user = await createUser();
     const service = createAuthSessionService(prisma, {
       accessTtl: { seconds: 900, label: "15m" },
+      loginProtection: buildGuard(prisma),
     });
 
     await expect(
@@ -951,6 +993,7 @@ describe("adversarial corners: token issuer failure modes", () => {
     const user = await createUser();
     const service = createAuthSessionService(prisma, {
       accessTtl: { seconds: 900, label: "15m" },
+      loginProtection: buildGuard(prisma),
     });
 
     await expect(
@@ -965,6 +1008,7 @@ describe("adversarial corners: token issuer failure modes", () => {
     const user = await createUser();
     const service = createAuthSessionService(prisma, {
       accessTtl: { seconds: 900, label: "15m" },
+      loginProtection: buildGuard(prisma),
     });
 
     const result = await service.login({ email: user.email, password: PASSWORD }, async () => {
@@ -1155,6 +1199,7 @@ describe("adversarial corners: DI seam and test-double source equality", () => {
     // the route schema: too long or blank -> generic invalid credentials.
     const service = createAuthSessionService(prisma, {
       accessTtl: { seconds: 900, label: "15m" },
+      loginProtection: buildGuard(prisma),
     });
     const issuer = async () => "never-emitted";
     await expect(
@@ -1187,6 +1232,7 @@ describe("database schema robustness", () => {
       const service = createAuthSessionService(scoped, {
         accessTtl: { seconds: 900, label: "15m" },
         databaseSchema: schema,
+        loginProtection: buildGuard(scoped, { databaseSchema: schema }),
       });
       const user = await scoped.user.create({
         data: {
@@ -1260,6 +1306,7 @@ describe("database schema robustness", () => {
       const service = createAuthSessionService(scoped, {
         accessTtl: { seconds: 900, label: "15m" },
         databaseSchema: "public",
+        loginProtection: buildGuard(scoped, { databaseSchema: "public" }),
       });
 
       await holder.query("BEGIN");

@@ -263,11 +263,13 @@
   - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts`.
   - **Coverage:** “Tres roles con mínimo privilegio y default deny”, “Autenticación y autorización por endpoint y recurso”.
 
-- [ ] 5.3 Implementar HU01: cinco fallos consecutivos, 15 minutos, éxito reinicia contador.
-  - **Scope:** nuevo `backend/src/services/login-guard.ts`; `backend/src/routes/auth.ts:76-130`; almacén atómico de intentos/bloqueos.
-  - **When/Then:** WHEN cinco fallos consecutivos THEN bloqueo 15 min; WHEN éxito intermedio THEN contador reinicia; WHEN éxito durante bloqueo THEN no desbloquea; WHEN dos intentos concurrentes cruzan umbral THEN se bloquea una sola vez; rate limit por IP responde `429`.
-  - **Test:** `npm --prefix backend run test -- tests/jwt.test.ts` con reloj controlado y concurrencia.
-  - **Coverage:** “Autenticación con bloqueo HU01 y rate limit”.
+- [x] 5.3 Implementar HU01: cinco fallos consecutivos, 15 minutos, éxito reinicia contador.
+  - **Scope:** `backend/src/services/login-guard.ts`, `backend/src/services/session.ts`, `backend/src/routes/auth.ts`, `backend/src/lib/postgres-schema.ts`; migración `20261119000000_login_protection` y `backend/prisma/schema.prisma` (`AuthLoginBucket`).
+  - **When/Then:** WHEN cinco fallos consecutivos THEN `429` y bloqueo 15 min (contador 5); WHEN éxito intermedio THEN contador 0 y el siguiente fallo es 1; WHEN éxito durante bloqueo THEN `429` sin sesión, sin reset y sin extender el lock; WHEN dos fallos concurrentes cruzan el umbral THEN se bloquea una sola vez (contador 5, user/bucket coherentes); WHEN el boundary exacto expira THEN login correcto y reset; WHEN la IP supera 100 intentos/60 s THEN `429` con `Retry-After`; WHEN falla signer/audit THEN el reset se revierte y se conserva el contador previo; WHEN el identificador es desconocido THEN misma secuencia `401/429` sin usuario falso.
+  - **Depends on:** 1.3, 1.4.
+  - **Test:** `npm --prefix backend run test:unit` -> **16 files / 283 tests passed**; `npm --prefix backend run test:integration -- tests/login-protection.integration.test.ts` -> **1 file / 35 tests passed**; `npm --prefix backend run test:integration` -> **15 files / 281 tests passed**; `typecheck`/`build` exit 0.
+  - **Evidence:** vectores HMAC independientes (Python `hmac`/`hashlib`) en `backend/tests/unit/login-protection.test.ts`; pipeline real bajo `clearsight_app` en `backend/tests/login-protection.integration.test.ts` (CURRENT_USER app, login/me con S/I/U de D+E, TRUNCATE `42501` sin pérdida de filas); fallo durable se confirma en su tx antes de lanzar y reset de éxito dentro de la tx de sesión/audit/sign.
+  - **Coverage:** "Autenticación con bloqueo HU01 y rate limit".
 
 - [ ] 5.4 Proteger al último administrador activo con transacción y bloqueo.
   - **Scope:** servicio de administración de usuarios; `backend/src/repositories/user.repo.ts`; ruta admin.

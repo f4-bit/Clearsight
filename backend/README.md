@@ -73,9 +73,12 @@ npm run admin:bootstrap
 - El access token es un JWT HS256 con `{ sub, role, sessionId, tokenVersion }`; `exp` e `iat` son obligatorios. El TTL por defecto es 15 minutos (`JWT_EXPIRES_IN=15m`) y no puede superar 900 s.
 - Cada request protegida valida la firma y los claims, y despues consulta una sesion durable, usuario activo y version/rol vigentes. Token invalido o sesion revocada/expirada responde `401` generico; store no disponible responde `503` sin datos.
 - La sesion tecnica es absoluta de 7 dias. Los tokens antiguos que no incluyen `sessionId`/`tokenVersion` dejan de ser validos.
-- Nuevos hashes (bootstrap, seed y futuras altas administrativas) usan bcrypt cost 12. Hashes legacy con coste menor (por ejemplo cost 10) siguen siendo aceptados para login; no se re-hashean sin la contrasena y quedan pendientes de rate limit/upgrades (5.3).
-- Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` construido con `databaseSchema` igual al schema configurado en el cliente.
-- Este hito no es un release de seguridad completo: ownership/grants (5.2), lockout/rate limit (5.3), ciclo de vida administrativo/revocacion masiva (5.6/admin), refresh/logout/cookies (5.8) y reset (5.9) siguen pendientes.
+- Nuevos hashes (bootstrap, seed y futuras altas administrativas) usan bcrypt cost 12. Hashes legacy con coste menor (por ejemplo cost 10) siguen siendo aceptados para login; no se re-hashean sin la contrasena.
+- HU01: cinco fallos consecutivos responden `429` y bloquean el identificador 15 minutos (contador 5); un exito previo reinicia el contador y el siguiente fallo cuenta 1; un exito durante el bloqueo no desbloquea ni emite sesion; al expirar el boundary exacto el login correcto se permite y resetea.
+- Cuota IP complementaria: `IP_RATE_LIMIT=100` intentos por `IP_RATE_WINDOW_SECONDS=60` s (enteros positivos; 0/negativo no desactiva). Comparte cuota entre cuentas detras de una NAT; usa `request.ip` y no confia en `X-Forwarded-For` (`trustProxy:false`). El `429` incluye `Retry-After` positivo y un body generico sin contador, email ni estado de cuenta.
+- Los contadores son buckets pseudonimos HMAC-SHA256 (email normalizado / IP), sin PII cruda en tablas ni logs. El reset es logico (ventana/bloqueo), no una purga de evidencia clinica. No se garantiza igualdad estricta de timing ni inmunidad DoS: la cuota IP es complementaria, no un escudo global.
+- Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` y un guard construidos con `databaseSchema` igual al schema configurado en el cliente.
+- Este hito no es un release de seguridad completo: ownership/grants (5.2), ciclo de vida administrativo/revocacion masiva (5.6/admin), refresh/logout/cookies (5.8), reset (5.9) y alta admin (1.8) siguen pendientes.
 
 ## Migraciones
 
@@ -130,6 +133,8 @@ npm run admin:bootstrap
 
 | Ruta | Rol | Notas |
 | --- | --- | --- |
+| `POST /auth/login` | Público (rate limit/HU01) | Zod; `200` token; `401` genérico; `429` genérico con `Retry-After` (5 fallos/15 min y cuota IP 100/60); `503` fail closed sin datos. |
+| `GET /auth/me` | Bearer + sesión vigente | Valida firma/claims, sesión durable, usuario activo y rol/versión; `401`/`503`. |
 | `POST /feedback` | `OFTALMOLOGO` (dueño de la consulta) | Zod + upsert por `(inference_id, doctor_id)`. `doctor_id` sale del JWT; `predicted_class`, `confidence` y `agreement` se derivan de la inferencia guardada (lo que mande el cliente se ignora). `validated_class: null` = no concluyente y no puede ser gold standard. Siempre responde 200 con la fila guardada. |
 | `GET /export/gold-standard?format=json\|csv&since=<ISO>&limit=<n>` | `INVESTIGADOR`, `ADMIN` | Solo `is_gold_standard = true`. Anonimizado: `doctor_id` = HMAC-SHA256 con `EXPORT_HMAC_SECRET`; sin notas, sin ids de paciente/consulta. Cabecera `x-has-more`. El CSV tiene las columnas que lee `scripts/retrain_cycle.py --samples`. |
 

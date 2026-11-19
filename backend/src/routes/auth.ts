@@ -23,6 +23,13 @@ const INVALID_CREDENTIALS = {
   statusCode: 401,
 } as const;
 
+/** One generic body for identifier lockout and the complementary IP quota. */
+const LOGIN_THROTTLED = {
+  error: "Too Many Requests",
+  message: "Too many login attempts",
+  statusCode: 429,
+} as const;
+
 const AUTHENTICATION_UNAVAILABLE = {
   error: "service_unavailable",
   message: "Authentication is temporarily unavailable",
@@ -62,20 +69,31 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: tokenResponseSchema,
           401: errorResponseSchema,
+          429: errorResponseSchema,
           503: errorResponseSchema,
         },
       },
     },
     async (request, reply) => {
       try {
-        const result = await app.authService.login(request.body, (claims, expiresInSeconds) =>
-          app.jwt.sign(claims, { expiresIn: expiresInSeconds })
+        const result = await app.authService.login(
+          request.body,
+          (claims, expiresInSeconds) => app.jwt.sign(claims, { expiresIn: expiresInSeconds }),
+          { clientIp: request.ip }
         );
         return reply.send(result);
       } catch (error) {
         if (error instanceof AuthSessionError) {
           if (error.code === "AUTH_INVALID_CREDENTIALS") {
             return reply.status(401).send(INVALID_CREDENTIALS);
+          }
+          if (error.code === "AUTH_LOGIN_THROTTLED") {
+            // Retry-After is the stable remaining lock/window in whole seconds;
+            // the body never carries account state, identifier or counter data.
+            return reply
+              .header("Retry-After", String(error.retryAfterSeconds ?? 1))
+              .status(429)
+              .send(LOGIN_THROTTLED);
           }
           // Store/sign/audit failures are safe and never expose driver output.
           return reply.status(503).send(AUTHENTICATION_UNAVAILABLE);
