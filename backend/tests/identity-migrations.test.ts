@@ -247,7 +247,7 @@ async function insertIdempotency(
       opts.responseStatus ?? null,
       opts.responseBody === undefined ? null : JSON.stringify(opts.responseBody),
       opts.acceptedAt ?? null,
-      opts.createdAt ?? new Date(),
+      opts.createdAt ?? opts.acceptedAt ?? new Date(),
     ],
   );
 }
@@ -891,6 +891,23 @@ describe("migration C direct guards: live-state isolation, NULL-logic and time b
     await insertRefreshToken(RT1, D1, SESS1, { tokenHash: HASH_A });
     const rows = await client.query("SELECT user_id, session_id FROM refresh_tokens WHERE id = $1", [RT1]);
     expect(rows.rows).toEqual([{ user_id: D1, session_id: SESS1 }]);
+  });
+
+  it("reuses a pinned accepted instant for created_at when createdAt is omitted", async () => {
+    await seedBase();
+    const acceptedAt = new Date("2026-01-01T00:00:00.000Z");
+    await insertIdempotency(ID1, D1, I1, {
+      key: "pinned-accepted",
+      state: "ACCEPTED",
+      responseStatus: 202,
+      responseBody: acceptedBody(I1, J1),
+      acceptedAt,
+    });
+    const row = await client.query(
+      "SELECT accepted_at, created_at FROM idempotency_records WHERE id = $1",
+      [ID1],
+    );
+    expect(row.rows).toEqual([{ accepted_at: acceptedAt, created_at: acceptedAt }]);
   });
 
   it("enforces credential time bounds and bounded session reason codes", async () => {
