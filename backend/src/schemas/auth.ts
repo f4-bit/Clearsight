@@ -63,10 +63,48 @@ export const adminCreateUserRequestSchema = z
 
 export type AdminCreateUserRequest = z.infer<typeof adminCreateUserRequestSchema>;
 
+/**
+ * Strict PATCH body. Password and credential material stay out of account
+ * lifecycle updates; at least one supported field is required by the service.
+ */
+export const adminUpdateUserRequestSchema = z
+  .object({
+    email: canonicalEmailSchema.optional(),
+    fullName: z.string().trim().min(1).max(255).optional(),
+    role: roleEnum.optional(),
+    isActive: z.boolean().optional(),
+  })
+  .strict();
+
+export type AdminUpdateUserRequest = z.infer<typeof adminUpdateUserRequestSchema>;
+
+export const adminUserIdParamsSchema = z.object({ id: z.uuid() }).strict();
+
+export const adminUserListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    offset: z.coerce.number().int().min(0).default(0),
+    role: roleEnum.optional(),
+    isActive: z.preprocess(
+      (value) =>
+        value === "true" ? true : value === "false" ? false : value,
+      z.boolean().optional(),
+    ),
+    q: z.preprocess(
+      (value) => (typeof value === "string" ? value.trim() : value),
+      z.string().max(255).optional(),
+    ),
+  })
+  .strict();
+
+export type AdminUserListQuery = z.infer<typeof adminUserListQuerySchema>;
+
 /** Minimal safe projection returned by the administrative create endpoint. */
 export const adminUserResponseSchema = z.object({
   id: z.uuid(),
-  email: z.string().email().max(255),
+  // Read projections keep legacy values visible for inspection/repair; new
+  // write inputs still use the canonical email schema.
+  email: z.string().max(255),
   fullName: z.string().max(255),
   role: roleEnum,
   isActive: z.boolean(),
@@ -75,6 +113,15 @@ export const adminUserResponseSchema = z.object({
 });
 
 export type AdminUserResponse = z.infer<typeof adminUserResponseSchema>;
+
+export const adminUserListResponseSchema = z.object({
+  items: z.array(adminUserResponseSchema),
+  total: z.number().int().min(0),
+  limit: z.number().int().min(1).max(100),
+  offset: z.number().int().min(0),
+});
+
+export type AdminUserListResponse = z.infer<typeof adminUserListResponseSchema>;
 
 export const tokenResponseSchema = z.object({
   accessToken: z.string(),

@@ -53,7 +53,7 @@ El helper compartido se aplica en bootstrap, login, login guard y alta admin. No
 
 ## Límites conocidos
 
-- `GET/PATCH /admin/users`, desactivación, cambio de rol y protección del último admin siguen pendientes (5.4/5.6/9.1).
+- `GET/PATCH /admin/users`, desactivación, cambio de rol y protección del último admin quedaron fuera de 1.8 y se implementaron en HITO14 (`docs/hito14-account-lifecycle-runbook.md`).
 - La API de lectura de auditoría sigue pendiente (9.2). El refresh/logout/reset siguen pendientes (5.8/5.9).
 - ACL/ownership clínico y export siguen pendientes (5.2). El rol `ADMIN` de una cuenta nueva no concede datasets clínicos.
 - El formato canónico actual no admite `%`/Unicode en el email; el escape literal queda preparado para filas legacy/futuras.

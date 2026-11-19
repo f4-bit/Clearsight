@@ -26,6 +26,7 @@ const INTEGRATION_INCLUDE = [
   "tests/health.test.ts",
   "tests/audit.integration.test.ts",
   "tests/user-admin.integration.test.ts",
+  "tests/user-lifecycle.integration.test.ts",
 ];
 
 describe("unit runner isolation", () => {

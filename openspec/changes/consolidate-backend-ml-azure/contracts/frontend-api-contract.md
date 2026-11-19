@@ -67,7 +67,10 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | POST | `/auth/register` | Público | Cualquier JSON válido; sin validación de `role` (JSON malformado lo rechaza el parser HTTP con `400`) | `410 { error: "Gone", message: string, statusCode: 410 }` | **Retirado: no crea cuentas, no consulta la base y no emite token. El alta del primer admin es un CLI controlado (bootstrap), no un endpoint público.** |
 | POST | `/auth/login` | Publico | `{ email: string(email), password: string }` | `200 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` | Emite JWT HS256 de 900 s con `sessionId`/`tokenVersion`; persiste sesion durable de 7 d y auditoria. `401` uniforme; `429` uniforme con `Retry-After` (HU01 5 fallos/15 min y cuota IP 100/60) sin contador, email ni estado; `503` si el store no esta disponible. |
 | GET | `/auth/me` | Bearer | - | `{ id: UUID, email: string, role }` | Valida firma, claims, sesion durable, usuario activo, rol/version vigentes y expiracion; `401` y `503`. |
-| POST | `/admin/users` | Bearer, ADMIN | `{ email: string(canonico, trim/lower, <=255), password: string(>=12 code points, <=72 UTF-8 bytes), fullName: string(trim 1..255), role?: "OFTALMOLOGO"\|"INVESTIGADOR"\|"ADMIN" = "OFTALMOLOGO" }` | `201 { id: UUID, email: string, fullName: string, role, isActive: true, createdAt: ISO, updatedAt: ISO }` | **Alta controlada implementada (1.8):** actor/sesion frescos en la misma tx, `USER_CREATED` auditado, email literal case-insensitive, `400/401/403/409/503`; no emite JWT. `GET/PATCH`, desactivacion y cambio de rol siguen deferidos. |
+| POST | `/admin/users` | Bearer, ADMIN | `{ email: string(canonico, trim/lower, <=255), password: string(>=12 code points, <=72 UTF-8 bytes), fullName: string(trim 1..255), role?: "OFTALMOLOGO"\|"INVESTIGADOR"\|"ADMIN" = "OFTALMOLOGO" }` | `201 { id: UUID, email: string, fullName: string, role, isActive: true, createdAt: ISO, updatedAt: ISO }` | **Alta controlada implementada (1.8):** actor/sesion frescos en la misma tx, `USER_CREATED` auditado, email literal case-insensitive, `400/401/403/409/503`; no emite JWT. `GET/PATCH` y ciclo de vida implementados en 5.4/5.6/9.1; DELETE no implementado. |
+| GET | `/admin/users` | Bearer, ADMIN | `limit?: number(1..100)=20`, `offset?: number(>=0)=0`, `role?`, `isActive?: "true"\|"false"`, `q?: string(trim<=255)` | `200 { items: User[7 safe fields], total: number, limit, offset }`; orden `createdAt DESC id ASC`; `q` literal case-insensitive sobre email/fullName | `400/401/403/503`; lectura sin auditoría masiva ni datos clínicos. |
+| GET | `/admin/users/:id` | Bearer, ADMIN | path UUID | `200 User` (7 safe fields; email/fullName string, sin imponer formato a legacy) | `400/401/403/404/503`. |
+| PATCH | `/admin/users/:id` | Bearer, ADMIN | path UUID; body estricto `{ email?, fullName?, role?, isActive? }`, al menos 1 campo; sin password/hash/tokenVersion/contadores/actor/grants | `200 User` (7 safe fields; sin token nuevo) | `400/401/403/404/409/503`; email ocupado `409`; último admin `409 LAST_ACTIVE_ADMIN`; email/role/isActive revocan sesiones/refresh/reset y suben `tokenVersion`; fullName no revoca; DELETE no implementado. |
 | POST | `/patients` | Bearer, rol OFTALMOLOGO/ADMIN | `{ externalCode?: string(<=64)\|null, age?: number(int 0..130)\|null, gender?: string(<=16)\|null, clinicalHistoryFlags?: object = {}, clinicalData?: object = {} }` | `201 { id: UUID, externalCode: string\|null, age: number\|null, gender: string\|null, clinicalHistoryFlags: object, clinicalData: object\|null, createdAt: ISO }` | Admin puede crear sin ownership clínico definido. |
 | GET | `/patients` | Bearer (sin rol/ownership) | `limit?: number(1..100)=20`, `offset?: number(>=0)=0` | `200 Patient[]` | **No es un endpoint “Bearer only” seguro en TARGET; hoy lista sin ownership.** |
 | GET | `/patients/:id` | Bearer | — | `200 Patient` | Sin ownership; hoy lectura clínica amplia. |
@@ -137,12 +140,14 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 | Método | Ruta | Estado | Nota |
 |---|---|---|---|
-| GET/PATCH | `/admin/users` | deferred | Lectura/edición admin diferida; **POST alta implementada (1.8)** en 3.1, no diferida. Desactivación/roles y último admin protegido desde que existan esas rutas. |
+| GET | `/admin/users` | implemented (5.4/5.6/9.1) | Paginado `limit=20/100`, `offset>=0`, `role`, `isActive` literal, `q` literal email/fullName; `{items,total,limit,offset}`. |
+| GET | `/admin/users/:id` | implemented (5.4/5.6/9.1) | Detalle seguro; `404` si no existe; `503` fail closed. |
+| PATCH | `/admin/users/:id` | implemented (5.4/5.6/9.1) | Body estricto email/fullName/role/isActive; sin credenciales/actor; revocación y último admin; DELETE no implementado. |
 | DELETE | `/admin/users/:id` | not planned | **No hay hard delete en este hito**, ni siquiera para cuentas sin actividad. La acción soportada es desactivación + revocación de sesiones; la supresión legal queda pendiente solo para producción. |
 | GET | `/admin/audit` | deferred | Auditoría operativa append-only, mínimo PHI. |
 | GET | `/consultations` | deferred | Historial/filtros/paginación, sin frontend en este hito. |
 
-> **Alta administrativa (H3):** al retirar `POST /auth/register` (`410`), `POST /admin/users` está **implementado (1.8)** como alta controlada desde el primer release, no un CRUD diferido. `GET/PATCH /admin/users` sí son diferidos, pero la protección del último admin se aplica desde que existan rutas de cambio/desactivación. Toda cuenta nueva MUST auditar alta, grant y asignación de rol; el default es clínico regular (`OFTALMOLOGO`) y `ADMIN` solo puede asignarse por un admin autenticado y auditado. No se deja registro público “por falta de UI”: el backend/API se entrega sin frontend.
+> **Alta administrativa (H3):** al retirar `POST /auth/register` (`410`), `POST /admin/users` está **implementado (1.8)** como alta controlada desde el primer release. GET listado/detalle y PATCH están implementados en 5.4/5.6/9.1; DELETE no está implementado (404/405, sin hard delete). La protección del último admin se aplica desde la ruta de cambio/desactivación. Toda cuenta nueva MUST auditar alta, grant y asignación de rol; el default es clínico regular (`OFTALMOLOGO`) y `ADMIN` solo puede asignarse por un admin autenticado y auditado. No se deja registro público "por falta de UI": el backend/API se entrega sin frontend.
 
 ## 4. Shapes concretos TARGET
 
@@ -320,7 +325,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 
 ## 11. Reglas de consumo para frontend
 
-1. `POST /auth/register` está retirado (`410`); no usarlo para crear cuentas ni administradores. El primer admin se crea con el bootstrap controlado; el alta administrativa `POST /admin/users` está implementada (1.8) y sigue sin frontend en este hito.
+1. `POST /auth/register` está retirado (`410`); no usarlo para crear cuentas ni administradores. El primer admin se crea con el bootstrap controlado; el alta administrativa `POST /admin/users` está implementada (1.8) y GET/PATCH están implementados (5.4/5.6/9.1), sin frontend en este hito.
 2. No guardar access tokens en `localStorage`; el refresh web va en cookie HttpOnly/Secure/SameSite.
 3. En `429` de login, respetar `Retry-After`; no mostrar ni derivar contadores, emails ni estado de cuenta (mismo body generico para conocido y desconocido).
 4. No enviar `imageUrl`; no construir URLs de storage; pedir URL nueva al backend si expira.
@@ -332,4 +337,4 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 10. No confundir `hashMd5` actual con `checksumSha256` target.
 11. No mostrar unidades/categorías clínicas no verificadas como validadas.
 12. No esperar un endpoint de aprobación de revisión ni un auto-complete manual; la resolución es un reanálisis con PDF independiente.
-13. No ofrecer hard delete de usuarios en este hito; la acción soportada es desactivación + revocación de sesiones.
+13. No ofrecer hard delete de usuarios: `DELETE /admin/users/:id` no está implementado (404/405); la acción soportada es desactivación + revocación de sesiones, sin borrado ni reasignación clínica.

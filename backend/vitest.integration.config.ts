@@ -30,6 +30,7 @@ export default defineConfig({
       "tests/health.test.ts",
       "tests/audit.integration.test.ts",
       "tests/user-admin.integration.test.ts",
+      "tests/user-lifecycle.integration.test.ts",
     ],
     globalSetup: ["./tests/global-setup.ts"],
     setupFiles: ["./tests/integration-setup.ts"],

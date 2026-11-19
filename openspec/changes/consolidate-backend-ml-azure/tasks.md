@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migraciones 1.1/1.2/1.3/1.4/1.5 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Implementadas: documentales 0.1/0.3/0.4, migraciones 1.1-1.6, alta 1.8, 3.1, 5.1, 5.3-5.7, 7.0/7.0.1 y ciclo de vida 5.4/5.6/9.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]`; salvo 9.1 (cerrada en HITO14), quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -77,7 +77,7 @@
   - **Coverage:** “Compatibilidad de referencias legacy”, “Compatibilidad y evolución del contrato”, “Nombres canónicos, mapeo y lateralidad”.
 
 - [x] 1.8 Implementar `POST /admin/users` como alta controlada prioritaria desde el primer release.
-  - **Scope:** nueva ruta admin `backend/src/routes/admin.ts` y registro en `backend/src/app.ts`; DTO canónico de email y alta en `backend/src/schemas/auth.ts`; servicio transaccional `backend/src/services/admin-users.ts` sobre `withAuditedTransaction` y `ADMIN_LIFECYCLE_LOCK_KEY`; helper puro `backend/src/lib/canonical-email.ts` compartido con login/bootstrap/guard; ajustes de email literal en `backend/src/services/{admin-bootstrap,session,login-guard}.ts`; tests unitarios e integración owned. Sin frontend. `GET/PATCH /admin/users`, desactivación, cambio de rol y protección del último admin siguen en 5.4/5.6/9.1; la lectura de auditoría sigue en 9.2.
+  - **Scope:** nueva ruta admin `backend/src/routes/admin.ts` y registro en `backend/src/app.ts`; DTO canónico de email y alta en `backend/src/schemas/auth.ts`; servicio transaccional `backend/src/services/admin-users.ts` sobre `withAuditedTransaction` y `ADMIN_LIFECYCLE_LOCK_KEY`; helper puro `backend/src/lib/canonical-email.ts` compartido con login/bootstrap/guard; ajustes de email literal en `backend/src/services/{admin-bootstrap,session,login-guard}.ts`; tests unitarios e integración owned. Sin frontend. `GET/PATCH /admin/users`, desactivación, cambio de rol y protección del último admin se implementan en 5.4/5.6/9.1 (HITO14); la lectura de auditoría sigue en 9.2.
   - **When/Then:** WHEN se retira el registro público (`410`) THEN el alta admin está disponible; WHEN se crea una cuenta THEN el default es `OFTALMOLOGO` e `isActive:true` es server-owned; WHEN se asigna `ADMIN` o un grant THEN solo un admin autenticado puede hacerlo y se audita alta/rol en la misma transacción; WHEN llegan campos de actor/actividad/hash/versión/contador en el body THEN `400` sin efecto; WHEN el email no es compatible con el DTO de login THEN bootstrap y alta lo rechazan antes de DB; WHEN dos altas compiten por el mismo email/case THEN exactamente una `201` y una `409` con un usuario y una auditoría; WHEN falla la auditoría THEN rollback sin USER fantasma.
   - **Depends on:** 1.3, 1.6, 5.5.
   - **Test:** `npm --prefix backend run test:unit` -> **19 files / 335 tests passed**; `npm --prefix backend run test:integration -- tests/user-admin.integration.test.ts` -> **1 file / 24 tests passed**; foco auth/admin `npm --prefix backend run test:integration -- tests/admin-bootstrap.integration.test.ts tests/auth-sessions.integration.test.ts tests/login-protection.integration.test.ts tests/user-admin.integration.test.ts` -> **4 files / 117 tests passed (histórico pre-QA)**; `npm --prefix backend run test:integration` -> **17 files / 319 tests passed (259.43 s)**; `npm --prefix backend run typecheck` y `npm --prefix backend run build` -> exit 0. PostgreSQL 16 de Testcontainers owned; sin Azure, `.env.azure`, PHI, correos reales ni DB externa/producción.
@@ -93,7 +93,7 @@
     | `backend/src/services/admin-bootstrap.ts`, `session.ts`, `login-guard.ts` (email literal/compatible) | `tests/admin-bootstrap.integration.test.ts`, `auth-sessions.integration.test.ts`, `login-protection.integration.test.ts` | histórico foco 4/117 |
     | PostgreSQL owned, rol `clearsight_app`, auditoría y rollback | full integration + labels Docker | full 17/319; sin residuos |
 
-  - **Pendientes sin cambios:** 5.2 (ACL/ownership clínico), 5.4/5.6 (ciclo de vida y último admin), 5.8/5.9 (refresh/reset), 9.1 (`GET/PATCH /admin/users`) y 9.2 (lectura de auditoría). Release clínica **no** declarada lista.
+  - **Pendientes sin cambios:** 5.2 (ACL/ownership clínico), 5.8/5.9 (refresh/reset) y 9.2 (lectura de auditoría). 5.4/5.6/9.1 quedan implementados en HITO14; el alta 1.8 conserva su contrato y default `OFTALMOLOGO`. Release clínica **no** declarada lista.
 
 ## 2. Modelo clínico de ejecución
 
@@ -283,11 +283,12 @@
   - **Evidence:** vectores HMAC independientes (Python `hmac`/`hashlib`) en `backend/tests/unit/login-protection.test.ts`; pipeline real bajo `clearsight_app` en `backend/tests/login-protection.integration.test.ts` (CURRENT_USER app, login/me con S/I/U de D+E, TRUNCATE `42501` sin pérdida de filas); fallo durable se confirma en su tx antes de lanzar y reset de éxito dentro de la tx de sesión/audit/sign.
   - **Coverage:** "Autenticación con bloqueo HU01 y rate limit".
 
-- [ ] 5.4 Proteger al último administrador activo con transacción y bloqueo.
-  - **Scope:** servicio de administración de usuarios; `backend/src/repositories/user.repo.ts`; ruta admin.
-  - **When/Then:** WHEN se intenta desactivar o quitar rol al último admin THEN se rechaza; WHEN dos operaciones concurrentes lo intentan THEN al menos una falla y quedan administradores activos.
-  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts` con concurrencia.
-  - **Coverage:** “Protección del último administrador activo”.
+- [x] 5.4 Proteger al último administrador activo con transacción y bloqueo.
+  - **Scope:** `backend/src/services/admin-users.ts` (`updateUser`), `backend/src/routes/admin.ts`, `backend/src/schemas/auth.ts`, tests `user-lifecycle.integration.test.ts`; lock global compartido, locks actor/target ordenados, conteo de admins activos bajo lock y auditoría DENIED. Sin endpoints clínicos ni grants.
+  - **When/Then:** WHEN se intenta desactivar o quitar rol al último admin THEN `409 LAST_ACTIVE_ADMIN` sin cambios de perfil ni credenciales; WHEN queda otro admin activo THEN el self-deactivate/self-demote se permite y el JWT actual queda revocado; WHEN dos admins se desactivan concurrentemente THEN el lock global serializa, una mutación es válida, la otra es denegada y nunca quedan cero admins activos; WHEN falla la auditoría THEN rollback completo.
+  - **Depends on:** 1.8, 5.5.
+  - **Test:** `npm --prefix backend run test:integration -- tests/user-lifecycle.integration.test.ts` -> **1 file / 24 tests passed**; foco lifecycle/userAdmin -> **2 files / 48 tests passed**; unit -> **20 files / 351 tests passed**; full integration -> **18 files / 343 tests passed (203.56 s)**; `typecheck`/`build` -> exit 0. PostgreSQL owned de Testcontainers; sin Azure, `.env.azure`, PHI ni DB externa.
+  - **Coverage:** "Protección del último administrador activo". Runbook: `docs/hito14-account-lifecycle-runbook.md`.
 
 - [x] 5.5 Implementar auditoría append-only y bloquear la operación si falla.
   - **Scope:** `backend/src/services/audit.ts` (wrapper público `withAuditedTransaction` sobre `db.$transaction` + `writeAuditEvent` con contexto opaco registrado en `WeakMap`), `backend/src/services/admin-bootstrap.ts` y `backend/src/services/session.ts` (llamadores actuales), `backend/tests/unit/audit.test.ts`, `backend/tests/unit/audit-adversarial.test.ts`, `backend/tests/audit.integration.test.ts` y allowlists de runners. Sin `audit.repo.ts` ni migración nueva: la migración C ya existía.
@@ -304,13 +305,14 @@
   | `backend/src/services/session.ts` (misma tx, `AUTH_STORE_UNAVAILABLE`) | `tests/auth-sessions.integration.test.ts`, `tests/login-protection.integration.test.ts` | foco 4/112 |
   | `backend/tests/audit.integration.test.ts` (fila exacta, timestamp DB, append-only, rollback) | PostgreSQL owned de Testcontainers | full 16/294 |
 
-  - **Pendientes sin cambios:** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Este hito no añade endpoint público, UI admin ni permisos/grants clínicos.
+  - **Pendientes al cierre de 5.5 (histórico):** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Estado actual: 1.8/5.4/5.6/9.1 cerrados; 5.2/5.8/5.9/9.2 pendientes. Este hito no añade endpoint público, UI admin ni permisos/grants clínicos.
 
-- [ ] 5.6 Implementar desactivación segura y bloqueo de supresión; hard delete fuera de este hito.
-  - **Scope:** repositorio/servicio de usuarios; desactivación + revocación de sesiones; validación de actividad solo para una futura excepción; auditoría. **No implementar hard delete en este hito**, ni siquiera para cuentas sin actividad.
-  - **When/Then:** WHEN se desactiva una cuenta THEN conserva autoría/historial y se revocan sus sesiones; WHEN se solicita borrado físico THEN se rechaza o queda no disponible en este hito; WHEN no hay política de supresión THEN no se anonimiza ni elimina automáticamente; WHEN se procesan datos clínicos reales sin governance THEN fail closed.
-  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts`; ver guard de DB en `contracts/testing-runbook.md`.
-  - **Coverage:** “Desactivación y preservación de autoría”, “Borrado físico excepcional y supresión de identidad” como restricción, B3/B4/B5 solo producción.
+- [x] 5.6 Implementar desactivación segura y bloqueo de supresión; hard delete fuera de este hito.
+  - **Scope:** `backend/src/services/admin-users.ts` (`updateUser`), `backend/src/routes/admin.ts`, `backend/src/schemas/auth.ts`, tests `user-lifecycle.integration.test.ts`; desactivación/reactivación, revocación durable de `UserSession`/`RefreshToken`/`PasswordResetToken`, incremento de `tokenVersion`, auditoría y verificación de historial clínico intacto. **No se implementa DELETE/hard delete.**
+  - **When/Then:** WHEN cambia email/role/isActive THEN `tokenVersion` incrementa exactamente 1 y se revocan todas las credenciales no revocadas (sesiones con `ACCOUNT_UPDATED`, refresh y reset); WHEN solo cambia `fullName` THEN no hay bump ni revocación; WHEN se repite una desactivación ya inactiva THEN se limpian credenciales legacy no revocadas una sola vez y la repetición es idempotente; WHEN se solicita DELETE THEN `404`/no disponible y el usuario/consultas/inferencias/feedback conservan IDs y autoría; WHEN se reactiva THEN no se reviven sesiones antiguas y un login nuevo funciona.
+  - **Depends on:** 5.4, 5.5.
+  - **Test:** `npm --prefix backend run test:integration -- tests/user-lifecycle.integration.test.ts` -> **1 file / 24 tests passed**; full integration -> **18 files / 343 tests passed**; unit -> **20 files / 351 tests**; `typecheck`/`build` -> exit 0. Runbook: `docs/hito14-account-lifecycle-runbook.md`.
+  - **Coverage:** "Desactivación y preservación de autoría", "Borrado físico excepcional y supresión de identidad" como restricción, B3/B4/B5 solo producción. Sin grants clínicos ni borrado/anonimización automática.
 
 - [x] 5.7 Implementar sesiones tecnicas: JWT 15 min, `sessionId`, `tokenVersion`, store durable.
   - **Scope:** `backend/src/routes/auth.ts`, `backend/src/middleware/auth.ts`, `backend/src/services/session.ts`, `backend/src/services/auth-policy.ts`, `backend/src/services/password-policy.ts`.
@@ -428,11 +430,13 @@
 
 ## 9. Hito posterior — deferred, unchecked, NO bloqueado por producto
 
-> Estas tareas son alcance posterior sin frontend. Quedan unchecked y no deben mezclarse con la tabla de bloqueos.
+> 9.1 se cerró en HITO14; 9.2 sigue unchecked. Las tareas restantes son alcance posterior sin frontend y no deben mezclarse con la tabla de bloqueos.
 
-- [ ] 9.1 [LATER HITO] Lectura/edición administrativa de usuarios, desactivación y cambios de rol (el alta `POST /admin/users` ya está implementada en 1.8).
-  - **Scope:** rutas admin GET/PATCH, repositorio de usuarios, auditoría; sin frontend.
-  - **Coverage:** “Tres roles con mínimo privilegio y default deny”, “Desactivación y preservación de autoría”, “Protección del último administrador activo”.
+- [x] 9.1 Lectura/edición administrativa de usuarios, desactivación y cambios de rol (implementada en HITO14; el alta `POST /admin/users` sigue en 1.8).
+  - **Scope:** `backend/src/routes/admin.ts`, `backend/src/services/admin-users.ts`, `backend/src/schemas/auth.ts`, tests `user-lifecycle.integration.test.ts`; GET listado paginado/filtrado, GET detalle, PATCH estricto de email/fullName/role/isActive; sin frontend.
+  - **When/Then:** WHEN se lista THEN `{items,total,limit,offset}`, orden `createdAt DESC id ASC`, filtros `role`/`isActive`/`q` literal insensible (`_`/`%` escapados), límites 20/100 y offset >=0; WHEN un actor pierde permisos mientras espera la TX y el target no existe THEN `403` antes de revelar `404`; WHEN un admin válido pide un detalle inexistente THEN `404`; WHEN PATCH recibe campos de password/hash/versión/contadores/actor/grants THEN `400` sin efectos; WHEN cambia identidad/rol/actividad THEN se revoca según 5.6 y el último admin se protege según 5.4; WHEN DELETE THEN no disponible (`404`) y sin borrado.
+  - **Test:** `npm --prefix backend run test:integration -- tests/user-lifecycle.integration.test.ts` -> **1 file / 24 tests passed**; foco lifecycle/userAdmin -> **2 files / 48 tests passed**; unit -> **20 files / 351 tests**; full integration -> **18 files / 343 tests (203.56 s)**; `typecheck`/`build` -> exit 0. Runbook: `docs/hito14-account-lifecycle-runbook.md`.
+  - **Coverage:** "Tres roles con mínimo privilegio y default deny", "Desactivación y preservación de autoría", "Protección del último administrador activo". Sin lectura clínica ni grants implícitos.
 
 - [ ] 9.2 [LATER HITO] API de lectura de auditoría operativa.
   - **Scope:** ruta admin de auditoría, filtros, mínimo PHI.

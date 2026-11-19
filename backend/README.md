@@ -13,11 +13,11 @@ src/
   services/gold-standard-export.ts   export anonimizado JSON/CSV (lo usan la ruta y el ETL)
   services/audit.ts            auditoría transaccional compartida (wrapper + writer)
   services/admin-bootstrap.ts  bootstrap controlado del primer ADMIN (transacción + auditoría)
-  services/admin-users.ts      alta administrativa POST /admin/users (lock global, actor fresco, auditoría)
+  services/admin-users.ts      alta/lectura/ciclo de vida admin (lock global, actor fresco, revocación, auditoría)
   lib/canonical-email.ts       contrato canónico de email compartido login/bootstrap/alta
   middleware/                 auth (JWT HS256) y rbac — mínimos, reemplazables por los del módulo de auth
   routes/feedback.ts          POST /feedback · GET /export/gold-standard
-  routes/admin.ts             POST /admin/users (ADMIN, alta controlada)
+  routes/admin.ts             GET/POST /admin/users y GET/PATCH /admin/users/:id (ADMIN; sin DELETE)
 prisma/                       schema.prisma · migrations/ · seed.ts
 scripts/bootstrap-admin.ts    CLI env-only del primer administrador
 scripts/etl-feedback.ts       ETL feedback validado -> dataset de reentrenamiento
@@ -69,7 +69,18 @@ npm run admin:bootstrap
 - Un error de red ambiguo no se presenta como rollback garantizado: la base pudo haber
   confirmado antes de perderse la respuesta. El CLI no reintenta el bootstrap ni crea un
   segundo administrador automáticamente.
-- `POST /admin/users` está implementado (1.8) como alta controlada; la desactivación/revocación (5.6) y refresh/logout (5.8) siguen pendientes.
+- `POST /admin/users` conserva el contrato de alta controlada de 1.8 (default `OFTALMOLOGO`, `isActive:true`, password cost 12).
+- `GET /admin/users`, `GET /admin/users/:id` y `PATCH /admin/users/:id` están implementados en 5.4/5.6/9.1 para `ADMIN`; `DELETE` no está implementado (404/405) y no hay hard delete.
+
+## Ciclo de vida administrativo (5.4/5.6/9.1)
+
+- Lectura: listado paginado `{items,total,limit,offset}` con `limit` 1..100 (default 20), `offset>=0`, filtros `role`/`isActive` y `q` literal case-insensitive sobre email/fullName; orden `createdAt DESC id ASC`; DTO de 7 campos seguros, sin hash, tokens, contadores ni sesiones.
+- Detalle/PATCH validan UUID y `ADMIN`; el PATCH acepta solo `{email?, fullName?, role?, isActive?}` con al menos un campo y rechaza password/hash/tokenVersion/contadores/actor/grants con `400`.
+- Email/role/isActive cambian `tokenVersion` exactamente +1 y revocan en la misma transacción todas las sesiones/refresh/reset no revocados (`ACCOUNT_UPDATED` en sesiones); `fullName` solo no revoca. La reactivación no revive credenciales antiguas.
+- El último admin activo no puede autodesactivarse ni autodemoverse (`409 LAST_ACTIVE_ADMIN`); el lock global y los locks ordenados de actor/target serializan carreras y mantienen al menos un admin activo.
+- `DELETE /admin/users/:id` no existe: responde 404/405 y no borra ni reasigna consultas, inferencias, feedback ni snapshots. Tampoco concede datasets clínicos ni toca contadores/bloqueos HU01.
+- Errores seguros: `400` input, `401`/`403` auth/rol, `404` no encontrado, `409` email o último admin, `503` store/auditoría. Runbook: `docs/hito14-account-lifecycle-runbook.md`.
+- Evidencia final HITO14: unit 20/351, lifecycle 1/24, full 18/343 (203.56 s), typecheck/build 0. Un actor stale con UUID desconocido responde `403`; un admin válido con target inexistente responde `404` (la autorización fresca precede a la lectura del target).
 
 ## Autenticacion y sesiones
 
@@ -81,14 +92,14 @@ npm run admin:bootstrap
 - Cuota IP complementaria: `IP_RATE_LIMIT=100` intentos por `IP_RATE_WINDOW_SECONDS=60` s (enteros positivos; 0/negativo no desactiva). Comparte cuota entre cuentas detras de una NAT; usa `request.ip` y no confia en `X-Forwarded-For` (`trustProxy:false`). El `429` incluye `Retry-After` positivo y un body generico sin contador, email ni estado de cuenta.
 - Los contadores son buckets pseudonimos HMAC-SHA256 (email normalizado / IP), sin PII cruda en tablas ni logs. El reset es logico (ventana/bloqueo), no una purga de evidencia clinica. No se garantiza igualdad estricta de timing ni inmunidad DoS: la cuota IP es complementaria, no un escudo global.
 - Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` y un guard construidos con `databaseSchema` igual al schema configurado en el cliente.
-- Este hito no es un release de seguridad completo: ownership/grants (5.2), ciclo de vida administrativo/revocación masiva (5.4/5.6/9.1), refresh/logout/cookies (5.8), reset (5.9) y lectura de auditoría (9.2) siguen pendientes.
+- Este hito no es un release de seguridad completo: ownership/grants (5.2), refresh/logout/cookies (5.8), reset (5.9) y lectura de auditoría (9.2) siguen pendientes. El ciclo de vida administrativo 5.4/5.6/9.1 está implementado.
 
 ## Auditoria transaccional (5.5)
 
 - `src/services/audit.ts` expone `withAuditedTransaction(db, work, options?)` y `writeAuditEvent(context, input)`. El wrapper abre la transaccion con el `$transaction` publico de Prisma y entrega un contexto opaco con `.tx`; la identidad del contexto vive en un `WeakMap` privado y solo es valida durante el callback.
 - `writeAuditEvent` usa `context.tx.auditEvent.create` en la misma transaccion. Rechaza cliente raiz, `tx` crudo, objetos fabricados, clones y contextos cerrados antes de escribir. Un callback exitoso debe registrar al menos un evento; si la auditoria falla, el fallo es sticky y la transaccion revierte aunque el callback lo capture.
 - Los llamadores actuales son `services/admin-bootstrap.ts`, `services/admin-users.ts` y `services/session.ts`, todos con `await writeAuditEvent(...)`. La composicion anidada de `withAuditedTransaction` sobre el mismo root DB queda fuera de alcance; no se promete soporte para callbacks fire-and-forget ni codigo propio malicioso.
-- `POST /admin/users` está implementado (1.8) sin frontend; GET/PATCH, desactivación, cambio de rol, 5.4/5.6/9.1 y la lectura de auditoría 9.2 siguen pendientes.
+- `POST /admin/users` (1.8) y GET/PATCH de ciclo de vida (5.4/5.6/9.1) están implementados sin frontend; lectura de auditoría 9.2, refresh/logout 5.8, reset 5.9 y ACL clínico 5.2 siguen pendientes.
 
 ## Migraciones
 
