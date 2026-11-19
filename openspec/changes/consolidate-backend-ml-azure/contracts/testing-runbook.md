@@ -125,6 +125,22 @@
 | Docker/cleanup | Inventario previo y posterior con filtros de ownership/Testcontainers y volúmenes: sin salida tras el cleanup. Solo se consultaron recursos etiquetados; no se borró nada manualmente ni ajeno. |
 | Límites | No cubre generación PDF real, upload/storage, rutas, auth, consumidores 3.5/6.x, Azure ni E2E clínico. El reparentado directo de `images`, carreras concurrentes y rol DB sin `TRUNCATE` siguen en 1.4. |
 
+## 1.7 Evidencia HITO 6 — migración C identidad/auditoría/sesiones (2026-11-18)
+
+> Evidencia local de la tarea 1.3. Solo PostgreSQL efímero de Testcontainers con ownership; sin Azure, `.env.azure`, DB real ni datos clínicos reales. No se modificaron dependencias ni lockfiles. La evidencia HITO 5 se conserva como histórica (9 files / 111 tests).
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | Migración aditiva `20261118020000_identity_audit`: contadores/versión de usuario, `user_sessions`, `audit_events`, `refresh_tokens`, `password_reset_tokens` e `idempotency_records`, con hash-only, append-only, unicidad, FKs restrict y checks SQL. Sin auth routes/workers/servicios; `docker/init.sql` intacto. |
+| Migración focalizada | `npm --prefix backend run test:integration -- tests/identity-migrations.test.ts` → **1 file passed, 18 tests passed**, QA real, exit 0 (duración no consignada en el consolidado QA). Cubre defaults/legacy, tokenVersion monotónico, auditoría, sesiones, refresh/reset, idempotencia 202, concurrencia y replay C. |
+| Migraciones A/B legacy | `npm --prefix backend run test:integration -- tests/migrations.test.ts` → **25 tests passed**, duración `9.97 s`; `artifact-migrations.test.ts` → **28 tests passed**. |
+| Integración completa | `npm --prefix backend run test:integration` → **10 files passed, 129 tests passed**, QA real, exit 0 (duración no consignada en el consolidado QA). |
+| Unitario | `npm --prefix backend run test:unit` → **6 files passed, 57 tests passed**, duración `554 ms`, exit 0. La allowlist de integración y `runner-isolation` incluyen el nuevo archivo sin ampliar el runner unitario. |
+| Typecheck/build | `npm --prefix backend run typecheck` → exit 0; `npm --prefix backend run build` → exit 0. |
+| Prisma | `prisma validate --config <temp-config-sin-dotenv>` → schema válido; `prisma generate --config <temp-config-sin-dotenv>` → cliente generado. Config temporal con URL sintética, sin `.env`/`.env.azure` y sin conexión a DB real. |
+| Docker/cleanup | Inventario previo y posterior con filtros de ownership/Testcontainers y volúmenes: sin salida tras el cleanup. Solo se consultaron recursos etiquetados; no se borró nada manualmente ni ajeno. |
+| Límites | No implementa login/registro/refresh/reset/auditoría/idempotencia de aplicación; solo DB. El outbox de 4.6 requiere migración incremental propia. `TRUNCATE`/DDL privilegiado y carreras siguen en 1.4. No se añadió entrada al registro de regresiones. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

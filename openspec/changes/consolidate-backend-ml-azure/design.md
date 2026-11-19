@@ -293,6 +293,18 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 - PDF `AVAILABLE` exige `artifactId` no nulo de un `ArtifactRecord` `pdf`, `AVAILABLE`, `application/pdf`, misma inferencia y versión, **y `sourceSnapshotId` no nulo** (trazabilidad clínica conocida); una fila legacy NULL puede quedar `PENDING`/`FAILED`, pero no publicarse. Transiciones permitidas: `PENDING→PENDING/AVAILABLE/FAILED` y `FAILED→FAILED/PENDING`; una fila publicada es completamente inmutable y no se borra. Una versión nueva es una fila nueva, puede capturar el snapshot ya conocido y no modifica la anterior.
 - No hay backfill de artefactos/PDF legacy, ni rutas/repositorios/generador PDF todavía. `docker/init.sql` sigue inmutable y el contrato API existente no se reescribe: esta tarea solo define la forma persistida que consumirán 3.5/6.x. El parentesco directo de `images` y las carreras concurrentes siguen en 1.4.
 
+### D16. Persistencia durable de identidad, auditoría, sesiones e idempotencia (1.3)
+
+**Decisión (implementación local, no comportamiento de auth):** La migración C añade almacenamiento durable para tareas 5.x sin resolver el login o registro inseguro actual:
+
+- `User` añade `tokenVersion` (default 0), `failedLoginCount` (default 0) y `lockedUntil?`. Ambos contadores son no negativos y `tokenVersion` solo puede aumentar mediante trigger, preservando revocaciones. Los usuarios legacy conservan hash/rol/estado y reciben defaults; no se cambia middleware/roles.
+- `UserSession` fija usuario, `issuedTokenVersion`, creación y expiración desde el INSERT; la creación exige usuario activo y `issuedTokenVersion` igual al `tokenVersion` vigente. La revocación es append-only (`revokedAt`/`reasonCode` no se restauran ni repuntan) y `lastUsedAt` es monótono. No se almacenan tokens en claro.
+- `AuditEvent` es append-only: `UPDATE`/`DELETE` se rechazan. `actorKind=USER` exige `actorUserId`; `SYSTEM`/`ANONYMOUS` lo prohíben. `targetType=USER` usa `targetUserId` y prohíbe `targetId` redundante; el resto no usa `targetUserId`. `action`/`targetType` son códigos acotados, `outcome` es `SUCCESS|DENIED|FAILURE` y `metadata` es objeto con defensa URI/firma acotada. Las FKs restrict impiden borrar usuarios con historial; la desactivación sigue permitida. El servicio de auditoría/transacción es 5.5, no C.
+- `RefreshToken` y `PasswordResetToken` guardan solo hash SHA-256 lowercase, nunca el token opaco. Identidad, hash y expiración son inmutables; `consumedAt`/`revokedAt` son append-only. Refresh exige misma sesión/usuario, expiración acotada por la sesión y padre existente/misma sesión; el puntero de padre es insert-only y único (un sucesor), lo que evita ciclos. La detección de reutilización/familia y la rotación son 5.8; reset/logout son 5.9.
+- `IdempotencyRecord` fija `(actorUserId, scope, key)`, hash del payload, ejecución (`inferenceId NOT NULL`) y `resolvedModelVersions`. El actor debe ser el doctor dueño de la consulta de la inferencia (fallback legacy por la imagen). `PENDING` no tiene respuesta; `ACCEPTED` exige 202, `acceptedAt` y un body objeto con `inferenceId/jobId/status=QUEUED` coincidentes con la ejecución. Aceptado es inmutable y no se borra mientras B3 no apruebe retención; no se implementa el servicio de idempotencia (4.4) ni se purga.
+- `TRUNCATE`/DDL de owner privilegiado siguen fuera de los triggers de fila y pertenecen a 1.4. No se declara detección universal de PII/secretos: las comprobaciones URI/firma son acotadas y el servicio futuro deberá usar campos tipados.
+- El outbox de 4.6 no se incluye en C; requerirá su propia migración incremental al ejecutar 4.6. `docker/init.sql` permanece inmutable.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -332,6 +344,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-033 | B9: `DatabaseFeedbackSource` y SQLAlchemy fuera de alcance, no bloquean el change | out of scope | Open Questions |
 | ADR-034 | Migración A aditiva: snapshot inmutable, selección `UUID[]` con freeze, metadatos legacy nullable y `init.sql` baseline sin cambios | agreed (implemented 1.1) | D14, D1, D3 |
 | ADR-035 | Migración B aditiva: artifact records versionados, PDF versionado inmutable, `result` inline y sin URLs/SAS persistidas | agreed (implemented 1.2) | D15, D4, D5, D11 |
+| ADR-036 | Migración C aditiva: sesiones/credenciales hash-only, auditoría append-only e idempotencia DB; outbox diferido a 4.6 | agreed (implemented 1.3) | D16, D7, D9, D10 |
 
 ## Risks / Trade-offs
 

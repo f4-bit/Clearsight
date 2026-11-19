@@ -101,6 +101,23 @@ describe("0_init + incremental migrations on legacy data", () => {
     const pdfRows = await client.query("SELECT count(*)::int AS count FROM pdf_reports");
     expect(pdfRows.rows[0].count).toBe(0);
 
+    // Migration C adds durable stores but does not backfill identity history.
+    const identityRows = await client.query(
+      "SELECT (SELECT count(*)::int FROM user_sessions) AS sessions, " +
+        "(SELECT count(*)::int FROM audit_events) AS audits, " +
+        "(SELECT count(*)::int FROM refresh_tokens) AS refresh, " +
+        "(SELECT count(*)::int FROM password_reset_tokens) AS reset, " +
+        "(SELECT count(*)::int FROM idempotency_records) AS idempotency",
+    );
+    expect(identityRows.rows).toEqual([{ sessions: 0, audits: 0, refresh: 0, reset: 0, idempotency: 0 }]);
+    const legacyAuth = await client.query(
+      "SELECT token_version, failed_login_count, locked_until FROM users ORDER BY id",
+    );
+    expect(legacyAuth.rows).toEqual([
+      { token_version: 0, failed_login_count: 0, locked_until: null },
+      { token_version: 0, failed_login_count: 0, locked_until: null },
+    ]);
+
     const selections = await client.query(
       "SELECT required_execution_ids, required_set_version, required_set_frozen_at FROM consultations ORDER BY id",
     );

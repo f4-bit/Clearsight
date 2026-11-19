@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migraciones 1.1/1.2 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migraciones 1.1/1.2/1.3 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -43,12 +43,12 @@
   - **Test:** `npm --prefix backend run test:integration -- tests/artifact-migrations.test.ts` → **1 file / 28 tests passed**; `npm --prefix backend run test:integration` → **9 files / 111 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `typecheck`/`build` → exit 0; Prisma `validate`/`generate` con config temporal sin dotenv.
   - **Coverage:** “Referencia de artefacto estructurada y estable”, “Idempotencia y versionado del reporte”, “Estado explícito por artefacto”, “Prohibición de persistir credenciales temporales y URLs arbitrarias”. La generación/consumo queda en 3.5, 6.1, 6.2.
 
-- [ ] 1.3 Migración C: auditoría, idempotencia y sesiones.
-  - **Scope:** `backend/prisma/schema.prisma` (`AuditEvent`, `IdempotencyRecord`, `UserSession` con `tokenVersion`), migración C, `docker/init.sql`.
-  - **When/Then:** WHEN se aplica THEN existen constraints de idempotencia única por alcance, auditoría no mutable y store durable de sesiones.
+- [x] 1.3 Migración C: auditoría, idempotencia y sesiones.
+  - **Scope:** `backend/prisma/schema.prisma` (`User` con `tokenVersion`/contadores; `UserSession`, `AuditEvent`, `RefreshToken`, `PasswordResetToken`, `IdempotencyRecord`), `backend/prisma/migrations/20261118020000_identity_audit/migration.sql`, `backend/tests/identity-migrations.test.ts`, allowlists; `docker/init.sql` sin cambios. Solo persistencia: no auth routes, workers, servicios ni login/reset behavior. El outbox de 4.6 **no** está en C.
+  - **When/Then:** WHEN se aplica THEN existen constraints de idempotencia única por alcance, auditoría append-only, sesiones durables y credenciales hash-only; WHEN se modifica una identidad/credencial/historial THEN la inmutabilidad o el append-only lo rechaza; WHEN se reaplica C THEN no se reescriben filas durables.
   - **Depends on:** 1.1.
-  - **Test:** `npm --prefix backend run test -- tests/migrations.test.ts tests/repositories.test.ts`.
-  - **Coverage:** “Idempotencia persistida del backend”, “Auditoría append-only de acciones sensibles”, “Sesiones, refresh, logout y recuperación seguros”.
+  - **Test:** `npm --prefix backend run test:integration -- tests/identity-migrations.test.ts` → **1 file / 18 tests passed**; `npm --prefix backend run test:integration` → **10 files / 129 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `typecheck`/`build` → exit 0; Prisma `validate`/`generate` con config temporal sin dotenv.
+  - **Coverage:** “Idempotencia persistida del backend” (solo unicidad/replay DB; servicio 4.4), “Auditoría append-only de acciones sensibles” (servicio 5.5), “Sesiones, refresh, logout y recuperación seguros” (comportamiento 5.7/5.8/5.9). El registro no convierte estas operaciones en implementadas.
 
 - [ ] 1.4 Constraints e índices de integridad.
   - **Scope:** migraciones A/B/C; `@@unique`, índices y triggers/permisos de auditoría.
@@ -217,7 +217,7 @@
   - **Coverage:** “Creación y reanálisis canónicos sin endpoints alternativos”, “Nombres canónicos, mapeo y lateralidad”.
 
 - [ ] 4.6 Implementar outbox/reconciliación de encolado y recuperación de worker.
-  - **Scope:** `backend/src/workers/inference.queue.ts`, `backend/src/workers/inference.worker.ts`, outbox en migración C.
+  - **Scope:** `backend/src/workers/inference.queue.ts`, `backend/src/workers/inference.worker.ts`, **nueva migración incremental propia para el outbox al ejecutar 4.6** (no incluida en la migración C de 1.3).
   - **When/Then:** WHEN se crea ejecución y falla encolado THEN la reconciliación la recupera; WHEN el worker reinicia THEN consulta el job ML existente y no reinventa otro.
   - **Depends on:** 1.3, 4.4.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con cola/stub.
