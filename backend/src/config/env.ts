@@ -1,9 +1,16 @@
 import dotenv from "dotenv";
 import { z } from "zod";
+import {
+  assertProductionJwtSecret,
+  DEFAULT_JWT_ACCESS_TTL,
+  KNOWN_DEV_JWT_SECRET,
+  parseAccessTtl,
+} from "../services/auth-policy.js";
 
 dotenv.config();
 
-const envSchema = z.object({
+const envSchema = z
+  .object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(8000),
   HOST: z.string().default("0.0.0.0"),
@@ -29,8 +36,8 @@ const envSchema = z.object({
   MINIO_BUCKET_GRADCAM: z.string().default("gradcam-overlays"),
 
   // Auth / JWT
-  JWT_SECRET: z.string().default("clearsight-dev-secret-change-in-prod-32chars!"),
-  JWT_EXPIRES_IN: z.string().default("8h"),
+  JWT_SECRET: z.string().default(KNOWN_DEV_JWT_SECRET),
+  JWT_EXPIRES_IN: z.string().default(DEFAULT_JWT_ACCESS_TTL),
 
   // ML Service
   ML_SERVICE_URL: z.string().default("http://localhost:8000"),
@@ -47,7 +54,28 @@ const envSchema = z.object({
   // HMAC secret used to pseudonymize doctor ids in the gold-standard export.
   // Rotate = old exports become unlinkable by design; set explicitly in production.
   EXPORT_HMAC_SECRET: z.string().default("clearsight-dev-export-hmac-change-in-prod"),
-});
+  })
+  .superRefine((data, ctx) => {
+    try {
+      assertProductionJwtSecret(data.JWT_SECRET, data.NODE_ENV);
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_SECRET"],
+        message: error instanceof Error ? error.message : "Invalid JWT secret",
+      });
+    }
+
+    try {
+      parseAccessTtl(data.JWT_EXPIRES_IN);
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_EXPIRES_IN"],
+        message: error instanceof Error ? error.message : "Invalid JWT lifetime",
+      });
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

@@ -34,8 +34,15 @@ async function seedFeedback(
   return study;
 }
 
-const get = (query: string, user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" }) =>
-  app.inject({ method: "GET", url: `/export/gold-standard${query}`, headers: bearer(app, user) });
+const get = async (
+  query: string,
+  user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" },
+) =>
+  app.inject({
+    method: "GET",
+    url: `/export/gold-standard${query}`,
+    headers: await bearer(app, prisma, user),
+  });
 
 describe("GET /export/gold-standard", () => {
   it("401 anonymous, 403 for ophthalmologists, 200 for researchers and admins", async () => {

@@ -4,10 +4,16 @@ import { UserRole } from "./common.js";
 export const roleEnum = UserRole;
 export type Role = UserRole;
 
-/** JWT payload shared by the auth routes (issuer) and the middleware (verifier). */
+/**
+ * JWT payload shared by the auth routes (issuer) and the middleware (verifier).
+ * The four principal claims are mandatory; exp/iat are added by the signer and
+ * validated separately from the raw verified payload.
+ */
 export const JwtPayload = z.object({
   sub: z.uuid(),
   role: UserRole,
+  sessionId: z.uuid(),
+  tokenVersion: z.number().int().min(0),
 });
 export type JwtPayload = z.infer<typeof JwtPayload>;
 
@@ -21,8 +27,13 @@ export const registerRequestSchema = z.object({
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 
 export const loginRequestSchema = z.object({
-  email: z.string().email(),
-  password: z.string(),
+  // Login normalizes email/trim/case before the case-insensitive lookup.
+  email: z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+    z.string().email().max(255),
+  ),
+  // Bounded before bcrypt so a huge body cannot force unbounded work.
+  password: z.string().max(1024),
 });
 
 export type LoginRequest = z.infer<typeof loginRequestSchema>;

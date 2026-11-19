@@ -22,6 +22,7 @@ export default defineConfig({
       "tests/migration-deploy.integration.test.ts",
       "tests/admin-bootstrap.integration.test.ts",
       "tests/jwt.test.ts",
+      "tests/auth-sessions.integration.test.ts",
       "tests/feedback.route.test.ts",
       "tests/export.route.test.ts",
       "tests/etl.test.ts",

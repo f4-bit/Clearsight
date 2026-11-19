@@ -14,3 +14,5 @@ export const forbidden = (message = "Forbidden") => new HttpError(403, "forbidde
 export const unauthorized = (message = "Invalid or missing token") =>
   new HttpError(401, "unauthorized", message);
 export const unprocessable = (message: string) => new HttpError(422, "validation_error", message);
+export const serviceUnavailable = (message = "Service temporarily unavailable") =>
+  new HttpError(503, "service_unavailable", message);

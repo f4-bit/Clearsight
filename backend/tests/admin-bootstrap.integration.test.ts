@@ -473,6 +473,8 @@ describe("POST /auth/register retirement", () => {
     const token = app.jwt.sign({
       sub: "99999999-9999-4999-8999-999999999999",
       role: "ADMIN",
+      sessionId: "99999999-9999-4999-8999-999999999998",
+      tokenVersion: 0,
     });
     const sign = vi.spyOn(app.jwt, "sign");
     const usersBefore = await prisma.user.count();

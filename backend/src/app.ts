@@ -21,12 +21,23 @@ import { feedbackRoutes } from "./routes/feedback.js";
 import { inferenceRoutes } from "./routes/inferences.js";
 import { patientRoutes } from "./routes/patients.js";
 import { healthResponseSchema } from "./schemas/common.js";
+import {
+  assertProductionJwtSecret,
+  DEFAULT_JWT_ACCESS_TTL,
+  parseAccessTtl,
+} from "./services/auth-policy.js";
+import {
+  createAuthSessionService,
+  type AuthSessionService,
+} from "./services/session.js";
 
 export interface AppDeps {
   env: Pick<Env, "JWT_SECRET" | "EXPORT_HMAC_SECRET"> &
-    Partial<Pick<Env, "NODE_ENV" | "CORS_ORIGIN">>;
+    Partial<Pick<Env, "NODE_ENV" | "CORS_ORIGIN" | "JWT_EXPIRES_IN">>;
   prisma: PrismaClient;
   logger?: boolean;
+  /** Trusted test seam; the default is always built from the injected prisma. */
+  authService?: AuthSessionService;
 }
 
 /**
@@ -38,6 +49,12 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
   const cfg = deps?.env ?? env;
   const nodeEnv = cfg.NODE_ENV ?? "test";
   const prisma = deps?.prisma ?? defaultPrisma;
+
+  // Fail closed before plugins/routes if production uses a known/short secret
+  // or the configured access lifetime violates the single TTL policy.
+  assertProductionJwtSecret(cfg.JWT_SECRET, nodeEnv);
+  const accessTtl = parseAccessTtl(cfg.JWT_EXPIRES_IN ?? DEFAULT_JWT_ACCESS_TTL);
+
   const app = Fastify({
     logger: deps?.logger ?? (nodeEnv === "development" && !deps),
   }).withTypeProvider<ZodTypeProvider>();
@@ -69,7 +86,16 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
 
   await app.register(fastifyJwt, {
     secret: cfg.JWT_SECRET,
+    sign: { algorithm: "HS256", expiresIn: accessTtl.seconds },
+    verify: { algorithms: ["HS256"], requiredClaims: ["exp", "iat"] },
   });
+
+  // The auth service is always built from the injected client; construction is
+  // lazy and performs no connection or query.
+  const authService =
+    deps?.authService ??
+    createAuthSessionService(prisma, { accessTtl });
+  app.decorate("authService", authService);
 
   // 3. Swagger / OpenAPI documentation
   await app.register(fastifySwagger, {

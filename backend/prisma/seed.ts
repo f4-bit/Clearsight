@@ -8,6 +8,7 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { createPrismaClient } from "../src/lib/prisma.js";
+import { PASSWORD_BCRYPT_COST } from "../src/services/password-policy.js";
 import { CLASS_LABELS } from "../src/schemas/common.js";
 import { CLINICAL_FEATURE_NAMES, type ClinicalFeatureName } from "../src/schemas/clinical.js";
 import type { UserRole } from "../src/generated/prisma/enums.js";
@@ -69,7 +70,7 @@ function clinicalFor(diagnosticClass: number): Record<string, number> {
 const prisma = createPrismaClient(databaseUrl);
 
 async function main() {
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, PASSWORD_BCRYPT_COST);
 
   const users: { n: number; email: string; fullName: string; role: UserRole }[] = [
     { n: 1, email: "doctor1@clearsight.test", fullName: "Dra. Seed Uno", role: "OFTALMOLOGO" },

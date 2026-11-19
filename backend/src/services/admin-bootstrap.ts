@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
+import { PASSWORD_BCRYPT_COST } from "./password-policy.js";
 
 /**
  * Controlled first-administrator bootstrap.
@@ -12,7 +13,8 @@ import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
 
 /** Shared lifecycle lock for the first-admin and future admin mutations. */
 export const ADMIN_LIFECYCLE_LOCK_KEY = "clearsight:admin-lifecycle:v1";
-export const BOOTSTRAP_BCRYPT_COST = 12;
+/** Backwards-compatible alias for the shared current provisioning cost. */
+export const BOOTSTRAP_BCRYPT_COST = PASSWORD_BCRYPT_COST;
 export const BOOTSTRAP_MIN_PASSWORD_CODEPOINTS = 12;
 export const BOOTSTRAP_MAX_PASSWORD_UTF8_BYTES = 72;
 export const BOOTSTRAP_MAX_FULL_NAME_LENGTH = 255;

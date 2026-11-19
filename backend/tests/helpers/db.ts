@@ -1,8 +1,10 @@
+import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 import { inject } from "vitest";
 import { createPrismaClient, type PrismaClient } from "../../src/lib/prisma.js";
 import { createRepositories } from "../../src/repositories/index.js";
 import type { UserRole } from "../../src/generated/prisma/enums.js";
+import { SESSION_TTL_MS } from "../../src/services/session.js";
 import { FEATURES } from "../fixtures/clinical.js";
 import { assertOwnershipRunId, TEST_OWNERSHIP_TABLE } from "./ownership.js";
 
@@ -14,6 +16,11 @@ function injectedDatabaseUrl(): string {
     throw new Error("Integration test context is missing the ephemeral database URL");
   }
   return url;
+}
+
+/** Owned ephemeral URL for tests that must create an isolated schema/client. */
+export function testDatabaseUrl(): string {
+  return injectedDatabaseUrl();
 }
 
 function injectedOwnershipRunId(): string {
@@ -45,10 +52,69 @@ export async function resetDb(prisma: PrismaClient): Promise<void> {
   );
 }
 
-export async function makeUser(prisma: PrismaClient, role: UserRole = "OFTALMOLOGO") {
+export interface MakeUserOverrides {
+  email?: string;
+  passwordHash?: string;
+  fullName?: string;
+  isActive?: boolean;
+  tokenVersion?: number;
+  lockedUntil?: Date | null;
+}
+
+export async function makeUser(
+  prisma: PrismaClient,
+  role: UserRole = "OFTALMOLOGO",
+  overrides: MakeUserOverrides = {},
+) {
   return prisma.user.create({
-    data: { email: `${role.toLowerCase()}-${randomUUID()}@clearsight.test`, passwordHash: "x", fullName: `Test ${role}`, role },
+    data: {
+      email: overrides.email ?? `${role.toLowerCase()}-${randomUUID()}@clearsight.test`,
+      passwordHash: overrides.passwordHash ?? "x",
+      fullName: overrides.fullName ?? `Test ${role}`,
+      role,
+      ...(overrides.isActive !== undefined ? { isActive: overrides.isActive } : {}),
+      ...(overrides.tokenVersion !== undefined ? { tokenVersion: overrides.tokenVersion } : {}),
+      ...(overrides.lockedUntil !== undefined ? { lockedUntil: overrides.lockedUntil } : {}),
+    },
   });
+}
+
+export interface MakeSessionOverrides {
+  issuedTokenVersion?: number;
+  expiresAt?: Date;
+  revokedAt?: Date | null;
+  reasonCode?: string | null;
+}
+
+/** Creates a durable session paired to the user's current token version. */
+export async function makeSession(
+  prisma: PrismaClient,
+  user: { id: string; tokenVersion?: number },
+  createdAt: Date = new Date(),
+  overrides: MakeSessionOverrides = {},
+) {
+  const revokedAt = overrides.revokedAt ?? null;
+  return prisma.userSession.create({
+    data: {
+      userId: user.id,
+      issuedTokenVersion: overrides.issuedTokenVersion ?? user.tokenVersion ?? 0,
+      createdAt,
+      expiresAt: overrides.expiresAt ?? new Date(createdAt.getTime() + SESSION_TTL_MS),
+      revokedAt,
+      reasonCode: overrides.reasonCode ?? (revokedAt === null ? null : "TEST_REVOKED"),
+    },
+  });
+}
+
+/**
+ * Synthetic fixture cost only. It is intentionally cheaper than the
+ * provisioning policy (`PASSWORD_BCRYPT_COST`); these hashes never represent a
+ * real provisioned account.
+ */
+export const TEST_BCRYPT_ROUNDS = 4;
+
+export function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, TEST_BCRYPT_ROUNDS);
 }
 
 /** patient -> consultation -> image -> inference, all owned by `doctorId`. */

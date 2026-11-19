@@ -68,6 +68,15 @@ npm run admin:bootstrap
 - `POST /admin/users` y las sesiones/revocación son tareas posteriores (1.8/5.5); este CLI
   no implementa el ciclo de vida completo de cuentas.
 
+## Autenticacion y sesiones
+
+- El access token es un JWT HS256 con `{ sub, role, sessionId, tokenVersion }`; `exp` e `iat` son obligatorios. El TTL por defecto es 15 minutos (`JWT_EXPIRES_IN=15m`) y no puede superar 900 s.
+- Cada request protegida valida la firma y los claims, y despues consulta una sesion durable, usuario activo y version/rol vigentes. Token invalido o sesion revocada/expirada responde `401` generico; store no disponible responde `503` sin datos.
+- La sesion tecnica es absoluta de 7 dias. Los tokens antiguos que no incluyen `sessionId`/`tokenVersion` dejan de ser validos.
+- Nuevos hashes (bootstrap, seed y futuras altas administrativas) usan bcrypt cost 12. Hashes legacy con coste menor (por ejemplo cost 10) siguen siendo aceptados para login; no se re-hashean sin la contrasena y quedan pendientes de rate limit/upgrades (5.3).
+- Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` construido con `databaseSchema` igual al schema configurado en el cliente.
+- Este hito no es un release de seguridad completo: ownership/grants (5.2), lockout/rate limit (5.3), ciclo de vida administrativo/revocacion masiva (5.6/admin), refresh/logout/cookies (5.8) y reset (5.9) siguen pendientes.
+
 ## Migraciones
 
 - El único entrypoint soportado es `npm run prisma:deploy` (`scripts/migrate-deploy.ts`). Sustituye el

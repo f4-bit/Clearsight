@@ -65,8 +65,8 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 |---|---|---|---|---|---|
 | GET | `/health` | Público | — | `{ status: string, service: string, timestamp: ISO }` | Estable. |
 | POST | `/auth/register` | Público | Cualquier JSON válido; sin validación de `role` (JSON malformado lo rechaza el parser HTTP con `400`) | `410 { error: "Gone", message: string, statusCode: 410 }` | **Retirado: no crea cuentas, no consulta la base y no emite token. El alta del primer admin es un CLI controlado (bootstrap), no un endpoint público.** |
-| POST | `/auth/login` | Público | `{ email: string(email), password: string }` | `200 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` | `accessToken` sí existe actualmente; no hay lockout HU01 ni sesión verificada por request. |
-| GET | `/auth/me` | Bearer | — | `{ id: UUID, email: string, role }` | No valida `isActive` ni sesión. |
+| POST | `/auth/login` | Publico | `{ email: string(email), password: string }` | `200 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` | Emite JWT HS256 de 900 s con `sessionId`/`tokenVersion`; persiste sesion durable de 7 d y auditoria. `401` uniforme y `503` si el store no esta disponible. |
+| GET | `/auth/me` | Bearer | - | `{ id: UUID, email: string, role }` | Valida firma, claims, sesion durable, usuario activo, rol/version vigentes y expiracion; `401` y `503`. |
 | POST | `/patients` | Bearer, rol OFTALMOLOGO/ADMIN | `{ externalCode?: string(<=64)\|null, age?: number(int 0..130)\|null, gender?: string(<=16)\|null, clinicalHistoryFlags?: object = {}, clinicalData?: object = {} }` | `201 { id: UUID, externalCode: string\|null, age: number\|null, gender: string\|null, clinicalHistoryFlags: object, clinicalData: object\|null, createdAt: ISO }` | Admin puede crear sin ownership clínico definido. |
 | GET | `/patients` | Bearer (sin rol/ownership) | `limit?: number(1..100)=20`, `offset?: number(>=0)=0` | `200 Patient[]` | **No es un endpoint “Bearer only” seguro en TARGET; hoy lista sin ownership.** |
 | GET | `/patients/:id` | Bearer | — | `200 Patient` | Sin ownership; hoy lectura clínica amplia. |
@@ -87,10 +87,10 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 | Método | Ruta | Estado | Auth/rol | Request | Response | Errores |
 |---|---|---|---|---|---|---|
-| POST | `/auth/login` | proposed | Público con rate limit/HU01 | `{ email, password }` | `200 { accessToken, tokenType, expiresIn, user: { id, email, role } }`; cookie de refresh web si aplica | `401`, `429` |
+| POST | `/auth/login` | proposed | Público con rate limit/HU01 | `{ email, password }` | `200 { accessToken, tokenType, expiresIn, user: { id, email, role } }`; cookie de refresh web si aplica | `401`, `429`, `503` |
 | POST | `/auth/register` | removed | — | — | `410 Gone` | `410` |
 | POST | `/admin/users` | proposed (priority) | ADMIN | `{ email, password, fullName?, role? = "OFTALMOLOGO" }` | `201 User`; auditoría de alta/grant/role | `400`, `403`, `409`, `422` |
-| GET | `/auth/me` | proposed | Bearer + sesión vigente | — | `{ id, email, role, sessionId }` | `401` |
+| GET | `/auth/me` | proposed | Bearer + sesion vigente | - | `{ id, email, role, sessionId }` | `401`, `503` |
 | POST | `/auth/logout` | proposed | Bearer + sesión | — | `204` | `401` |
 | POST | `/auth/refresh` | proposed | Cookie web HttpOnly | Sin body JSON para web | `200 { accessToken, tokenType, expiresIn }`; **no** refresh token en JSON | `401` |
 | POST | `/auth/password/forgot` | proposed | Público con rate limit | `{ email }` | `202` uniforme | `429` |

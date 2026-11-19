@@ -251,13 +251,12 @@
 
 ## 5. Seguridad, roles, sesiones y auditoría
 
-- [ ] 5.1 Validar `isActive`, sesión y `tokenVersion` por request; fail closed.
-  - **Scope:** `backend/src/middleware/auth.ts:12-24`, `backend/src/routes/auth.ts:93-112`, repositorio de usuarios/sesiones.
-  - **When/Then:** WHEN una cuenta inactiva o sesión revocada usa token THEN `401`; WHEN no se puede verificar el store THEN se deniega por fail closed.
+- [x] 5.1 Validar `isActive`, sesion y `tokenVersion` por request; fail closed.
+  - **Scope:** `backend/src/middleware/auth.ts`, `backend/src/routes/auth.ts`, `backend/src/services/session.ts`, repositorio de usuarios/sesiones.
+  - **When/Then:** WHEN una cuenta inactiva, rol/version cambiados o sesion revocada/expirada usa token THEN `401`; WHEN el store no se puede verificar THEN `503` fail closed sin datos.
   - **Depends on:** 1.3.
-  - **Test:** `npm --prefix backend run test -- tests/jwt.test.ts tests/rbac.test.ts`.
-  - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”, “Desactivación y preservación de autoría”, REG-006.
-
+  - **Test:** `npm --prefix backend run test:integration -- tests/auth-sessions.integration.test.ts tests/jwt.test.ts tests/rbac.test.ts tests/feedback.route.test.ts tests/export.route.test.ts` -> 5 files / 72 tests passed (foco previo 71; conteo final QA 72); full integration 14 files / 245 tests; unit 15 files / 247 tests; typecheck/build exit 0.
+  - **Coverage:** "Sesiones, refresh, logout y recuperacion seguros" (lector durable y fail closed; refresh/logout quedan en 5.8), "Desactivacion y preservacion de autoria" (rechazo de cuentas inactivas), REG-006.
 - [ ] 5.2 Aplicar ownership y grants a pacientes, consultas, ejecuciones y artefactos.
   - **Scope:** `backend/src/routes/patients.ts:55-134`, `backend/src/routes/consultations.ts:173-229`, `backend/src/routes/inferences.ts:93-143`, middleware/helper de ownership.
   - **When/Then:** WHEN un médico pide recurso ajeno THEN `403`/`404` sin datos; WHEN `/patients` se lista THEN solo pacientes propios; WHEN admin/investigador no tiene grant THEN se deniega export/dataset.
@@ -289,13 +288,12 @@
   - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts`; ver guard de DB en `contracts/testing-runbook.md`.
   - **Coverage:** “Desactivación y preservación de autoría”, “Borrado físico excepcional y supresión de identidad” como restricción, B3/B4/B5 solo producción.
 
-- [ ] 5.7 Implementar sesiones técnicas: JWT 15 min, `sessionId`, `tokenVersion`, store durable.
-  - **Scope:** `backend/src/routes/auth.ts`, `backend/src/middleware/auth.ts`, `backend/src/repositories/user.repo.ts`, `backend/src/services/session.ts`.
-  - **When/Then:** WHEN se emite acceso THEN incluye `sessionId`/`tokenVersion`; WHEN cambia rol o se desactiva THEN tokens/permisos anteriores dejan de valer; WHEN store no verificable THEN fail closed.
+- [x] 5.7 Implementar sesiones tecnicas: JWT 15 min, `sessionId`, `tokenVersion`, store durable.
+  - **Scope:** `backend/src/routes/auth.ts`, `backend/src/middleware/auth.ts`, `backend/src/services/session.ts`, `backend/src/services/auth-policy.ts`, `backend/src/services/password-policy.ts`.
+  - **When/Then:** WHEN se emite acceso THEN incluye `sessionId`/`tokenVersion`, TTL 900 s y sesion absoluta de 7 d; WHEN cambia rol, version, password o se desactiva THEN tokens/permisos anteriores dejan de valer; WHEN store no verificable THEN fail closed; WHEN el cliente Prisma usa un schema explicito THEN el lock usa ese schema; los writers actuales comparten bcrypt cost 12.
   - **Depends on:** 1.3.
-  - **Test:** `npm --prefix backend run test -- tests/jwt.test.ts tests/rbac.test.ts`.
-  - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”.
-
+  - **Test:** `npm --prefix backend run test:integration -- tests/auth-sessions.integration.test.ts` -> 31 tests passed (suite focalizada de auth 5 files / 72 tests; foco previo 71, conteo final QA 72).
+  - **Coverage:** "Sesiones, refresh, logout y recuperacion seguros" (acceso durable, lock schema-qualified y password policy cost 12; refresh/logout 5.8, reset 5.9, lockout 5.3 pendientes).
 - [ ] 5.8 Implementar refresh opaco, rotación single-use, logout y revocación por familia.
   - **Scope:** `backend/src/routes/auth.ts`, `backend/src/services/session.ts`, cookies web HttpOnly/Secure/SameSite.
   - **When/Then:** WHEN refresh rota THEN el anterior no se reutiliza; WHEN se reutiliza THEN se revoca la familia; WHEN logout/desactivación THEN revocación inmediata; WHEN web THEN cookie y respuesta sin refresh token; cross-site evalúa origen/CSRF.

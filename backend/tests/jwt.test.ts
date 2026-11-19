@@ -1,31 +1,4 @@
-import { describe, expect, it, vi, beforeAll } from "vitest";
-
-vi.mock("../src/lib/prisma.js", () => ({
-  prisma: {
-    patient: {
-      create: vi.fn(),
-      findMany: vi.fn().mockResolvedValue([]),
-      findUnique: vi.fn().mockResolvedValue(null),
-    },
-    consultation: {
-      create: vi.fn(),
-      findUnique: vi.fn().mockResolvedValue(null),
-      update: vi.fn(),
-    },
-    image: {
-      create: vi.fn(),
-      findUnique: vi.fn().mockResolvedValue(null),
-    },
-    inference: {
-      create: vi.fn(),
-      findUnique: vi.fn().mockResolvedValue(null),
-    },
-    clinicalFeedback: {
-      create: vi.fn(),
-      findMany: vi.fn().mockResolvedValue([]),
-    },
-  },
-}));
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/services/storage.js", () => ({
   StorageService: {
@@ -44,22 +17,40 @@ vi.mock("../src/workers/inference.queue.js", () => ({
   INFERENCE_QUEUE_NAME: "inference-jobs",
 }));
 
-import { buildApp } from "../src/app.js";
 import type { FastifyInstance } from "fastify";
+import type { UserRole } from "../src/schemas/common.js";
+import { buildTestApp } from "./helpers/app.js";
+import { createTestPrisma, makeSession, makeUser, resetDb } from "./helpers/db.js";
 
+const prisma = createTestPrisma();
 let app: FastifyInstance;
-const PATIENT_LOAD = {
-  sub: "11111111-1111-4111-8111-111111111111",
-  role: "OFTALMOLOGO" as const,
-};
 
 beforeAll(async () => {
-  app = await buildApp();
+  app = await buildTestApp(prisma);
 });
+
+beforeEach(() => resetDb(prisma));
+
+afterAll(async () => {
+  await app.close();
+  await prisma.$disconnect();
+});
+
+async function authenticatedToken(role: UserRole = "OFTALMOLOGO") {
+  const user = await makeUser(prisma, role);
+  const session = await makeSession(prisma, user);
+  const token = app.jwt.sign({
+    sub: user.id,
+    role: user.role,
+    sessionId: session.id,
+    tokenVersion: user.tokenVersion,
+  });
+  return { user, session, token };
+}
 
 describe("JWT expiry verification", () => {
   it("accepts a valid token with default lifetime", async () => {
-    const token = app.jwt.sign(PATIENT_LOAD);
+    const { token } = await authenticatedToken();
     const res = await app.inject({
       method: "GET",
       url: "/patients",
@@ -78,7 +69,7 @@ describe("JWT expiry verification", () => {
   });
 
   it("rejects token with obviously invalid signature", async () => {
-    const token = app.jwt.sign(PATIENT_LOAD);
+    const { token } = await authenticatedToken();
     const res = await app.inject({
       method: "GET",
       url: "/patients",
@@ -90,7 +81,17 @@ describe("JWT expiry verification", () => {
   });
 
   it("rejects an expired token", async () => {
-    const token = app.jwt.sign(PATIENT_LOAD, { expiresIn: "1s" });
+    const user = await makeUser(prisma, "OFTALMOLOGO");
+    const session = await makeSession(prisma, user);
+    const token = app.jwt.sign(
+      {
+        sub: user.id,
+        role: user.role,
+        sessionId: session.id,
+        tokenVersion: user.tokenVersion,
+      },
+      { expiresIn: "1s" },
+    );
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
     const res = await app.inject({

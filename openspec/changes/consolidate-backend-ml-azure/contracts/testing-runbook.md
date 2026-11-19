@@ -175,6 +175,26 @@
 | Registro | REG-005 actualizado a `resuelto`/`cubierto` con permiso explícito del arquitecto y test de regresión. REG-006 (JWT/sesión sin `isActive`/revocación) **sigue activo**: login/me/JWT no cambiaron en esta tarea. |
 | Límites | No implementa `POST /admin/users` (1.8), el servicio general de auditoría (5.5) ni sesiones/refresh/revocación. No declara el ciclo de vida completo de cuentas ni el despliegue seguro de auth. El bootstrap solo crea el primer `ADMIN`; no hay recuperación, reactivación ni escalado operativo. |
 
+## 1.10 Evidencia HITO 10 - sesiones de acceso 5.1/5.7 (2026-11-19)
+
+> Ajuste documental final. No cambia fuente ni pruebas; conserva los conteos de QA.
+
+| Elemento | Resultado observado |
+|---|---|
+| Unit | **15 files / 247 tests passed** |
+| Full integration | **14 files / 245 tests passed** |
+| Foco auth/JWT/RBAC/feedback/export | **5 files / 72 tests passed** (foco previo 71; conteo final QA 72) |
+| Typecheck/build | exit 0 |
+| OpenSpec strict | PASS reportado por QA |
+
+- Access JWT HS256 con `sessionId` y `tokenVersion`; TTL 15 min (max 900 s) y sesion tecnica absoluta de 7 dias.
+- Tokens legacy sin `sessionId`/`tokenVersion` (o sin exp/iat valido) responden `401` generico.
+- Store no disponible responde `503` fail closed, sin datos de cuenta.
+- Dummy bcrypt cost 12 compartido por bootstrap/seed/altas futuras; hashes legacy de coste menor siguen aceptados sin rehash offline y conservan variabilidad de timing residual.
+- Lock SQL cualificado por `databaseSchema` (default `public`; custom explicito para clientes Prisma con otro schema).
+- El guard de produccion rechaza los placeholders publicos de `.env.example` (`replace-me...`), variantes `change-me`/`changeme` y valores vacios o cortos; una clave valida no-placeholder de 32+ caracteres sigue aceptada. No se leen `.env` reales ni `.env.azure`.
+- Este hito **no** declara toda la autenticacion como asegurada: 5.2, 5.3, 5.6, 5.8 y 5.9 siguen pendientes.
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

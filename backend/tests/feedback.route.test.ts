@@ -19,8 +19,16 @@ afterAll(async () => {
 async function setup(over: Parameters<typeof makeStudy>[1] extends infer T ? Partial<T> : never = {}) {
   const doctor = await makeUser(prisma, "OFTALMOLOGO");
   const study = await makeStudy(prisma, { doctorId: doctor.id, ...over });
-  const post = (payload: unknown, user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" } = doctor) =>
-    app.inject({ method: "POST", url: "/feedback", headers: bearer(app, user), payload: payload as object });
+  const post = async (
+    payload: unknown,
+    user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" } = doctor,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: "/feedback",
+      headers: await bearer(app, prisma, user),
+      payload: payload as object,
+    });
   const body = (extra: object = {}) => ({
     consultation_id: study.consultation.id,
     inference_id: study.inference.id,
