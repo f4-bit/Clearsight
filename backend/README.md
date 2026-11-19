@@ -13,8 +13,11 @@ src/
   services/gold-standard-export.ts   export anonimizado JSON/CSV (lo usan la ruta y el ETL)
   services/audit.ts            auditoría transaccional compartida (wrapper + writer)
   services/admin-bootstrap.ts  bootstrap controlado del primer ADMIN (transacción + auditoría)
+  services/admin-users.ts      alta administrativa POST /admin/users (lock global, actor fresco, auditoría)
+  lib/canonical-email.ts       contrato canónico de email compartido login/bootstrap/alta
   middleware/                 auth (JWT HS256) y rbac — mínimos, reemplazables por los del módulo de auth
   routes/feedback.ts          POST /feedback · GET /export/gold-standard
+  routes/admin.ts             POST /admin/users (ADMIN, alta controlada)
 prisma/                       schema.prisma · migrations/ · seed.ts
 scripts/bootstrap-admin.ts    CLI env-only del primer administrador
 scripts/etl-feedback.ts       ETL feedback validado -> dataset de reentrenamiento
@@ -66,27 +69,26 @@ npm run admin:bootstrap
 - Un error de red ambiguo no se presenta como rollback garantizado: la base pudo haber
   confirmado antes de perderse la respuesta. El CLI no reintenta el bootstrap ni crea un
   segundo administrador automáticamente.
-- `POST /admin/users` (1.8), la desactivación/revocación (5.6) y refresh/logout (5.8) son
-  tareas posteriores; este CLI no implementa el ciclo de vida completo de cuentas.
+- `POST /admin/users` está implementado (1.8) como alta controlada; la desactivación/revocación (5.6) y refresh/logout (5.8) siguen pendientes.
 
 ## Autenticacion y sesiones
 
 - El access token es un JWT HS256 con `{ sub, role, sessionId, tokenVersion }`; `exp` e `iat` son obligatorios. El TTL por defecto es 15 minutos (`JWT_EXPIRES_IN=15m`) y no puede superar 900 s.
 - Cada request protegida valida la firma y los claims, y despues consulta una sesion durable, usuario activo y version/rol vigentes. Token invalido o sesion revocada/expirada responde `401` generico; store no disponible responde `503` sin datos.
 - La sesion tecnica es absoluta de 7 dias. Los tokens antiguos que no incluyen `sessionId`/`tokenVersion` dejan de ser validos.
-- Nuevos hashes (bootstrap, seed y futuras altas administrativas) usan bcrypt cost 12. Hashes legacy con coste menor (por ejemplo cost 10) siguen siendo aceptados para login; no se re-hashean sin la contrasena.
+- Nuevos hashes (bootstrap, seed y altas administrativas) usan bcrypt cost 12. Hashes legacy con coste menor (por ejemplo cost 10) siguen siendo aceptados para login; no se re-hashean sin la contrasena.
 - HU01: cinco fallos consecutivos responden `429` y bloquean el identificador 15 minutos (contador 5); un exito previo reinicia el contador y el siguiente fallo cuenta 1; un exito durante el bloqueo no desbloquea ni emite sesion; al expirar el boundary exacto el login correcto se permite y resetea.
 - Cuota IP complementaria: `IP_RATE_LIMIT=100` intentos por `IP_RATE_WINDOW_SECONDS=60` s (enteros positivos; 0/negativo no desactiva). Comparte cuota entre cuentas detras de una NAT; usa `request.ip` y no confia en `X-Forwarded-For` (`trustProxy:false`). El `429` incluye `Retry-After` positivo y un body generico sin contador, email ni estado de cuenta.
 - Los contadores son buckets pseudonimos HMAC-SHA256 (email normalizado / IP), sin PII cruda en tablas ni logs. El reset es logico (ventana/bloqueo), no una purga de evidencia clinica. No se garantiza igualdad estricta de timing ni inmunidad DoS: la cuota IP es complementaria, no un escudo global.
 - Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` y un guard construidos con `databaseSchema` igual al schema configurado en el cliente.
-- Este hito no es un release de seguridad completo: ownership/grants (5.2), ciclo de vida administrativo/revocacion masiva (5.6/admin), refresh/logout/cookies (5.8), reset (5.9) y alta admin (1.8) siguen pendientes.
+- Este hito no es un release de seguridad completo: ownership/grants (5.2), ciclo de vida administrativo/revocación masiva (5.4/5.6/9.1), refresh/logout/cookies (5.8), reset (5.9) y lectura de auditoría (9.2) siguen pendientes.
 
 ## Auditoria transaccional (5.5)
 
 - `src/services/audit.ts` expone `withAuditedTransaction(db, work, options?)` y `writeAuditEvent(context, input)`. El wrapper abre la transaccion con el `$transaction` publico de Prisma y entrega un contexto opaco con `.tx`; la identidad del contexto vive en un `WeakMap` privado y solo es valida durante el callback.
 - `writeAuditEvent` usa `context.tx.auditEvent.create` en la misma transaccion. Rechaza cliente raiz, `tx` crudo, objetos fabricados, clones y contextos cerrados antes de escribir. Un callback exitoso debe registrar al menos un evento; si la auditoria falla, el fallo es sticky y la transaccion revierte aunque el callback lo capture.
-- Los llamadores actuales son `services/admin-bootstrap.ts` y `services/session.ts`, ambos con `await writeAuditEvent(...)`. La composicion anidada de `withAuditedTransaction` sobre el mismo root DB queda fuera de alcance; no se promete soporte para callbacks fire-and-forget ni codigo propio malicioso.
-- No anade endpoint publico, UI admin ni permisos/grants clinicos. 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2 siguen pendientes.
+- Los llamadores actuales son `services/admin-bootstrap.ts`, `services/admin-users.ts` y `services/session.ts`, todos con `await writeAuditEvent(...)`. La composicion anidada de `withAuditedTransaction` sobre el mismo root DB queda fuera de alcance; no se promete soporte para callbacks fire-and-forget ni codigo propio malicioso.
+- `POST /admin/users` está implementado (1.8) sin frontend; GET/PATCH, desactivación, cambio de rol, 5.4/5.6/9.1 y la lectura de auditoría 9.2 siguen pendientes.
 
 ## Migraciones
 

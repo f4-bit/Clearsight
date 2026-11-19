@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
+import { canonicalizeEmail, escapeLiteralLike } from "../lib/canonical-email.js";
 import { withAuditedTransaction, writeAuditEvent } from "./audit.js";
 import { PASSWORD_BCRYPT_COST } from "./password-policy.js";
 
@@ -89,7 +90,9 @@ export function validateBootstrapAdminInput(input: unknown): NormalizedBootstrap
   if (normalizedEmail.length === 0 || normalizedEmail.length > 255) {
     throw inputError("email must be a non-empty value of at most 255 characters");
   }
-  if (!/^[^\s@]+@[^\s@]+$/.test(normalizedEmail)) {
+  // Use the same canonical DTO as login: a first admin whose address the login
+  // endpoint rejects would be created unusable, so reject it before any DB work.
+  if (canonicalizeEmail(normalizedEmail) === null) {
     throw inputError("email must be a valid address");
   }
 
@@ -164,7 +167,12 @@ export async function bootstrapAdmin(
         }
 
         const emailOwner = await tx.user.findFirst({
-          where: { email: { equals: normalized.email, mode: "insensitive" } },
+          where: {
+            email: {
+              equals: escapeLiteralLike(normalized.email),
+              mode: "insensitive",
+            },
+          },
           select: { id: true },
         });
         if (emailOwner !== null) {

@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
+import { escapeLiteralLike } from "../lib/canonical-email.js";
 import {
   assertValidDatabaseSchema,
   DEFAULT_DATABASE_SCHEMA,
@@ -417,7 +418,12 @@ export function createAuthLoginProtection(
         // identifier bucket. Unknown identifiers lock only the bucket; the IP
         // quota transaction was already committed and holds no user locks.
         const candidate = await tx.user.findFirst({
-          where: { email: { equals: normalizedEmail, mode: "insensitive" } },
+          where: {
+            email: {
+              equals: escapeLiteralLike(normalizedEmail),
+              mode: "insensitive",
+            },
+          },
           select: { id: true },
         });
 

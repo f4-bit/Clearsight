@@ -76,12 +76,24 @@
   - **Test:** `npm --prefix backend run test -- tests/migrations.test.ts tests/schemas.test.ts`.
   - **Coverage:** “Compatibilidad de referencias legacy”, “Compatibilidad y evolución del contrato”, “Nombres canónicos, mapeo y lateralidad”.
 
-- [ ] 1.8 Implementar `POST /admin/users` como alta controlada prioritaria desde el primer release.
-  - **Scope:** nueva ruta admin de alta, `backend/src/routes/auth.ts`, `backend/src/schemas/auth.ts`, `backend/src/repositories/user.repo.ts`, auditoría; sin frontend.
-  - **When/Then:** WHEN se retira el registro público (`410`) THEN el alta admin está disponible; WHEN se crea una cuenta THEN el default es `OFTALMOLOGO`; WHEN se asigna `ADMIN` o un grant THEN solo un admin autenticado puede hacerlo y se audita alta/grant/rol.
+- [x] 1.8 Implementar `POST /admin/users` como alta controlada prioritaria desde el primer release.
+  - **Scope:** nueva ruta admin `backend/src/routes/admin.ts` y registro en `backend/src/app.ts`; DTO canónico de email y alta en `backend/src/schemas/auth.ts`; servicio transaccional `backend/src/services/admin-users.ts` sobre `withAuditedTransaction` y `ADMIN_LIFECYCLE_LOCK_KEY`; helper puro `backend/src/lib/canonical-email.ts` compartido con login/bootstrap/guard; ajustes de email literal en `backend/src/services/{admin-bootstrap,session,login-guard}.ts`; tests unitarios e integración owned. Sin frontend. `GET/PATCH /admin/users`, desactivación, cambio de rol y protección del último admin siguen en 5.4/5.6/9.1; la lectura de auditoría sigue en 9.2.
+  - **When/Then:** WHEN se retira el registro público (`410`) THEN el alta admin está disponible; WHEN se crea una cuenta THEN el default es `OFTALMOLOGO` e `isActive:true` es server-owned; WHEN se asigna `ADMIN` o un grant THEN solo un admin autenticado puede hacerlo y se audita alta/rol en la misma transacción; WHEN llegan campos de actor/actividad/hash/versión/contador en el body THEN `400` sin efecto; WHEN el email no es compatible con el DTO de login THEN bootstrap y alta lo rechazan antes de DB; WHEN dos altas compiten por el mismo email/case THEN exactamente una `201` y una `409` con un usuario y una auditoría; WHEN falla la auditoría THEN rollback sin USER fantasma.
   - **Depends on:** 1.3, 1.6, 5.5.
-  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts tests/jwt.test.ts` con casos de alta/rol/auditoría.
-  - **Coverage:** “Bootstrap de administrador controlado”, “Tres roles con mínimo privilegio y default deny”, “Auditoría append-only de acciones sensibles”.
+  - **Test:** `npm --prefix backend run test:unit` -> **19 files / 335 tests passed**; `npm --prefix backend run test:integration -- tests/user-admin.integration.test.ts` -> **1 file / 24 tests passed**; foco auth/admin `npm --prefix backend run test:integration -- tests/admin-bootstrap.integration.test.ts tests/auth-sessions.integration.test.ts tests/login-protection.integration.test.ts tests/user-admin.integration.test.ts` -> **4 files / 117 tests passed (histórico pre-QA)**; `npm --prefix backend run test:integration` -> **17 files / 319 tests passed (259.43 s)**; `npm --prefix backend run typecheck` y `npm --prefix backend run build` -> exit 0. PostgreSQL 16 de Testcontainers owned; sin Azure, `.env.azure`, PHI, correos reales ni DB externa/producción.
+  - **Histórico pre-QA conservado:** unit 19/333, foco auth/admin 4/117 e integración completa 17/312; no es el resumen final.
+  - **Coverage:** "Bootstrap de administrador controlado", "Tres roles con mínimo privilegio y default deny", "Auditoría append-only de acciones sensibles". El alta no concede datasets clínicos por rol y no sustituye 5.2/5.8/5.9.
+  - **Trazabilidad 1.8:**
+
+    | Source | Prueba unit/real | Resultado |
+    |---|---|---|
+    | `backend/src/lib/canonical-email.ts` (contrato compartido + escape literal `\`, `%`, `_`) | `tests/unit/admin-users.test.ts`, `tests/unit/admin-bootstrap-adversarial.test.ts` | unit 19/335 |
+    | `backend/src/services/admin-users.ts` (lock global, actor/sesión frescos, USER+audit same tx) | `tests/user-admin.integration.test.ts` | 1 file / 24 tests |
+    | `backend/src/routes/admin.ts`, `backend/src/app.ts` (auth/rol, DTO seguro, DI) | `tests/user-admin.integration.test.ts` | incluido en 1/24 |
+    | `backend/src/services/admin-bootstrap.ts`, `session.ts`, `login-guard.ts` (email literal/compatible) | `tests/admin-bootstrap.integration.test.ts`, `auth-sessions.integration.test.ts`, `login-protection.integration.test.ts` | histórico foco 4/117 |
+    | PostgreSQL owned, rol `clearsight_app`, auditoría y rollback | full integration + labels Docker | full 17/319; sin residuos |
+
+  - **Pendientes sin cambios:** 5.2 (ACL/ownership clínico), 5.4/5.6 (ciclo de vida y último admin), 5.8/5.9 (refresh/reset), 9.1 (`GET/PATCH /admin/users`) y 9.2 (lectura de auditoría). Release clínica **no** declarada lista.
 
 ## 2. Modelo clínico de ejecución
 
@@ -418,7 +430,7 @@
 
 > Estas tareas son alcance posterior sin frontend. Quedan unchecked y no deben mezclarse con la tabla de bloqueos.
 
-- [ ] 9.1 [LATER HITO] Lectura/edición administrativa de usuarios, desactivación y cambios de rol (el alta `POST /admin/users` ya es prioridad 1.8).
+- [ ] 9.1 [LATER HITO] Lectura/edición administrativa de usuarios, desactivación y cambios de rol (el alta `POST /admin/users` ya está implementada en 1.8).
   - **Scope:** rutas admin GET/PATCH, repositorio de usuarios, auditoría; sin frontend.
   - **Coverage:** “Tres roles con mínimo privilegio y default deny”, “Desactivación y preservación de autoría”, “Protección del último administrador activo”.
 

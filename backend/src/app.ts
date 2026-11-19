@@ -15,12 +15,14 @@ import { env, type Env } from "./config/env.js";
 import { HttpError } from "./lib/http-error.js";
 import { prisma as defaultPrisma, type PrismaClient } from "./lib/prisma.js";
 import { createRepositories } from "./repositories/index.js";
+import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { consultationRoutes } from "./routes/consultations.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { inferenceRoutes } from "./routes/inferences.js";
 import { patientRoutes } from "./routes/patients.js";
 import { healthResponseSchema } from "./schemas/common.js";
+import { createAdminUsersService, type AdminUsersService } from "./services/admin-users.js";
 import {
   assertProductionJwtSecret,
   DEFAULT_JWT_ACCESS_TTL,
@@ -53,6 +55,8 @@ export interface AppDeps {
   now?: () => Date;
   /** Trusted test seam; the default is always built from the injected prisma. */
   authService?: AuthSessionService;
+  /** Trusted test seam for administrative provisioning; defaults from prisma. */
+  adminUsersService?: AdminUsersService;
 }
 
 /**
@@ -130,6 +134,16 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
       loginProtection,
     });
   app.decorate("authService", authService);
+
+  // Administrative provisioning is also always built from the injected client
+  // and the same explicit schema; construction never connects.
+  const adminUsersService =
+    deps?.adminUsersService ??
+    createAdminUsersService(prisma, {
+      databaseSchema,
+      now: deps?.now,
+    });
+  app.decorate("adminUsersService", adminUsersService);
 
   // 3. Swagger / OpenAPI documentation
   await app.register(fastifySwagger, {
@@ -249,6 +263,7 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
 
   // 6. API Routers
   await app.register(authRoutes, { prefix: "/auth" });
+  await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(patientRoutes, { prefix: "/patients" });
   await app.register(consultationRoutes, { prefix: "/consultations" });
   await app.register(inferenceRoutes, { prefix: "/inferences" });

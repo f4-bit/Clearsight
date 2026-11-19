@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import type { PrismaClient } from "../generated/prisma/client.js";
 import type { UserRole } from "../generated/prisma/enums.js";
+import { canonicalizeEmail, escapeLiteralLike } from "../lib/canonical-email.js";
 import {
   assertValidDatabaseSchema,
   DEFAULT_DATABASE_SCHEMA,
@@ -163,14 +164,8 @@ export interface AuthSessionService {
 }
 
 function normalizeEmail(email: unknown): string | null {
-  if (typeof email !== "string") {
-    return null;
-  }
-  const normalized = email.trim().toLowerCase();
-  if (normalized.length === 0 || normalized.length > 255) {
-    return null;
-  }
-  return normalized;
+  // Direct service callers use the exact same canonical contract as the DTO.
+  return canonicalizeEmail(email);
 }
 
 function isPasswordWithinBcryptBound(password: unknown): password is string {
@@ -256,7 +251,9 @@ export function createAuthSessionService(
     let initial: AuthUserRecord | null;
     try {
       initial = await db.user.findFirst({
-        where: { email: { equals: email, mode: "insensitive" } },
+        where: {
+          email: { equals: escapeLiteralLike(email), mode: "insensitive" },
+        },
         select: USER_AUTH_SELECT,
       });
     } catch {

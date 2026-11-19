@@ -6,6 +6,7 @@ import {
   validateBootstrapAdminInput,
 } from "../../src/services/admin-bootstrap.js";
 import { runBootstrapAdminCli } from "../../scripts/bootstrap-admin.js";
+import { loginRequestSchema } from "../../src/schemas/auth.js";
 import type { PrismaClient } from "../../src/generated/prisma/client.js";
 
 /**
@@ -69,13 +70,32 @@ describe("validateBootstrapAdminInput hostile boundaries", () => {
     expect(() => validateBootstrapAdminInput({ ...VALID, email: `  ${at256}  ` })).toThrow(/255/);
   });
 
-  it("normalizes Unicode case in the email and trims Unicode whitespace in the full name", () => {
+  it("rejects bootstrap emails the login DTO cannot log in with", () => {
+    // Permanent identity regression: the previous bootstrap validator accepted
+    // these values while loginRequestSchema rejected them, producing an
+    // unusable first administrator. Both validators must share one contract.
+    for (const email of ["admin@localhost", "ÄÖÜ@example.test"]) {
+      expect(loginRequestSchema.safeParse({ email, password: VALID.password }).success).toBe(false);
+      let message = "";
+      try {
+        validateBootstrapAdminInput({ ...VALID, email });
+        expect.unreachable(`email ${JSON.stringify(email)} must be rejected`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(BootstrapAdminError);
+        expect((error as BootstrapAdminError).code).toBe("BOOTSTRAP_INPUT_INVALID");
+        message = (error as Error).message;
+      }
+      expect(message).not.toContain(email);
+    }
+  });
+
+  it("keeps Unicode fullName support with an API-compatible ASCII email", () => {
     const parsed = validateBootstrapAdminInput({
-      email: "  ÄÖÜ@EXAMPLE.test ",
+      email: "  Admin+QA@EXAMPLE.test ",
       fullName: "\u00a0 QA \u2028 Name \u00a0",
       password: VALID.password,
     });
-    expect(parsed.email).toBe("äöü@example.test");
+    expect(parsed.email).toBe("admin+qa@example.test");
     expect(parsed.fullName).toBe("QA \u2028 Name");
   });
 

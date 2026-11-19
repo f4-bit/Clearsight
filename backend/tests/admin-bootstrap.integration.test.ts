@@ -303,6 +303,43 @@ describe("admin:bootstrap CLI", () => {
     expect(await prisma.auditEvent.count()).toBe(1);
   });
 
+  it("rejects an API-incompatible email before writes and preserves an existing ordinary user", async () => {
+    const url = ownedDatabaseUrl();
+    const canaryEmail = "ÄÖÜ@example.test";
+    const canaryPassword = "canary-cli-password-123";
+    const existing = await prisma.user.create({
+      data: {
+        email: "pre-existing-doctor@clearsight.test",
+        passwordHash: "x",
+        fullName: "Pre-existing Doctor",
+        role: "OFTALMOLOGO",
+      },
+    });
+
+    const run = await runCli(
+      childEnvironment({
+        MIGRATION_DATABASE_URL: url,
+        DATABASE_URL: url,
+        BOOTSTRAP_ADMIN_EMAIL: canaryEmail,
+        BOOTSTRAP_ADMIN_FULL_NAME: FULL_NAME,
+        BOOTSTRAP_ADMIN_PASSWORD: canaryPassword,
+      }),
+    );
+
+    expect(run.code).toBe(1);
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toContain("BOOTSTRAP_INPUT_INVALID");
+    expect(run.stderr).not.toContain(canaryEmail);
+    expect(run.stderr).not.toContain(canaryPassword);
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: existing.id } });
+    expect(after.role).toBe("OFTALMOLOGO");
+    expect(after.isActive).toBe(true);
+    expect(await prisma.user.count()).toBe(1);
+    expect(await prisma.userSession.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+  });
+
   it("fails safely before any connection when the database configuration is missing", async () => {
     const canaryEmail = "canary-cli-email@clearsight.test";
     const canaryPassword = "canary-cli-password-123";

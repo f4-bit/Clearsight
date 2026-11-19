@@ -67,6 +67,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | POST | `/auth/register` | Público | Cualquier JSON válido; sin validación de `role` (JSON malformado lo rechaza el parser HTTP con `400`) | `410 { error: "Gone", message: string, statusCode: 410 }` | **Retirado: no crea cuentas, no consulta la base y no emite token. El alta del primer admin es un CLI controlado (bootstrap), no un endpoint público.** |
 | POST | `/auth/login` | Publico | `{ email: string(email), password: string }` | `200 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` | Emite JWT HS256 de 900 s con `sessionId`/`tokenVersion`; persiste sesion durable de 7 d y auditoria. `401` uniforme; `429` uniforme con `Retry-After` (HU01 5 fallos/15 min y cuota IP 100/60) sin contador, email ni estado; `503` si el store no esta disponible. |
 | GET | `/auth/me` | Bearer | - | `{ id: UUID, email: string, role }` | Valida firma, claims, sesion durable, usuario activo, rol/version vigentes y expiracion; `401` y `503`. |
+| POST | `/admin/users` | Bearer, ADMIN | `{ email: string(canonico, trim/lower, <=255), password: string(>=12 code points, <=72 UTF-8 bytes), fullName: string(trim 1..255), role?: "OFTALMOLOGO"\|"INVESTIGADOR"\|"ADMIN" = "OFTALMOLOGO" }` | `201 { id: UUID, email: string, fullName: string, role, isActive: true, createdAt: ISO, updatedAt: ISO }` | **Alta controlada implementada (1.8):** actor/sesion frescos en la misma tx, `USER_CREATED` auditado, email literal case-insensitive, `400/401/403/409/503`; no emite JWT. `GET/PATCH`, desactivacion y cambio de rol siguen deferidos. |
 | POST | `/patients` | Bearer, rol OFTALMOLOGO/ADMIN | `{ externalCode?: string(<=64)\|null, age?: number(int 0..130)\|null, gender?: string(<=16)\|null, clinicalHistoryFlags?: object = {}, clinicalData?: object = {} }` | `201 { id: UUID, externalCode: string\|null, age: number\|null, gender: string\|null, clinicalHistoryFlags: object, clinicalData: object\|null, createdAt: ISO }` | Admin puede crear sin ownership clínico definido. |
 | GET | `/patients` | Bearer (sin rol/ownership) | `limit?: number(1..100)=20`, `offset?: number(>=0)=0` | `200 Patient[]` | **No es un endpoint “Bearer only” seguro en TARGET; hoy lista sin ownership.** |
 | GET | `/patients/:id` | Bearer | — | `200 Patient` | Sin ownership; hoy lectura clínica amplia. |
@@ -89,7 +90,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 |---|---|---|---|---|---|---|
 | POST | `/auth/login` | proposed | Público con rate limit/HU01 | `{ email, password }` | `200 { accessToken, tokenType, expiresIn, user: { id, email, role } }`; cookie de refresh web si aplica | `401`, `429` (`Retry-After`; mismo body, sin contador/email), `503` |
 | POST | `/auth/register` | removed | — | — | `410 Gone` | `410` |
-| POST | `/admin/users` | proposed (priority) | ADMIN | `{ email, password, fullName?, role? = "OFTALMOLOGO" }` | `201 User`; auditoría de alta/grant/role | `400`, `403`, `409`, `422` |
+| POST | `/admin/users` | implemented (1.8) | ADMIN | `{ email: string(canonico, trim/lower, <=255), password: string(>=12 code points, <=72 UTF-8 bytes), fullName: string(trim 1..255), role? = "OFTALMOLOGO" }` | `201 { id, email, fullName, role, isActive, createdAt, updatedAt }`; auditoría de alta/rol | `400`, `401`, `403`, `409`, `503` |
 | GET | `/auth/me` | proposed | Bearer + sesion vigente | - | `{ id, email, role, sessionId }` | `401`, `503` |
 | POST | `/auth/logout` | proposed | Bearer + sesión | — | `204` | `401` |
 | POST | `/auth/refresh` | proposed | Cookie web HttpOnly | Sin body JSON para web | `200 { accessToken, tokenType, expiresIn }`; **no** refresh token en JSON | `401` |
@@ -136,12 +137,12 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 | Método | Ruta | Estado | Nota |
 |---|---|---|---|
-| GET/PATCH | `/admin/users` | deferred | Lectura/edición admin diferida; **POST alta es prioridad** en 3.1, no diferida. Desactivación/roles y último admin protegido desde que existan esas rutas. |
+| GET/PATCH | `/admin/users` | deferred | Lectura/edición admin diferida; **POST alta implementada (1.8)** en 3.1, no diferida. Desactivación/roles y último admin protegido desde que existan esas rutas. |
 | DELETE | `/admin/users/:id` | not planned | **No hay hard delete en este hito**, ni siquiera para cuentas sin actividad. La acción soportada es desactivación + revocación de sesiones; la supresión legal queda pendiente solo para producción. |
 | GET | `/admin/audit` | deferred | Auditoría operativa append-only, mínimo PHI. |
 | GET | `/consultations` | deferred | Historial/filtros/paginación, sin frontend en este hito. |
 
-> **Alta administrativa (H3):** al retirar `POST /auth/register` (`410`), `POST /admin/users` es **prioridad de alta controlada desde el primer release**, no un CRUD diferido. `GET/PATCH /admin/users` sí son diferidos, pero la protección del último admin se aplica desde que existan rutas de cambio/desactivación. Toda cuenta nueva MUST auditar alta, grant y asignación de rol; el default es clínico regular (`OFTALMOLOGO`) y `ADMIN` solo puede asignarse por un admin autenticado y auditado. No se deja registro público “por falta de UI”: el backend/API se entrega sin frontend.
+> **Alta administrativa (H3):** al retirar `POST /auth/register` (`410`), `POST /admin/users` está **implementado (1.8)** como alta controlada desde el primer release, no un CRUD diferido. `GET/PATCH /admin/users` sí son diferidos, pero la protección del último admin se aplica desde que existan rutas de cambio/desactivación. Toda cuenta nueva MUST auditar alta, grant y asignación de rol; el default es clínico regular (`OFTALMOLOGO`) y `ADMIN` solo puede asignarse por un admin autenticado y auditado. No se deja registro público “por falta de UI”: el backend/API se entrega sin frontend.
 
 ## 4. Shapes concretos TARGET
 
@@ -319,7 +320,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 
 ## 11. Reglas de consumo para frontend
 
-1. `POST /auth/register` está retirado (`410`); no usarlo para crear cuentas ni administradores. El primer admin se crea con el bootstrap controlado; el alta administrativa `POST /admin/users` sigue pendiente (1.8).
+1. `POST /auth/register` está retirado (`410`); no usarlo para crear cuentas ni administradores. El primer admin se crea con el bootstrap controlado; el alta administrativa `POST /admin/users` está implementada (1.8) y sigue sin frontend en este hito.
 2. No guardar access tokens en `localStorage`; el refresh web va en cookie HttpOnly/Secure/SameSite.
 3. En `429` de login, respetar `Retry-After`; no mostrar ni derivar contadores, emails ni estado de cuenta (mismo body generico para conocido y desconocido).
 4. No enviar `imageUrl`; no construir URLs de storage; pedir URL nueva al backend si expira.
