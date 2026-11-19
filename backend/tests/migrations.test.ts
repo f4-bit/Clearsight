@@ -95,6 +95,12 @@ describe("0_init + incremental migrations on legacy data", () => {
     const snapshots = await client.query("SELECT count(*)::int AS count FROM clinical_snapshots");
     expect(snapshots.rows[0].count).toBe(0);
 
+    // Migration B is empty on legacy data as well; no artifact/PDF backfill.
+    const artifactRows = await client.query("SELECT count(*)::int AS count FROM artifact_records");
+    expect(artifactRows.rows[0].count).toBe(0);
+    const pdfRows = await client.query("SELECT count(*)::int AS count FROM pdf_reports");
+    expect(pdfRows.rows[0].count).toBe(0);
+
     const selections = await client.query(
       "SELECT required_execution_ids, required_set_version, required_set_frozen_at FROM consultations ORDER BY id",
     );

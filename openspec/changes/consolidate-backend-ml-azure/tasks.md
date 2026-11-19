@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migración 1.1 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Marcadas: documentales 0.1/0.4, implementación 0.3/3.1/7.0, migraciones 1.1/1.2 y ejecución real 7.0.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]` y quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -36,12 +36,12 @@
   - **Test:** `npm --prefix backend run test:integration -- tests/migrations.test.ts` → **25 tests passed** (upgrade legacy, replay A, invariantes SQL y regresiones F1/F2/F3); `npm --prefix backend run test:integration` → **8 files / 83 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `npm --prefix backend run typecheck` y `build` → exit 0; Prisma `validate`/`generate` válidos con `@@index` GIN.
   - **Coverage:** “Una ejecución analiza una sola retinografía con lateralidad”, “Snapshot clínico inmutable por ejecución”, “Selección explícita de ejecuciones requeridas y cambio tras cierre”, “Reanálisis enlazado sin sobrescribir evidencia” (persistencia SQL; los consumidores de aplicación quedan en 2.x).
 
-- [ ] 1.2 Migración B: referencias de artefacto y versiones de PDF.
-  - **Scope:** `backend/prisma/schema.prisma` (`ArtifactRecord`, `PdfReport`), migración B, `docker/init.sql`.
-  - **When/Then:** WHEN se aplica THEN cada artefacto tiene referencia estructurada y cada PDF tiene `reportId`/`version` inmutable.
+- [x] 1.2 Migración B: referencias de artefacto y versiones de PDF.
+  - **Scope:** `backend/prisma/schema.prisma` (`ArtifactRecord`, `PdfReport`), `backend/prisma/migrations/20261118010000_artifact_reports/migration.sql`, `backend/tests/artifact-migrations.test.ts`, allowlists de integración; `docker/init.sql` sin cambios (baseline inmutable). No implementa rutas, auth, worker ni generación real de PDF; `result` sigue siendo la proyección inline de `Inference` y `ArtifactRecord` guarda binarios `mask`/`overlay`/`pdf`/`gradcam`/`shap`.
+  - **When/Then:** WHEN se aplica sobre A THEN existen tablas/columnas/constraints/índices de artefacto y PDF; WHEN una referencia está `AVAILABLE` THEN todos los campos públicos están completos y la identidad/ubicación queda inmutable; WHEN se publica un PDF THEN su artifact es `pdf`, `AVAILABLE`, `application/pdf` y de la misma inferencia/versión; WHEN se crea una versión nueva THEN la anterior no cambia; WHEN una fila legacy no tiene registros THEN no se rellena artificialmente.
   - **Depends on:** 1.1.
-  - **Test:** `npm --prefix backend run test -- tests/migrations.test.ts tests/repositories.test.ts`.
-  - **Coverage:** “Referencia de artefacto estructurada y estable”, “Idempotencia y versionado del reporte”.
+  - **Test:** `npm --prefix backend run test:integration -- tests/artifact-migrations.test.ts` → **1 file / 28 tests passed**; `npm --prefix backend run test:integration` → **9 files / 111 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `typecheck`/`build` → exit 0; Prisma `validate`/`generate` con config temporal sin dotenv.
+  - **Coverage:** “Referencia de artefacto estructurada y estable”, “Idempotencia y versionado del reporte”, “Estado explícito por artefacto”, “Prohibición de persistir credenciales temporales y URLs arbitrarias”. La generación/consumo queda en 3.5, 6.1, 6.2.
 
 - [ ] 1.3 Migración C: auditoría, idempotencia y sesiones.
   - **Scope:** `backend/prisma/schema.prisma` (`AuditEvent`, `IdempotencyRecord`, `UserSession` con `tokenVersion`), migración C, `docker/init.sql`.

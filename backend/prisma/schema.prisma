@@ -99,6 +99,7 @@ model ClinicalSnapshot {
 
   consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   inferences   Inference[]
+  pdfReports   PdfReport[]
 
   @@index([consultationId], map: "idx_clinical_snapshots_consultation_id")
   @@map("clinical_snapshots")
@@ -155,6 +156,8 @@ model Inference {
   reanalysisOf Inference?         @relation("InferenceReanalysis", fields: [reanalysisOfId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   reanalyses   Inference[]        @relation("InferenceReanalysis")
   feedback     ClinicalFeedback[]
+  artifactRecords ArtifactRecord[]
+  pdfReports      PdfReport[]
 
   @@index([imageId], map: "idx_inferences_image_id")
   @@index([predictedClass], map: "idx_inferences_predicted_class")
@@ -162,6 +165,70 @@ model Inference {
   @@index([snapshotId], map: "idx_inferences_clinical_snapshot_id")
   @@index([reanalysisOfId], map: "idx_inferences_reanalysis_of_id")
   @@map("inferences")
+}
+
+/// Binary/file artifact reference. `result` is not stored here: it is the
+/// existing inline Inference projection. Published (AVAILABLE) rows are
+/// completely immutable; a later failure is a new explicit version/attempt.
+/// URI/signature rejection, state completeness and immutability are enforced
+/// by SQL constraints/triggers not representable in Prisma.
+model ArtifactRecord {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  inferenceId       String    @map("inference_id") @db.Uuid
+  artifactType      String    @map("artifact_type") @db.VarChar(32)
+  version           Int       @default(1)
+  status            String    @default("PENDING") @db.VarChar(16)
+  storageId         String?   @map("storage_id") @db.VarChar(128)
+  bucketOrContainer String?   @map("bucket_or_container") @db.VarChar(255)
+  key               String?
+  contentType       String?   @map("content_type") @db.VarChar(255)
+  sizeBytes         BigInt?   @map("size_bytes") @db.BigInt
+  // Fixed lowercase SHA-256 hex; the SQL CHECK rejects other cases/lengths.
+  checksumSha256    String?   @map("checksum_sha256") @db.VarChar(64)
+  failureCode       String?   @map("failure_code") @db.VarChar(64)
+  retryable         Boolean   @default(false)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  availableAt       DateTime? @map("available_at") @db.Timestamptz(6)
+
+  inference  Inference   @relation(fields: [inferenceId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  pdfReports PdfReport[]
+
+  @@unique([inferenceId, artifactType, version], map: "artifact_records_inference_id_artifact_type_version_key")
+  @@index([inferenceId], map: "idx_artifact_records_inference_id")
+  @@index([status], map: "idx_artifact_records_status")
+  @@map("artifact_records")
+}
+
+/// Immutable, versioned PDF/report row. Rendering inputs are fixed from
+/// creation; PENDING may transition to AVAILABLE/FAILED, FAILED may return to
+/// PENDING, and AVAILABLE is completely immutable. The linked artifact must be
+/// a pdf artifact of the same inference/version (SQL trigger).
+model PdfReport {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  inferenceId      String    @map("inference_id") @db.Uuid
+  version          Int
+  artifactId       String?   @map("artifact_id") @db.Uuid
+  sourceSnapshotId String?   @map("source_snapshot_id") @db.Uuid
+  status           String    @default("PENDING") @db.VarChar(16)
+  documentKind     String    @default("basic") @map("document_kind") @db.VarChar(32)
+  dataVersion      String    @map("data_version") @db.VarChar(128)
+  modelVersions    Json      @default("{}") @map("model_versions") @db.JsonB
+  renderingInputs  Json      @default("{}") @map("rendering_inputs") @db.JsonB
+  availableAt      DateTime? @map("available_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  inference      Inference         @relation(fields: [inferenceId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  artifact       ArtifactRecord?   @relation(fields: [artifactId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  sourceSnapshot ClinicalSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([inferenceId, version], map: "pdf_reports_inference_id_version_key")
+  @@index([inferenceId], map: "idx_pdf_reports_inference_id")
+  @@index([artifactId], map: "idx_pdf_reports_artifact_id")
+  @@index([sourceSnapshotId], map: "idx_pdf_reports_source_snapshot_id")
+  @@index([status], map: "idx_pdf_reports_status")
+  @@map("pdf_reports")
 }
 
 model ClinicalFeedback {

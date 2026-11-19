@@ -108,6 +108,23 @@
 | Docker/cleanup | Inventario previo y posterior con `docker ps -a` filtrado por `com.clearsight.test.owner=backend-integration` y `org.testcontainers=true`, y `docker volume ls` por el label de ownership: sin salida. Solo se consultaron recursos con esas etiquetas; no se borró nada manualmente ni se tocaron recursos ajenos. |
 | Límites | No cubre consumidores de aplicación 2.x, migración B/C, PDF/artefactos, Azure real ni E2E clínico completo. Diferido explícitamente a 1.4: serialización con locks de freeze/borrado concurrente (sin declarar inmutabilidad concurrente completa), guard de reparentado directo de `images.consultation_id`/`eye_side` y denegación de `TRUNCATE` al rol de aplicación. F4 (TRUNCATE privilegiado) no es defecto de los guards `UPDATE`/`DELETE`; no se añade `BEFORE TRUNCATE` porque rompería los fixtures con ownership. |
 
+## 1.6 Evidencia HITO 5 — migración B de artefactos/PDF (2026-11-18)
+
+> Evidencia local de la tarea 1.2. Solo PostgreSQL efímero de Testcontainers con ownership; sin Azure, `.env.azure`, DB real ni datos clínicos reales. No se modificaron dependencias ni lockfiles. La evidencia HITO 4 se conserva como histórica (8 files / 83 tests).
+
+| Elemento | Resultado observado |
+|---|---|
+| Cambio verificado | Migración aditiva `20261118010000_artifact_reports`: `artifact_records` (mask/overlay/pdf/gradcam/shap; `result` inline), referencia estructurada, estados, checksum lowercase, versiones únicas y publicación inmutable; `pdf_reports` versionado, snapshot/rendering inputs inmutables, artifact pdf misma inferencia/versión y transiciones PENDING/FAILED. `docker/init.sql` intacto. |
+| Migración focalizada | `npm --prefix backend run test:integration -- tests/artifact-migrations.test.ts` → **1 file passed, 28 tests passed**, duración `8.50 s`, exit 0. Incluye fresh schema, estados/refs, negativos SQL, inmutabilidad, versionado, replay B, delete/cascade, linkage PDF y provenance capturada. |
+| Migración A/B legacy | `npm --prefix backend run test:integration -- tests/migrations.test.ts` → **25 tests passed**, duración `7.74 s`; el upgrade legacy aplica A y B y conserva filas antiguas con `artifact_records`/`pdf_reports` en 0. |
+| Integración completa | `npm --prefix backend run test:integration` → **9 files passed, 111 tests passed**, duración `25.45 s`, exit 0. |
+| Unitario | `npm --prefix backend run test:unit` → **6 files passed, 57 tests passed**, duración `595 ms`, exit 0. La allowlist de integración y `runner-isolation` incluyen el nuevo archivo sin ampliar el runner unitario. |
+| Typecheck/build | `npm --prefix backend run typecheck` → exit 0; `npm --prefix backend run build` → exit 0. |
+| Prisma | `prisma validate --config <temp-config-sin-dotenv>` → schema válido; `prisma generate --config <temp-config-sin-dotenv>` → cliente generado. Config temporal con URL sintética, sin `.env`/`.env.azure` y sin conexión a DB real. |
+| Negativos/rojo | QA aportó 28 tests: antes del fix se observó **2 failed / 26 passed** (`renderingInputs` con query signature y `key` con esquemas URI no listados); tras corregir patrones acotados: **28 passed**. No se mutó fuente para forzar otros rojos. Los tests SQL reales fallarían si se retirasen los checks/triggers de completitud, URI, unicidad o inmutabilidad; R1/R2 quedan cubiertos por la prueba de provenance capturada. |
+| Docker/cleanup | Inventario previo y posterior con filtros de ownership/Testcontainers y volúmenes: sin salida tras el cleanup. Solo se consultaron recursos etiquetados; no se borró nada manualmente ni ajeno. |
+| Límites | No cubre generación PDF real, upload/storage, rutas, auth, consumidores 3.5/6.x, Azure ni E2E clínico. El reparentado directo de `images`, carreras concurrentes y rol DB sin `TRUNCATE` siguen en 1.4. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

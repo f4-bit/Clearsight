@@ -281,6 +281,18 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 - El despliegue Azure actual sigue aplicando solo `init.sql` y no ejecuta migraciones incrementales; esa deuda queda para 1.5/8.x y no se cambia en esta tarea.
 - **Diferido a 1.4 con evidencia explícita:** serialización con locks de freeze/borrado concurrente (no se declara inmutabilidad concurrente completa), guard de reparentado directo de `images.consultation_id`/`eye_side` y denegación de `TRUNCATE` al rol de aplicación. El cascade legacy sin snapshot se conserva sin cambios; `F4` (TRUNCATE privilegiado) no se trata como defecto de los guards `UPDATE`/`DELETE` y no se añade un trigger `BEFORE TRUNCATE` que rompería los fixtures con ownership.
 
+### D15. Persistencia local de la migración B (1.2)
+
+**Decisión (implementación local, no contrato nuevo de producto):** La migración B añade persistencia versionada de artefactos binarios y PDF, sin consumidores todavía:
+
+- `ArtifactRecord` almacena `mask`, `overlay`, `pdf`, `gradcam` y `shap`; `result` NO se convierte en blob: sigue siendo la proyección inline de `Inference`. Estados `NOT_SUPPORTED`, `NOT_REQUESTED`, `PENDING`, `AVAILABLE` y `FAILED`, sin enum agregado de DB.
+- `AVAILABLE` exige referencia completa (`storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes >= 0`, `checksumSha256` hex de 64 en minúsculas y `availableAt`); el resto de estados no admite ubicación parcial. `FAILED` exige un `failureCode` seguro acotado y `retryable`; el resto no admite failure metadata.
+- La `key` se conserva exacta (unicode, `%`, espacios); solo se rechaza un esquema URI genérico (`[a-z][a-z0-9+.-]*://`) y parámetros de firma reconocibles del contrato actual (`sig`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`). `storageId`/container son identificadores lógicos, no endpoints. No se persisten SAS, presigned URLs ni URLs externas. B no valida que el objeto exista en storage ni declara upload real; eso queda para 3.5.
+- `UNIQUE(inferenceId, artifactType, version)` y `UNIQUE(inferenceId, version)` en PDF permiten evidencia histórica y versiones nuevas. La identidad (`id`, inferencia, tipo, versión, `createdAt`) es inmutable; una fila `AVAILABLE` es completamente inmutable y no se borra. Un fallo posterior se representa como nuevo intento/versión explícito, nunca como `AVAILABLE→FAILED` destructivo ni “latest wins”.
+- `PdfReport` mantiene `sourceSnapshotId` capturado **en el momento de creación**: si el padre legacy aún no tiene snapshot se guarda NULL como “desconocido histórico”, y solo el `INSERT` valida contra el snapshot del padre. Los `UPDATE` no recopian ni revalidan contra el padre; el vínculo ya es inmutable y una fila NULL puede terminar `FAILED` aunque el padre reciba después su primer snapshot (A impide reescribir un vínculo no nulo). `modelVersions` es objeto, `dataVersion` no vacío, `documentKind` (solo `basic` se genera en este hito; `gradcam`/`shap` quedan reservados sin explicabilidad pretendida) y `renderingInputs` objeto inmutable desde la creación. `renderingInputs` rechaza esquemas URI genéricos y los parámetros de firma reconocibles del contrato actual; estas comprobaciones están acotadas y no se presentan como detección universal de secretos (la allowlist tipada futura es 6.1).
+- PDF `AVAILABLE` exige `artifactId` no nulo de un `ArtifactRecord` `pdf`, `AVAILABLE`, `application/pdf`, misma inferencia y versión, **y `sourceSnapshotId` no nulo** (trazabilidad clínica conocida); una fila legacy NULL puede quedar `PENDING`/`FAILED`, pero no publicarse. Transiciones permitidas: `PENDING→PENDING/AVAILABLE/FAILED` y `FAILED→FAILED/PENDING`; una fila publicada es completamente inmutable y no se borra. Una versión nueva es una fila nueva, puede capturar el snapshot ya conocido y no modifica la anterior.
+- No hay backfill de artefactos/PDF legacy, ni rutas/repositorios/generador PDF todavía. `docker/init.sql` sigue inmutable y el contrato API existente no se reescribe: esta tarea solo define la forma persistida que consumirán 3.5/6.x. El parentesco directo de `images` y las carreras concurrentes siguen en 1.4.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -319,6 +331,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-032 | Runbook de pruebas incremental con fases, precondiciones y stop de pasos peligrosos | agreed | D13, `contracts/testing-runbook.md` |
 | ADR-033 | B9: `DatabaseFeedbackSource` y SQLAlchemy fuera de alcance, no bloquean el change | out of scope | Open Questions |
 | ADR-034 | Migración A aditiva: snapshot inmutable, selección `UUID[]` con freeze, metadatos legacy nullable y `init.sql` baseline sin cambios | agreed (implemented 1.1) | D14, D1, D3 |
+| ADR-035 | Migración B aditiva: artifact records versionados, PDF versionado inmutable, `result` inline y sin URLs/SAS persistidas | agreed (implemented 1.2) | D15, D4, D5, D11 |
 
 ## Risks / Trade-offs
 

@@ -16,6 +16,7 @@ export default defineConfig({
       "tests/repositories.test.ts",
       "tests/rbac.test.ts",
       "tests/migrations.test.ts",
+      "tests/artifact-migrations.test.ts",
       "tests/jwt.test.ts",
       "tests/feedback.route.test.ts",
       "tests/export.route.test.ts",
