@@ -25,15 +25,46 @@ cd backend
 npm install
 cp .env.example .env                 # DATABASE_URL, JWT_SECRET, EXPORT_HMAC_SECRET
 npx prisma generate                  # genera src/generated (gitignored)
-npx prisma migrate deploy            # aplica prisma/migrations
+npm run prisma:deploy                # preflight auditable + aplica prisma/migrations
 npx prisma db seed                   # datos sintéticos (nunca en production)
 npm run dev
 ```
 
 ## Migraciones
 
-- `0_init` es `docker/init.sql` **tal cual** (idempotente: `IF NOT EXISTS`). Por eso `migrate deploy`
-  funciona igual en una BD vacía y en una ya inicializada por docker-compose; no hace falta `migrate resolve`.
+- El único entrypoint soportado es `npm run prisma:deploy` (`scripts/migrate-deploy.ts`). Sustituye el
+  antiguo `prisma migrate deploy || prisma migrate resolve` y nunca resuelve una migración tras un
+  error arbitrario. El DSN se toma de `MIGRATION_DATABASE_URL` (preferida) o `DATABASE_URL`; no hay
+  valor por defecto `localhost` ni lectura de `.env` en esta ruta.
+- El wrapper abre una transacción **solo lectura** para inspeccionar `pg_catalog` y la tabla de
+  bookkeeping de Prisma, la cierra y solo después ejecuta el CLI local de Prisma con un lock
+  consultivo por base/schema. Su salida no imprime el DSN, credenciales, hosts ni logs crudos.
+- Estados:
+  - schema vacío sin historial: un único `migrate deploy`;
+  - baseline exacto de `0_init` sin historial (o con `_prisma_migrations` vacía): verifica catálogo,
+    columnas, defaults, constraints, índices y triggers; si coincide, `migrate resolve --applied 0_init`
+    una vez y después `migrate deploy` una vez. Se permiten datos legacy poblados: no se leen filas
+    clínicas ni se exige que estén vacías;
+  - historial Prisma válido, con prefijo exacto de migraciones conocidas y checksums de archivo:
+    `migrate deploy` normal, sin resolve;
+  - historial fallido/incompleto/desconocido o esquema divergente: fallo cerrado antes de cualquier
+    resolve/deploy. Las bases actualizadas manualmente sin historial Prisma requieren una adopción
+    manual fuera de este wrapper.
+- La adopción de una base inicializada solo con `init.sql` presupone una ventana de mantenimiento
+  exclusiva: no protege frente a DDL administrativo concurrente.
+- El preflight exige PostgreSQL >= 13 (`gen_random_uuid()` en el core) y la comparación de catálogo se
+  validó contra PostgreSQL 16. Una versión con forma de catálogo distinta no coincide con el manifiesto
+  y falla cerrada, sin autocorregir.
+- El manifiesto y el inventario usan checksums canónicos LF (solo `CRLF -> LF`, sin trim, BOM ni
+  reescritura SQL). El historial acepta únicamente las variantes LF/CRLF del mismo SQL canónico;
+  `.gitattributes` fija `eol=lf` para migraciones, manifiesto e `init.sql`. Un cambio semántico del SQL
+  sigue fallando por checksum.
+- Además de tablas/columnas/constraints/índices/triggers, el baseline rechaza objetos inesperados en el
+  schema objetivo: vistas, matviews, foreign tables, secuencias, tipos/dominios/composites/ranges,
+  funciones/procedimientos/agregados y extensiones. Solo captura tipo+nombre, nunca el cuerpo.
+- `0_init` es `docker/init.sql` **tal cual** (idempotente: `IF NOT EXISTS`); un test compara ambos
+  ficheros y el manifiesto de baseline fija su SHA-256. `prisma.migrate.config.ts` es la configuración
+  dedicada del wrapper (sin dotenv ni fallback).
 - `20261027000000_prisma_alignment` aplica los cambios sobre el baseline (también re-ejecutable):
   - tabla `users` (+ enum `user_role`); FKs `consultations.doctor_id` y `clinical_feedback.doctor_id` → `users`
     (los `doctor_id` huérfanos se convierten en usuarios placeholder desactivados);
@@ -88,5 +119,9 @@ npm run test:integration # explícito; requiere Docker/Testcontainers
   antes de crear cliente/contenedor y no imprime la URL.
 - El setup cierra cliente y contenedor ante fallo de connect/migración/provide; `resetDb` verifica el
   marker `test_meta` antes de truncar.
+- `tests/migration-deploy.integration.test.ts` cubre el wrapper real (Prisma CLI incluido) sobre
+  schemas independientes: schema vacío, baseline poblado, repetición sin resolve, historial fallido o
+  con checksum alterado y matriz de divergencias.
 - Límites: el runner unitario no cubre flujos de negocio/seguridad ni Prisma/Redis/SQL. La
-  integración real no se ejecutó en este entorno porque el daemon Docker local no está disponible.
+  integración real se ejecutó con Docker/Testcontainers en PostgreSQL 16; no se probó Azure ni una
+  base de producción.

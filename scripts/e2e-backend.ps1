@@ -21,7 +21,7 @@
     - ML service (separate compose, same `clearsight` network) is up and healthy:
         docker compose -f docker/ml-service.compose.yml up -d
     - PostgreSQL schema migrated AND seeded:
-        docker compose exec backend npx prisma migrate deploy
+        docker compose exec backend npm run prisma:deploy
         docker compose exec backend npm run prisma:seed
     - The image pipeline requires the MinIO presigned URL to be reachable
       from the ML service (ML_PUBLIC_HOST=minio:9000 in backend env).

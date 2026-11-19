@@ -23,6 +23,7 @@
     "scripts",
     "tests",
     "prisma.config.ts",
+    "prisma.migrate.config.ts",
     "vitest.config.ts",
     "vitest.unit.config.ts",
     "vitest.integration.config.ts"
