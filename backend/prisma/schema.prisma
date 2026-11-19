@@ -47,6 +47,9 @@ model User {
   idempotencyRecords  IdempotencyRecord[]
   auditEventsAsActor  AuditEvent[]          @relation("AuditActor")
   auditEventsAsTarget AuditEvent[]          @relation("AuditTarget")
+  ownedPatients       Patient[]             @relation("PatientOwner")
+  grantsReceived      InferenceAccessGrant[] @relation("GrantRecipient")
+  grantsApproved      InferenceAccessGrant[] @relation("GrantApprover")
 
   @@map("users")
 }
@@ -58,11 +61,16 @@ model Patient {
   gender               String?  @db.VarChar(16)
   clinicalHistoryFlags Json     @default("{}") @map("clinical_history_flags") @db.JsonB
   clinicalData         Json     @default("{}") @map("clinical_data") @db.JsonB
+  // Access owner. NULL = legacy/orphan profile, only assignable once and never
+  // reassignable; the SQL migration enforces the immutable-once-set rule.
+  ownerDoctorId        String?  @map("owner_doctor_id") @db.Uuid
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  ownerDoctor   User?          @relation("PatientOwner", fields: [ownerDoctorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   consultations Consultation[]
 
   @@index([externalCode], map: "idx_patients_external_code")
+  @@index([ownerDoctorId], map: "idx_patients_owner_doctor_id")
   @@map("patients")
 }
 
@@ -86,6 +94,7 @@ model Consultation {
   inferences Inference[]
   snapshots ClinicalSnapshot[]
   feedback  ClinicalFeedback[]
+  accessGrants InferenceAccessGrant[]
 
   @@index([patientId], map: "idx_consultations_patient_id")
   @@index([doctorId], map: "idx_consultations_doctor_id")
@@ -169,6 +178,7 @@ model Inference {
   artifactRecords     ArtifactRecord[]
   pdfReports          PdfReport[]
   idempotencyRecords  IdempotencyRecord[]
+  accessGrants        InferenceAccessGrant[]
 
   @@index([imageId], map: "idx_inferences_image_id")
   @@index([predictedClass], map: "idx_inferences_predicted_class")
@@ -240,6 +250,44 @@ model PdfReport {
   @@index([sourceSnapshotId], map: "idx_pdf_reports_source_snapshot_id")
   @@index([status], map: "idx_pdf_reports_status")
   @@map("pdf_reports")
+}
+
+/// Explicit, time-bounded dataset grant that lets a non-doctor (ADMIN or
+/// INVESTIGADOR) read one specific inference. It never grants clinical write,
+/// patient/consultation access, and it never extends to a reanalysis child.
+/// The SQL migration enforces the captured-consultation match, immutability of
+/// every term, append-only revocation, expiry and the at-least-one-capability
+/// rule. There is deliberately no `@updatedAt` column, so the app role can only
+/// perform the monotonic `revoked_at` column update.
+model InferenceAccessGrant {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  inferenceId           String    @map("inference_id") @db.Uuid
+  // Captured from the authoritative image at approval time; never client input.
+  consultationId        String    @map("consultation_id") @db.Uuid
+  recipientUserId       String    @map("recipient_user_id") @db.Uuid
+  // Bounded logical approval code (never a URL). Immutable.
+  approvalReference     String    @map("approval_reference") @db.VarChar(128)
+  // Trusted offline operator metadata; NULL is the explicit SYSTEM approval.
+  approvedByUserId      String?   @map("approved_by_user_id") @db.Uuid
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt             DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt             DateTime? @map("revoked_at") @db.Timestamptz(6)
+  readResult            Boolean   @default(false) @map("read_result")
+  readArtifacts         Boolean   @default(false) @map("read_artifacts")
+  readPdf               Boolean   @default(false) @map("read_pdf")
+  canExportGoldStandard Boolean   @default(false) @map("can_export_gold_standard")
+
+  inference     Inference    @relation(fields: [inferenceId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  consultation  Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  recipientUser User         @relation("GrantRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  approvedByUser User?       @relation("GrantApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([recipientUserId, inferenceId, approvalReference], map: "inference_access_grants_recipient_inference_approval_key")
+  @@index([inferenceId], map: "idx_inference_access_grants_inference_id")
+  @@index([consultationId], map: "idx_inference_access_grants_consultation_id")
+  @@index([recipientUserId], map: "idx_inference_access_grants_recipient_user_id")
+  @@index([expiresAt], map: "idx_inference_access_grants_expires_at")
+  @@map("inference_access_grants")
 }
 
 /// Durable session metadata. The session identity/expiry are immutable from

@@ -655,6 +655,18 @@ export function createAdminUsersService(
             });
           }
 
+          // Authorization change (role or active state in either direction)
+          // revokes every outstanding dataset grant in the same transaction, so
+          // a role change-back or reactivation can never revive an old approval.
+          // Credential/email-only rotation is authentication-only and preserves
+          // grants; no clinical inference id enters the account audit metadata.
+          if (roleChanged || activeChanged) {
+            await tx.inferenceAccessGrant.updateMany({
+              where: { recipientUserId: target.id, revokedAt: null },
+              data: { revokedAt: checkedAt },
+            });
+          }
+
           const metadata: AuditMetadata = {
             channel: ADMIN_AUDIT_CHANNEL,
             changedFields,

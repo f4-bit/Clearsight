@@ -11,8 +11,11 @@ export const TEST_ENV = {
   EXPORT_HMAC_SECRET: "test-hmac-secret-test-hmac-secret-12",
 } as const;
 
-export async function buildTestApp(prisma: PrismaClient): Promise<FastifyInstance> {
-  const app = await buildApp({ env: TEST_ENV, prisma });
+export async function buildTestApp(
+  prisma: PrismaClient,
+  options: { now?: () => Date } = {},
+): Promise<FastifyInstance> {
+  const app = await buildApp({ env: TEST_ENV, prisma, now: options.now });
   await app.ready();
   return app;
 }

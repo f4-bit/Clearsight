@@ -165,8 +165,59 @@ describe("feedback", () => {
       await repos.feedback.upsertVerdict(verdict({ c: s.consultation.id, i: s.inference.id, d: doctor.id }, { isGoldStandard: gold }));
     }
     expect(await repos.feedback.countGoldStandard()).toBe(3);
-    expect(await repos.feedback.listGoldStandard({ limit: 10 })).toHaveLength(3);
-    expect(await repos.feedback.listGoldStandard({ limit: 2 })).toHaveLength(3); // limit + 1 sentinel
-    expect(await repos.feedback.listGoldStandard({ since: new Date(Date.now() + 60_000), limit: 10 })).toHaveLength(0);
+    const trusted = { kind: "trusted-offline" } as const;
+    expect(await repos.feedback.listGoldStandard({ limit: 10, scope: trusted })).toHaveLength(3);
+    expect(await repos.feedback.listGoldStandard({ limit: 2, scope: trusted })).toHaveLength(3); // limit + 1 sentinel
+    expect(
+      await repos.feedback.listGoldStandard({
+        since: new Date(Date.now() + 60_000),
+        limit: 10,
+        scope: trusted,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("an empty approved pair scope returns nothing, never the whole dataset", async () => {
+    const doctor = await makeUser(prisma);
+    for (let i = 0; i < 2; i++) {
+      const s = await makeStudy(prisma, { doctorId: doctor.id });
+      await repos.feedback.upsertVerdict(verdict({ c: s.consultation.id, i: s.inference.id, d: doctor.id }, { isGoldStandard: true }));
+    }
+    expect(await repos.feedback.countGoldStandard()).toBe(2);
+    expect(
+      await repos.feedback.listGoldStandard({ limit: 10, scope: { kind: "approved-inferences", pairs: [] } }),
+    ).toEqual([]);
+  });
+
+  it("an approved pair scope matches exact (inference, consultation) pairs and excludes cross-case rows", async () => {
+    const doctor = await makeUser(prisma);
+    const a = await makeStudy(prisma, { doctorId: doctor.id });
+    const b = await makeStudy(prisma, { doctorId: doctor.id });
+    await repos.feedback.upsertVerdict(verdict({ c: a.consultation.id, i: a.inference.id, d: doctor.id }, { isGoldStandard: true }));
+    await repos.feedback.upsertVerdict(verdict({ c: b.consultation.id, i: b.inference.id, d: doctor.id }, { isGoldStandard: true }));
+    // Legacy mismatch: the feedback row keeps inference A but is re-pointed to
+    // consultation B, so the (A.inference, A.consultation) pair no longer holds.
+    await prisma.clinicalFeedback.updateMany({
+      where: { inferenceId: a.inference.id },
+      data: { consultationId: b.consultation.id },
+    });
+
+    const onlyA = await repos.feedback.listGoldStandard({
+      limit: 10,
+      scope: { kind: "approved-inferences", pairs: [{ inferenceId: a.inference.id, consultationId: a.consultation.id }] },
+    });
+    expect(onlyA).toEqual([]);
+
+    const both = await repos.feedback.listGoldStandard({
+      limit: 10,
+      scope: {
+        kind: "approved-inferences",
+        pairs: [
+          { inferenceId: a.inference.id, consultationId: a.consultation.id },
+          { inferenceId: b.inference.id, consultationId: b.consultation.id },
+        ],
+      },
+    });
+    expect(both.map((row) => row.inferenceId)).toEqual([b.inference.id]);
   });
 });

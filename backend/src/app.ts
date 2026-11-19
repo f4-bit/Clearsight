@@ -28,6 +28,8 @@ import {
   DEFAULT_JWT_ACCESS_TTL,
   parseAccessTtl,
 } from "./services/auth-policy.js";
+import { createClinicalAccessService } from "./services/clinical-access.js";
+import { assertProductionExportHmacSecret } from "./services/export-policy.js";
 import { createAuthLoginProtection } from "./services/login-guard.js";
 import {
   createAuthSessionService,
@@ -72,6 +74,7 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
   // Fail closed before plugins/routes if production uses a known/short secret
   // or the configured access lifetime violates the single TTL policy.
   assertProductionJwtSecret(cfg.JWT_SECRET, nodeEnv);
+  assertProductionExportHmacSecret(cfg.EXPORT_HMAC_SECRET, nodeEnv);
   const accessTtl = parseAccessTtl(cfg.JWT_EXPIRES_IN ?? DEFAULT_JWT_ACCESS_TTL);
 
   const app = Fastify({
@@ -144,6 +147,13 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
       now: deps?.now,
     });
   app.decorate("adminUsersService", adminUsersService);
+
+  // Clinical ownership/grants service. Built from the same injected client and
+  // explicit schema; construction performs no connection or query.
+  const clinicalAccess = createClinicalAccessService(prisma, {
+    databaseSchema,
+    now: deps?.now,
+  });
 
   // 3. Swagger / OpenAPI documentation
   await app.register(fastifySwagger, {
@@ -221,6 +231,16 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
       });
       return;
     }
+    if (prismaCode === "P2002") {
+      // Generic duplicate unique key (e.g. a worker/job unique collision). The
+      // concrete conflicting field is intentionally not disclosed.
+      reply.status(409).send({
+        error: "Conflict",
+        message: "A record with the same unique key already exists",
+        statusCode: 409,
+      });
+      return;
+    }
 
     const err = error as { statusCode?: number; name?: string; message?: string };
     if (err.statusCode) {
@@ -264,12 +284,25 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
   // 6. API Routers
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(adminRoutes, { prefix: "/admin" });
-  await app.register(patientRoutes, { prefix: "/patients" });
-  await app.register(consultationRoutes, { prefix: "/consultations" });
-  await app.register(inferenceRoutes, { prefix: "/inferences" });
+  await app.register(patientRoutes, {
+    prefix: "/patients",
+    prisma,
+    access: clinicalAccess,
+  });
+  await app.register(consultationRoutes, {
+    prefix: "/consultations",
+    prisma,
+    access: clinicalAccess,
+  });
+  await app.register(inferenceRoutes, {
+    prefix: "/inferences",
+    prisma,
+    access: clinicalAccess,
+  });
   // Clinical feedback + gold-standard export (paths: /feedback, /export/gold-standard)
   await app.register(feedbackRoutes, {
     repos: createRepositories(prisma),
+    access: clinicalAccess,
     exportHmacSecret: cfg.EXPORT_HMAC_SECRET,
   });
 

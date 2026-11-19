@@ -5,14 +5,17 @@ import { eyeSideEnum } from "./image.js";
 
 export const jobStatusEnum = JobStatus;
 
-export const inferenceCreateSchema = z.object({
-  inferenceId: z.string().uuid().optional(),
-  imageId: z.string().uuid(),
-  imageUrl: z.string().url().optional(),
-  eyeSide: eyeSideEnum,
-  clinicalFeatures: ClinicalFeaturesSchema,
-  modelVersion: z.string().optional().nullable(),
-});
+export const inferenceCreateSchema = z
+  .object({
+    imageId: z.string().uuid(),
+    // The execution id and the image URL are server-owned. A client-supplied
+    // `imageId` PK alias (`inferenceId`) or `imageUrl` is an unknown strict
+    // field and is rejected before any lookup/write/sign/queue.
+    eyeSide: eyeSideEnum,
+    clinicalFeatures: ClinicalFeaturesSchema,
+    modelVersion: z.string().optional().nullable(),
+  })
+  .strict();
 
 export type InferenceApiCreate = z.infer<typeof inferenceCreateSchema>;
 

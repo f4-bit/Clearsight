@@ -1,9 +1,9 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyPluginAsync } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { env } from "../config/env.js";
-import { prisma } from "../lib/prisma.js";
+import { notFound, unprocessable } from "../lib/http-error.js";
+import type { PrismaClient } from "../lib/prisma.js";
 import { authenticate } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
 import { errorResponseSchema } from "../schemas/common.js";
@@ -11,17 +11,28 @@ import {
   inferenceCreateSchema,
   jobAcceptedSchema,
 } from "../schemas/inference.js";
+import type { ClinicalAccessService } from "../services/clinical-access.js";
+import { subjectFromRequest } from "../services/clinical-access.js";
 import { StorageService } from "../services/storage.js";
 import { enqueueInference } from "../workers/inference.queue.js";
 
-export async function inferenceRoutes(app: FastifyInstance) {
+export interface InferenceRoutesOptions {
+  prisma: PrismaClient;
+  access: ClinicalAccessService;
+}
+
+export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async (
+  app,
+  opts,
+) => {
+  const { prisma, access } = opts;
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
 
   // POST /inferences - Enqueue async inference job
   typedApp.post(
     "/",
     {
-      preHandler: [authenticate, requireRole("OFTALMOLOGO", "ADMIN")],
+      preHandler: [authenticate, requireRole("OFTALMOLOGO")],
       schema: {
         tags: ["Inferences"],
         summary: "Dispatch asynchronous ML inference job via BullMQ",
@@ -30,26 +41,31 @@ export async function inferenceRoutes(app: FastifyInstance) {
           202: jobAcceptedSchema,
           400: errorResponseSchema,
           404: errorResponseSchema,
+          409: errorResponseSchema,
+          422: errorResponseSchema,
         },
       },
     },
     async (request, reply) => {
+      const subject = subjectFromRequest(request);
       const { imageId, eyeSide, clinicalFeatures, modelVersion } = request.body;
 
-      const imageRecord = await prisma.image.findUnique({
-        where: { id: imageId },
-        include: { consultation: true },
-      });
+      // Ownership and laterality are checked before any DB write, signed URL or
+      // queue dispatch. A foreign/missing image is a uniform 404.
+      const { image: imageRecord } = await access.getOwnedImageContext(
+        subject,
+        imageId,
+      );
 
-      if (!imageRecord) {
-        return reply.status(404).send({
-          error: "NotFound",
-          message: "Image record not found",
-          statusCode: 404,
-        });
+      if (eyeSide !== imageRecord.eyeSide) {
+        // The stored image lateral side is authoritative; never trust the body.
+        throw unprocessable("eyeSide does not match the stored image laterality");
       }
 
-      const inferenceId = request.body.inferenceId ?? randomUUID();
+      // The execution id is always server-generated. There is no client PK
+      // idempotency in the current contract, so a supplied id can never probe
+      // whether an execution exists in this or another case.
+      const inferenceId = randomUUID();
 
       // 1. Create DB inference record
       await prisma.inference.create({
@@ -66,18 +82,17 @@ export async function inferenceRoutes(app: FastifyInstance) {
         data: { status: "QUEUED" },
       });
 
-      // 2. Generate presigned URL for image so ML worker can fetch it
+      // 2. Generate presigned URL for the stored image (server-side only).
       const [bucket = "", ...rest] = imageRecord.storagePath.split("/");
       const key = rest.join("/");
-      const imageUrl =
-        request.body.imageUrl ?? (await StorageService.getMlDownloadUrl(bucket, key));
+      const imageUrl = await StorageService.getMlDownloadUrl(bucket, key);
 
       // 3. Enqueue job in BullMQ
       const job = await enqueueInference({
         inferenceId,
         imageId,
         imageUrl,
-        eyeSide,
+        eyeSide: imageRecord.eyeSide as "OD" | "OS",
         clinicalFeatures,
         modelVersion,
       });
@@ -115,27 +130,20 @@ export async function inferenceRoutes(app: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      const { id } = request.params;
-
-      const inference = await prisma.inference.findUnique({
-        where: { id },
-      });
-
-      if (!inference) {
-        return reply.status(404).send({
-          error: "NotFound",
-          message: "Inference not found",
-          statusCode: 404,
-        });
-      }
+      const subject = subjectFromRequest(request);
+      const { inference, redactGradcamPath } = await access.getInferenceForRead(
+        subject,
+        request.params.id,
+        "readResult",
+      );
 
       return reply.send({
         id: inference.id,
         imageId: inference.imageId,
         predictedClass: inference.predictedClass,
         confidence: inference.confidence,
-        probabilities: inference.probabilities as Record<string, any>,
-        gradcamPath: inference.gradcamPath,
+        probabilities: inference.probabilities as Record<string, unknown>,
+        gradcamPath: redactGradcamPath ? null : inference.gradcamPath,
         modelVersion: inference.modelVersion,
         createdAt: inference.createdAt,
       });
@@ -161,18 +169,17 @@ export async function inferenceRoutes(app: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      const { id } = request.params;
+      const subject = subjectFromRequest(request);
+      // Non-doctors need the explicit artifact capability; a doctor that owns
+      // the execution reads it directly.
+      const { inference } = await access.getInferenceForRead(
+        subject,
+        request.params.id,
+        "readArtifacts",
+      );
 
-      const inference = await prisma.inference.findUnique({
-        where: { id },
-      });
-
-      if (!inference || !inference.gradcamPath) {
-        return reply.status(404).send({
-          error: "NotFound",
-          message: "Grad-CAM visualization not available yet",
-          statusCode: 404,
-        });
+      if (!inference.gradcamPath) {
+        throw notFound("Grad-CAM visualization");
       }
 
       const [bucket = "", ...rest] = inference.gradcamPath.split("/");
@@ -185,4 +192,4 @@ export async function inferenceRoutes(app: FastifyInstance) {
       });
     }
   );
-}
+};

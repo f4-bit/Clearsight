@@ -1,9 +1,12 @@
 import type { PatientCreate, PatientUpdate } from "../schemas/patient.js";
 import type { Db, JsonObject } from "./types.js";
 
+/** Trusted repository input: the API route sets the owner server-side. */
+export type PatientCreateInput = PatientCreate & { ownerDoctorId?: string | null };
+
 export function createPatientRepository(db: Db) {
   return {
-    create: (input: PatientCreate) =>
+    create: (input: PatientCreateInput) =>
       db.patient.create({
         data: {
           externalCode: input.externalCode ?? null,
@@ -11,6 +14,7 @@ export function createPatientRepository(db: Db) {
           gender: input.gender ?? null,
           clinicalHistoryFlags: (input.clinicalHistoryFlags ?? {}) as JsonObject,
           clinicalData: (input.clinicalData ?? {}) as JsonObject,
+          ownerDoctorId: input.ownerDoctorId ?? null,
         },
       }),
 

@@ -4,12 +4,15 @@ import { JobStatus, Uuid } from "./common.js";
 export const consultationStatusEnum = JobStatus;
 export type ConsultationStatus = JobStatus;
 
-export const consultationCreateSchema = z.object({
-  patientId: Uuid,
-  doctorId: Uuid.optional(),
-  status: consultationStatusEnum.default("QUEUED"),
-  clinicalData: z.record(z.string(), z.unknown()).default({}),
-});
+export const consultationCreateSchema = z
+  .object({
+    patientId: Uuid,
+    // Legacy hint: only allowed when it equals the authenticated doctor.
+    doctorId: Uuid.optional(),
+    status: consultationStatusEnum.default("QUEUED"),
+    clinicalData: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict();
 
 export type ConsultationCreate = z.infer<typeof consultationCreateSchema>;
 

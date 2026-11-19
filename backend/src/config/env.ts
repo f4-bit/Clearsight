@@ -12,6 +12,7 @@ import {
   MAX_IP_RATE_LIMIT,
   MAX_IP_RATE_WINDOW_SECONDS,
 } from "../services/login-guard.js";
+import { assertProductionExportHmacSecret } from "../services/export-policy.js";
 
 dotenv.config();
 
@@ -93,6 +94,17 @@ const envSchema = z
         code: "custom",
         path: ["JWT_EXPIRES_IN"],
         message: error instanceof Error ? error.message : "Invalid JWT lifetime",
+      });
+    }
+
+    try {
+      assertProductionExportHmacSecret(data.EXPORT_HMAC_SECRET, data.NODE_ENV);
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EXPORT_HMAC_SECRET"],
+        message:
+          error instanceof Error ? error.message : "Invalid export HMAC secret",
       });
     }
   });

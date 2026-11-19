@@ -243,6 +243,24 @@
 - **Registro de regresiones:** sin edición; REG-005/REG-006 siguen cubiertos por la prueba de fuente y no existen operaciones de UI admin que puedan producir un falso positivo.
 - **Pendientes sin cambios:** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Este hito no los declara implementados.
 
+## 1.13 Evidencia HITO 15 - privacidad clinica 5.2 (2026-11-19)
+
+> Cierre documental final tras QA PASSED sobre fuente sin cambios. Solo PostgreSQL 16 efimero/owned de Testcontainers; sin Azure, `.env.azure`, DB real, PHI, correos reales ni datos clinicos. No se editaron fuente ni pruebas en este cierre.
+
+| Elemento | Resultado observado |
+|---|---|
+| Unit final QA | **21 files / 355 tests passed (3.06 s)** |
+| Full integration final QA | **20 files / 380 tests passed (235.17 s)** |
+| Typecheck/build | runs verdes reutilizados del mismo estado, inspeccionados por QA; exit 0 |
+| Diff/cleanup | `git diff --check` limpio (solo warnings CRLF preexistentes); `docker ps -a` solo `redkeep_db` detenido no relacionado; cero contenedores propios residuales |
+| H-01 | Resuelto: `POST /inferences` rechaza `inferenceId`/`imageUrl` (400 identico fresh/own/foreign) antes de writes/sign/queue; sin el campo genera UUID de servidor (202). Sin oraculo cross-case ni PK de cliente. |
+| H-02 | Latente documentado: E congela columnas de la fila `inferences`; no agrega trigger sobre `images`. La mutacion SQL privilegiada del padre queda fuera de E y solo la cubre el guard D existente cuando aplica; sin writer de aplicacion. |
+| H-03 | Validado: produccion resuelve `DATABASE_URL` una sola vez en `app.ts`; rutas/servicio clinico comparten el mismo `prisma`+access inyectado. Factory global y worker diferidos. |
+| Historico pre-QA | Foco unit/schema 4 files / 41 tests y foco ACL/migracion/repositorios 3 files / 44 tests; no son conteos finales. |
+
+- Sin cambios de fuente/pruebas en este cierre documental; no se ejecutaron suites desde el agente de documentacion.
+- La tarea 5.2 queda cerrada con la evidencia QA anterior; 5.8/5.9 y 9.2 siguen pendientes y no se declara release clinica completa.
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

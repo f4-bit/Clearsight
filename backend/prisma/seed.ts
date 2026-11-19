@@ -97,8 +97,28 @@ async function main() {
       gender: clinical["Gender"] === 1 ? "M" : "F",
       clinicalHistoryFlags: { family_history: i % 4 === 0 },
       clinicalData: {},
+      ownerDoctorId: doctorId,
     };
-    await prisma.patient.upsert({ where: { id: patientId }, create: { id: patientId, ...patientData }, update: patientData });
+    await prisma.patient.upsert({
+      where: { id: patientId },
+      create: { id: patientId, ...patientData },
+      // The owner is only (re)assigned when it is still NULL or already the
+      // same doctor; the trigger rejects any real reassignment.
+      update: {
+        externalCode: patientData.externalCode,
+        age: patientData.age,
+        gender: patientData.gender,
+        clinicalHistoryFlags: patientData.clinicalHistoryFlags,
+        clinicalData: patientData.clinicalData,
+      },
+    });
+    await prisma.patient.updateMany({
+      where: {
+        id: patientId,
+        OR: [{ ownerDoctorId: null }, { ownerDoctorId: doctorId }],
+      },
+      data: { ownerDoctorId: doctorId },
+    });
 
     const consultationId = uuid("consultation", i);
     const consultationData = {

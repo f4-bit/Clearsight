@@ -19,8 +19,9 @@ vi.mock("../src/workers/inference.queue.js", () => ({
 }));
 
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
 import { bearer, buildTestApp } from "./helpers/app.js";
-import { createTestPrisma, makeUser, resetDb } from "./helpers/db.js";
+import { createTestPrisma, makeStudy, makeUser, resetDb } from "./helpers/db.js";
 
 const prisma = createTestPrisma();
 let app: FastifyInstance;
@@ -53,14 +54,10 @@ describe("RBAC smoke tests", () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it("GET /patients returns 200 with any authenticated role", async () => {
-    for (const headers of [doctorHeaders, adminHeaders, researcherHeaders]) {
-      const res = await app.inject({
-        method: "GET",
-        url: "/patients",
-        headers,
-      });
-      expect(res.statusCode).toBe(200);
+  it("GET /patients returns only the doctor's own resources; other roles are denied", async () => {
+    expect((await app.inject({ method: "GET", url: "/patients", headers: doctorHeaders })).statusCode).toBe(200);
+    for (const headers of [adminHeaders, researcherHeaders]) {
+      expect((await app.inject({ method: "GET", url: "/patients", headers })).statusCode).toBe(403);
     }
   });
 
@@ -77,17 +74,19 @@ describe("RBAC smoke tests", () => {
     expect(res.statusCode).toBe(201);
   });
 
-  it("POST /patients returns 403 for INVESTIGADOR", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/patients",
-      headers: {
-        ...researcherHeaders,
-        "content-type": "application/json",
-      },
-      payload: { age: 50 },
-    });
-    expect(res.statusCode).toBe(403);
+  it("POST /patients returns 403 for INVESTIGADOR and ADMIN", async () => {
+    for (const headers of [researcherHeaders, adminHeaders]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/patients",
+        headers: {
+          ...headers,
+          "content-type": "application/json",
+        },
+        payload: { age: 50 },
+      });
+      expect(res.statusCode).toBe(403);
+    }
   });
 
   it("POST /inferences returns 403 for INVESTIGADOR", async () => {
@@ -153,7 +152,36 @@ describe("RBAC smoke tests", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("GET /export/gold-standard returns 200 for INVESTIGADOR", async () => {
+  it("GET /export/gold-standard returns 403 for INVESTIGADOR without an active export grant", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/export/gold-standard?limit=10",
+      headers: researcherHeaders,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("GET /export/gold-standard returns 200 for INVESTIGADOR with an active export grant", async () => {
+    const researcher = await prisma.user.findFirstOrThrow({
+      where: { email: { contains: "investigador" } },
+      select: { id: true },
+    });
+    const doctor = await prisma.user.findFirstOrThrow({
+      where: { role: "OFTALMOLOGO" },
+      select: { id: true },
+    });
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    await prisma.inferenceAccessGrant.create({
+      data: {
+        inferenceId: study.inference.id,
+        consultationId: study.consultation.id,
+        recipientUserId: researcher.id,
+        approvalReference: `RBAC-${randomUUID()}`,
+        canExportGoldStandard: true,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+
     const res = await app.inject({
       method: "GET",
       url: "/export/gold-standard?limit=10",

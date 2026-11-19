@@ -19,6 +19,8 @@ export default defineConfig({
       "tests/artifact-migrations.test.ts",
       "tests/identity-migrations.test.ts",
       "tests/integrity-migrations.test.ts",
+      "tests/clinical-access-migrations.test.ts",
+      "tests/clinical-access.integration.test.ts",
       "tests/migration-deploy.integration.test.ts",
       "tests/admin-bootstrap.integration.test.ts",
       "tests/jwt.test.ts",

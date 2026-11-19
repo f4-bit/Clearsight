@@ -50,7 +50,7 @@ export async function resetDb(prisma: PrismaClient): Promise<void> {
   // auth_login_buckets has no FK to users, so CASCADE cannot reach it; it must
   // be truncated explicitly under the same ownership gate.
   await prisma.$executeRawUnsafe(
-    "TRUNCATE TABLE auth_login_buckets, clinical_feedback, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE",
+    "TRUNCATE TABLE inference_access_grants, auth_login_buckets, clinical_feedback, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE",
   );
 }
 
@@ -132,7 +132,11 @@ export async function makeStudy(
   },
 ) {
   const repos = createRepositories(prisma);
-  const patient = await repos.patients.create({ age: 63, gender: "M" });
+  const patient = await repos.patients.create({
+    age: 63,
+    gender: "M",
+    ownerDoctorId: opts.doctorId,
+  });
   const consultation = await repos.consultations.create({
     patientId: patient.id,
     doctorId: opts.doctorId,
