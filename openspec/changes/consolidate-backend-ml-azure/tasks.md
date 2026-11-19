@@ -277,12 +277,22 @@
   - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts` con concurrencia.
   - **Coverage:** “Protección del último administrador activo”.
 
-- [ ] 5.5 Implementar auditoría append-only y bloquear la operación si falla.
-  - **Scope:** nuevo `backend/src/services/audit.ts`, `backend/src/repositories/audit.repo.ts`; migración C; permisos SQL.
-  - **When/Then:** WHEN se ejecuta acción sensible THEN se registra actor/target/acción/resultado/time; WHEN falla auditoría THEN la operación no es exitosa.
+- [x] 5.5 Implementar auditoría append-only y bloquear la operación si falla.
+  - **Scope:** `backend/src/services/audit.ts` (wrapper público `withAuditedTransaction` sobre `db.$transaction` + `writeAuditEvent` con contexto opaco registrado en `WeakMap`), `backend/src/services/admin-bootstrap.ts` y `backend/src/services/session.ts` (llamadores actuales), `backend/tests/unit/audit.test.ts`, `backend/tests/unit/audit-adversarial.test.ts`, `backend/tests/audit.integration.test.ts` y allowlists de runners. Sin `audit.repo.ts` ni migración nueva: la migración C ya existía.
+  - **When/Then:** WHEN se ejecuta acción sensible THEN se registra actor/target/acción/resultado/time en la misma transacción; WHEN falla la auditoría THEN la operación no es exitosa y la transacción revierte; WHEN el callback captura el fallo y retorna falso éxito THEN el wrapper aborta por el primer fallo sticky; WHEN el callback exitoso no escribe ningún evento THEN aborta con `AUDIT_EVENT_REQUIRED`.
   - **Depends on:** 1.3.
-  - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts tests/repositories.test.ts` con fallo inyectado.
+  - **Test:** `npm --prefix backend run test:unit` → **18 files / 319 tests passed**; `npm --prefix backend run test:integration -- tests/admin-bootstrap.integration.test.ts tests/auth-sessions.integration.test.ts tests/login-protection.integration.test.ts tests/audit.integration.test.ts` → **4 files / 112 tests passed**; `npm --prefix backend run test:integration` → **16 files / 294 tests passed**; `typecheck`/`build` → exit 0. PostgreSQL efímero real de Testcontainers con ownership; sin Azure, `.env.azure`, sin DB compartida, de desarrollo ni de producción, y sin datos clínicos.
   - **Coverage:** “Auditoría append-only de acciones sensibles”.
+  - **Trazabilidad 5.5:**
+
+  | Source | Prueba unit/real | Resultado |
+  |---|---|---|
+  | `backend/src/services/audit.ts` (`withAuditedTransaction`, `writeAuditEvent`, contexto `WeakMap`) | `tests/unit/audit.test.ts`, `tests/unit/audit-adversarial.test.ts` | unit 18/319 |
+  | `backend/src/services/admin-bootstrap.ts` (misma tx, `BOOTSTRAP_AUDIT_FAILED`) | `tests/unit/admin-bootstrap*.test.ts`, `tests/admin-bootstrap.integration.test.ts` | incluido en unit/full |
+  | `backend/src/services/session.ts` (misma tx, `AUTH_STORE_UNAVAILABLE`) | `tests/auth-sessions.integration.test.ts`, `tests/login-protection.integration.test.ts` | foco 4/112 |
+  | `backend/tests/audit.integration.test.ts` (fila exacta, timestamp DB, append-only, rollback) | PostgreSQL owned de Testcontainers | full 16/294 |
+
+  - **Pendientes sin cambios:** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Este hito no añade endpoint público, UI admin ni permisos/grants clínicos.
 
 - [ ] 5.6 Implementar desactivación segura y bloqueo de supresión; hard delete fuera de este hito.
   - **Scope:** repositorio/servicio de usuarios; desactivación + revocación de sesiones; validación de actividad solo para una futura excepción; auditoría. **No implementar hard delete en este hito**, ni siquiera para cuentas sin actividad.

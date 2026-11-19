@@ -11,6 +11,7 @@ src/
   schemas/                    contrato Zod (common, clinical, patient, consultation, image, inference, feedback, auth)
   repositories/               CRUD Prisma: user, patient, consultation, image, inference, feedback
   services/gold-standard-export.ts   export anonimizado JSON/CSV (lo usan la ruta y el ETL)
+  services/audit.ts            auditoría transaccional compartida (wrapper + writer)
   services/admin-bootstrap.ts  bootstrap controlado del primer ADMIN (transacción + auditoría)
   middleware/                 auth (JWT HS256) y rbac — mínimos, reemplazables por los del módulo de auth
   routes/feedback.ts          POST /feedback · GET /export/gold-standard
@@ -65,8 +66,8 @@ npm run admin:bootstrap
 - Un error de red ambiguo no se presenta como rollback garantizado: la base pudo haber
   confirmado antes de perderse la respuesta. El CLI no reintenta el bootstrap ni crea un
   segundo administrador automáticamente.
-- `POST /admin/users` y las sesiones/revocación son tareas posteriores (1.8/5.5); este CLI
-  no implementa el ciclo de vida completo de cuentas.
+- `POST /admin/users` (1.8), la desactivación/revocación (5.6) y refresh/logout (5.8) son
+  tareas posteriores; este CLI no implementa el ciclo de vida completo de cuentas.
 
 ## Autenticacion y sesiones
 
@@ -79,6 +80,13 @@ npm run admin:bootstrap
 - Los contadores son buckets pseudonimos HMAC-SHA256 (email normalizado / IP), sin PII cruda en tablas ni logs. El reset es logico (ventana/bloqueo), no una purga de evidencia clinica. No se garantiza igualdad estricta de timing ni inmunidad DoS: la cuota IP es complementaria, no un escudo global.
 - Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` y un guard construidos con `databaseSchema` igual al schema configurado en el cliente.
 - Este hito no es un release de seguridad completo: ownership/grants (5.2), ciclo de vida administrativo/revocacion masiva (5.6/admin), refresh/logout/cookies (5.8), reset (5.9) y alta admin (1.8) siguen pendientes.
+
+## Auditoria transaccional (5.5)
+
+- `src/services/audit.ts` expone `withAuditedTransaction(db, work, options?)` y `writeAuditEvent(context, input)`. El wrapper abre la transaccion con el `$transaction` publico de Prisma y entrega un contexto opaco con `.tx`; la identidad del contexto vive en un `WeakMap` privado y solo es valida durante el callback.
+- `writeAuditEvent` usa `context.tx.auditEvent.create` en la misma transaccion. Rechaza cliente raiz, `tx` crudo, objetos fabricados, clones y contextos cerrados antes de escribir. Un callback exitoso debe registrar al menos un evento; si la auditoria falla, el fallo es sticky y la transaccion revierte aunque el callback lo capture.
+- Los llamadores actuales son `services/admin-bootstrap.ts` y `services/session.ts`, ambos con `await writeAuditEvent(...)`. La composicion anidada de `withAuditedTransaction` sobre el mismo root DB queda fuera de alcance; no se promete soporte para callbacks fire-and-forget ni codigo propio malicioso.
+- No anade endpoint publico, UI admin ni permisos/grants clinicos. 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2 siguen pendientes.
 
 ## Migraciones
 

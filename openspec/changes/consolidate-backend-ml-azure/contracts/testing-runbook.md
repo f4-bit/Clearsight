@@ -216,6 +216,33 @@
 - **Rol restringido:** `clearsight_app` recibe S/I/U en D+E. Un Prisma real con `-c role=clearsight_app` ejecutó login fallido `401` (contador 1), login correcto `200`, reset de user/bucket a 0, `UserSession` + `AuditEvent` (`AUTH_SESSION_CREATED`, `USER`/`SUCCESS`) y `GET /auth/me` `200`; `CURRENT_USER` siguió siendo `clearsight_app` y `session_user` el owner. `TRUNCATE auth_login_buckets` bajo el rol falló con SQLSTATE `42501` sin perder filas. No se otorgó TRUNCATE, no se creó LOGIN/rol de producción ni se desplegó credencial real; el cleanup lo hizo el owner.
 - **Pendientes sin cambios:** 5.6 desactivación/supresión, 5.8 refresh/logout/cookies, 5.9 reset de contraseña, 1.8 alta admin y 5.2 ownership/grants de recursos. Este hito no los declara implementados.
 
+## 1.12 Evidencia HITO 12 - auditoría compartida 5.5 (2026-11-19)
+
+> Cierre documental acotado tras QA + reviewer PASSED. Solo PostgreSQL efímero real de Testcontainers con ownership; sin Azure, `.env.azure`, sin DB compartida, de desarrollo ni de producción, y sin credenciales reales ni datos clínicos. La fuente y las pruebas quedan inmutables en este cierre.
+
+| Elemento | Resultado observado |
+|---|---|
+| Unit | **18 files / 319 tests passed** |
+| Foco 5.5 (bootstrap/session/login/audit) | **4 files / 112 tests passed** |
+| Full integration | **16 files / 294 tests passed** |
+| Typecheck/build | exit 0 |
+| Docker/cleanup | PostgreSQL efímero owned por Testcontainers; sin recursos owned residuales; no se tocaron `.env.azure`, Azure, DB compartida, de desarrollo ni de producción, ni datos clínicos |
+
+| Source 5.5 | Prueba unit/real | Resultado |
+|---|---|---|
+| `backend/src/services/audit.ts` (`withAuditedTransaction`, `writeAuditEvent`, contexto `WeakMap`) | `tests/unit/audit.test.ts`, `tests/unit/audit-adversarial.test.ts` | unit 18/319 |
+| `backend/src/services/admin-bootstrap.ts` (misma tx, `BOOTSTRAP_AUDIT_FAILED`) | `tests/unit/admin-bootstrap*.test.ts`, `tests/admin-bootstrap.integration.test.ts` | incluido en unit/full |
+| `backend/src/services/session.ts` (misma tx, `AUTH_STORE_UNAVAILABLE`) | `tests/auth-sessions.integration.test.ts`, `tests/login-protection.integration.test.ts` | foco 4/112 |
+| `backend/tests/audit.integration.test.ts` (fila exacta, timestamp DB, append-only, rollback) | PostgreSQL owned de Testcontainers | full 16/294 |
+
+- **Wrapper público:** `withAuditedTransaction(db, work, options?)` abre `db.$transaction` (API pública de Prisma) y emite un `AuditContext` opaco con `.tx`; la identidad se registra en un `WeakMap` privado y se desregistra en `finally`, incluso ante error.
+- **Writer:** `writeAuditEvent(context, input)` exige el contexto activo del wrapper; rechaza cliente raíz, `tx` crudo, objetos fabricados, clones y contextos cerrados antes de cualquier escritura. Usa `context.tx.auditEvent.create`; no abre transacción propia ni hace commit.
+- **Atomicidad:** un callback exitoso debe escribir al menos un evento (`AUDIT_EVENT_REQUIRED` si no). Si el writer falla por validación o store, el primer fallo queda sticky en el contexto; aunque el callback lo capture y retorne falso éxito, el wrapper aborta la transacción. Los dos llamadores actuales (`admin-bootstrap`, `session`) hacen `await writeAuditEvent(...)`.
+- **Sin internals:** no se usa ningún símbolo privado de Prisma ni se inspecciona `$transaction` del `itx`; el prototipo retirado con `Symbol.for('prisma.client.transaction.scope_context')` nunca se commiteó.
+- **Límites:** la composición anidada de `withAuditedTransaction` sobre el mismo root DB queda fuera de alcance; no se declara soporte para callbacks fire-and-forget arbitrarios ni para código propio malicioso compilado. No hay endpoint público nuevo, UI admin ni claim de permisos/grants clínicos.
+- **Registro de regresiones:** sin edición; REG-005/REG-006 siguen cubiertos por la prueba de fuente y no existen operaciones de UI admin que puedan producir un falso positivo.
+- **Pendientes sin cambios:** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Este hito no los declara implementados.
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.

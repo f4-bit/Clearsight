@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
+import { withAuditedTransaction, writeAuditEvent } from "./audit.js";
 import { PASSWORD_BCRYPT_COST } from "./password-policy.js";
 
 /**
@@ -139,8 +140,10 @@ export async function bootstrapAdmin(
   const passwordHash = await bcrypt.hash(normalized.password, BOOTSTRAP_BCRYPT_COST);
 
   try {
-    return await client.$transaction(
-      async (tx) => {
+    return await withAuditedTransaction(
+      client,
+      async (context) => {
+        const tx = context.tx;
         // The advisory-lock function returns `void`, which Prisma cannot
         // deserialize. The outer projection keeps the lock side effect while
         // exposing a supported integer column.
@@ -183,17 +186,15 @@ export async function bootstrapAdmin(
         });
 
         try {
-          await tx.auditEvent.create({
-            data: {
-              actorKind: "SYSTEM",
-              actorUserId: null,
-              targetType: "USER",
-              targetUserId: created.id,
-              targetId: null,
-              action: BOOTSTRAP_AUDIT_ACTION,
-              outcome: "SUCCESS",
-              metadata: BOOTSTRAP_AUDIT_METADATA,
-            },
+          await writeAuditEvent(context, {
+            actorKind: "SYSTEM",
+            actorUserId: null,
+            targetType: "USER",
+            targetUserId: created.id,
+            targetId: null,
+            action: BOOTSTRAP_AUDIT_ACTION,
+            outcome: "SUCCESS",
+            metadata: BOOTSTRAP_AUDIT_METADATA,
           });
         } catch (error) {
           if (error instanceof BootstrapAdminError) {

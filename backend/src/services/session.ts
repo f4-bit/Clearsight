@@ -6,6 +6,7 @@ import {
   DEFAULT_DATABASE_SCHEMA,
 } from "../lib/postgres-schema.js";
 import type { JwtPayload } from "../schemas/auth.js";
+import { withAuditedTransaction, writeAuditEvent } from "./audit.js";
 import { MAX_ACCESS_TTL_SECONDS } from "./auth-policy.js";
 import {
   type AuthLoginProtection,
@@ -301,8 +302,10 @@ export function createAuthSessionService(
     }
 
     try {
-      return await db.$transaction(
-        async (tx) => {
+      return await withAuditedTransaction(
+        db,
+        async (context) => {
+          const tx = context.tx;
           // Lock the account row before re-reading it. A concurrent password or
           // role/version change committed after the bcrypt check is observed
           // here and the stale proof is rejected instead of reused.
@@ -350,17 +353,15 @@ export function createAuthSessionService(
             select: { id: true },
           });
 
-          await tx.auditEvent.create({
-            data: {
-              actorKind: "USER",
-              actorUserId: current.id,
-              targetType: "SESSION",
-              targetId: session.id,
-              targetUserId: null,
-              action: LOGIN_AUDIT_ACTION,
-              outcome: "SUCCESS",
-              metadata: LOGIN_AUDIT_METADATA,
-            },
+          await writeAuditEvent(context, {
+            actorKind: "USER",
+            actorUserId: current.id,
+            targetType: "SESSION",
+            targetId: session.id,
+            targetUserId: null,
+            action: LOGIN_AUDIT_ACTION,
+            outcome: "SUCCESS",
+            metadata: LOGIN_AUDIT_METADATA,
           });
 
           const claims: JwtPayload = {
