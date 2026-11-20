@@ -1,21 +1,20 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { env } from "../config/env.js";
+import {
+  INFERENCE_QUEUE_NAME,
+  type InferenceJobData,
+} from "./inference.contracts.js";
+
+export { INFERENCE_QUEUE_NAME } from "./inference.contracts.js";
+export type {
+  InferenceExpectedContext,
+  InferenceJobData,
+} from "./inference.contracts.js";
 
 const connection = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
 });
-
-export const INFERENCE_QUEUE_NAME = "inference-jobs";
-
-export interface InferenceJobData {
-  inferenceId: string;
-  imageId: string;
-  imageUrl: string;
-  eyeSide: "OD" | "OS";
-  clinicalFeatures: any;
-  modelVersion?: string | null;
-}
 
 export const inferenceQueue = new Queue<InferenceJobData>(INFERENCE_QUEUE_NAME, {
   connection,

@@ -23,17 +23,17 @@ export type ClinicalFeatureName = (typeof CLINICAL_FEATURE_NAMES)[number];
 
 /** Strict, like the ML contract (`extra="forbid"`): no extra, renamed or missing fields. */
 export const ClinicalFeaturesSchema = z.strictObject({
-  Age: z.number(),
-  Gender: z.number(),
-  dioptre_1: z.number(),
-  dioptre_2: z.number(),
-  astigmatism: z.number(),
-  "Phakic/Pseudophakic": z.number(),
-  Pneumatic: z.number(),
-  Perkins: z.number(),
-  Pachymetry: z.number(),
-  Axial_Length: z.number(),
-  VF_DM: z.number(),
+  Age: z.number().finite(),
+  Gender: z.number().finite(),
+  dioptre_1: z.number().finite(),
+  dioptre_2: z.number().finite(),
+  astigmatism: z.number().finite(),
+  "Phakic/Pseudophakic": z.number().finite(),
+  Pneumatic: z.number().finite(),
+  Perkins: z.number().finite(),
+  Pachymetry: z.number().finite(),
+  Axial_Length: z.number().finite(),
+  VF_DM: z.number().finite(),
 });
 export type ClinicalFeatures = z.infer<typeof ClinicalFeaturesSchema>;
 

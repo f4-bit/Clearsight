@@ -151,7 +151,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 | Método | Ruta | Estado | Auth/rol | Request | Response | Errores |
 |---|---|---|---|---|---|---|
-| POST | `/inferences` | proposed | OFTALMOLOGO dueño | `{ imageId, eyeSide, clinicalFeatures, modelVersion?, reanalysisOf? }` + **`Idempotency-Key` obligatoria (D7 futuro; NO implementada en current)** | `202 { inferenceId, jobId, status: "QUEUED" }`; replay idéntico devuelve el mismo `202` | `400`, `401`, `403`, `404`, `409`, `422` |
+| POST | `/inferences` | implemented (2.2 QA PASSED; CURRENT creation) | OFTALMOLOGO dueño | `{ imageId, eyeSide, clinicalFeatures, modelVersion?, reanalysisOf? }` + **`Idempotency-Key` obligatoria (D7/4.4 futuro; NO implementada en 2.2)** | `202 { inferenceId, jobId, status: "QUEUED" }`; cuerpo/estado sin cambios | `400`, `401`, `403`, `404`, `422`, `503` (`409` reservado a 4.4; 2.2 no lo emite) |
 | GET | `/inferences/:id` | proposed | Owner/grant | — | `ExecutionStatus` completo | `401`, `403`, `404` |
 | GET | `/inferences/:id/artifacts` | proposed | Owner/grant | — | `ArtifactRef[]` | `401`, `403`, `404` |
 | GET | `/inferences/:id/artifacts/:type/url` | proposed | Owner/grant | — | `ArtifactUrl`; solo `AVAILABLE` devuelve URL | `401`, `403`, `404`, `409` |
@@ -161,6 +161,8 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | GET | `/inferences/:id/gradcam` | deferred | — | — | `NOT_SUPPORTED` | — |
 
 **No hay un endpoint independiente `/reanalysis` en TARGET.** El reanálisis canónico es `POST /inferences` con `reanalysisOf`. Si se expone un alias por compatibilidad, delega exactamente en el mismo caso de uso, la misma `Idempotency-Key` y el mismo `202`; no es una segunda implementación.
+
+**2.2 (HITO19, QA PASSED; CURRENT creation) — contexto preparado:** `clinicalFeatures` de la request es la fuente autoritativa. El backend llama internamente a `POST /v1/clinical-snapshots/prepare` del servicio ML y persiste snapshot + ejecución `QUEUED` en una sola transacción. El frontend **no** llama a `prepare`, **no** envía `expected_context`, **no** envía `eyeSide` de ML, `consultationId` ni `clinicalData`, y su contrato de éxito (`202` + `jobId` + `status`) no cambia. `reanalysisOf` es UUID opcional; un padre ajeno/inexistente devuelve `404` uniforme y un contexto de padre que contradice consulta/ojo devuelve `422` antes de preparar o escribir. Un `503` significa que no se creó snapshot/ejecución (fallo antes de DB) o que la ejecución quedó persistida con la cola pendiente post-commit (4.6); no se reintenta a ciegas sin la idempotencia 4.4. 2.2 **no** implementa `requiredExecutionIds`/freeze (2.5), agregación (2.3), idempotencia (4.4), outbox (4.6), publicación de artefactos ni PDF. **CURRENT:** creación, reanálisis/snapshot, pin de contexto y manejo de estados `QUEUED`/`COMPLETED`/`REVIEW_REQUIRED`/`FAILED` implementados y verificados; 2.4/4.2/4.3 siguen parciales independientes.
 
 ### 3.4 Feedback y export
 
@@ -262,6 +264,27 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 Estos campos son derivados; **no** se añaden como enum DB nuevo.
 
+### 4.6 ClinicalSnapshotContext (interno backend ↔ ML; NO público)
+
+`POST /v1/clinical-snapshots/prepare` es un endpoint interno autenticado con el token de servicio ML. No lo consume el frontend y no se publica a través del proxy clínico. Forma estricta:
+
+| Campo | Tipo | Regla |
+|---|---|---|
+| `clinical_features` | objeto | Exactamente las 11 variables canónicas, números finitos; `extra=forbid`. |
+| `requested_model_version` | string\|null | Opcional. Si no es null, debe coincidir con la versión efectiva del manifiesto o `422`. Null resuelve el runtime actual; nunca `"v1"`. |
+| `rawCanonical` | objeto | Respuesta: `{ clinicalFeatures: {...11} }`, sin `eyeSide` ni claves extra. |
+| `normalizedPayload` | objeto | Respuesta: `{ orderedFeatureNames: [...11], dtype: "float32", values: [...11], descriptor, canonicalJson, contextFingerprintSha256 }`, sin `eyeSide`; valores reales del helper ML. |
+| `normalizedPayload.descriptor` | objeto | Descriptor efectivo completo: `schema_version`, `model` (manifest/backend/class_names/ensemble/artifacts/binaries), `normalization` (mean/std con source, epsilon, orden, dtype) y `preprocessing`. Sin paths locales ni secretos. |
+| `normalizedPayload.canonicalJson` | string | Bytes canónicos exactos usados para calcular la huella; el backend verifica `sha256(canonicalJson) === contextFingerprintSha256` sin recomputar el descriptor en JS. |
+| `normalizedPayload.contextFingerprintSha256` | string | Debe coincidir con `contextFingerprintSha256` de nivel superior. |
+| `schemaVersion` | string | Respuesta: `"ml-zscore-f32-v1"`. |
+| `modelVersions` | objeto | Respuesta: no vacío; `manifest`, `backend` (`pytorch`\|`onnx` efectivo) y revisiones `repository@revision` verificadas. |
+| `contextFingerprintSha256` | string | Respuesta: 64 hex lowercase; SHA-256 canónico del descriptor sin el campo huella. |
+
+El backend añade el `eyeSide` autoritativo al persistir y valida la respuesta antes de cualquier escritura. Errores internos seguros: `401` token inválido, `404` no soportado ⇒ backend `503`, `422` versión/modelo inexistente, `503` runtime/contexto/artefacto no verificable. Sin URL, PHI, tokens ni trazas en body/log.
+
+El job interno lleva `expectedContext: { schemaVersion, fingerprintSha256 }` y `MlClient` lo traduce a `expected_context: { schema_version, fingerprint_sha256 }`. El frontend no lo ve ni lo envía.
+
 ## 5. Matriz de autorización TARGET
 
 | Recurso/acción | Público | OFTALMOLOGO | INVESTIGADOR | ADMIN | Regla |
@@ -280,15 +303,18 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 
 | Campo header/body | Tipo | Obligatorio | Regla |
 |---|---|---|---|
-| `Idempotency-Key` | string | Sí | Alcance durable autenticado + recurso. Misma key+payload ⇒ mismo `202` con mismo `inferenceId`/`jobId`. Misma key+payload distinto ⇒ `409`. |
-| `imageId` | UUID | Sí | Imagen autorizada; su lateralidad almacenada debe coincidir con `eyeSide` o `422`. |
-| `eyeSide` | `"OD"\|"OS"` | Sí | Metadato; nunca se confía en un valor contradictorio. |
-| `clinicalFeatures` | objeto | Sí | 11 campos estrictos. |
-| `modelVersion` | string\|null | No | El modelo resuelto se fija en la primera solicitud y no cambia por defaults de reintento. |
-| `reanalysisOf` | UUID | No | Crea ejecución nueva enlazada; no sobrescribe. |
+| `Idempotency-Key` | string | Sí (4.4) | Alcance durable autenticado + recurso. Misma key+payload ⇒ mismo `202` con mismo `inferenceId`/`jobId`. Misma key+payload distinto ⇒ `409`. **No implementada en 2.2**: no se emite `409` por idempotencia todavía. |
+| `imageId` | UUID | Sí | Imagen autorizada; su lateralidad almacenada debe coincidir con `eyeSide` o `422`. Es la autoridad del ojo. |
+| `eyeSide` | `"OD"\|"OS"` | Sí | Metadato; nunca se confía en un valor contradictorio ni se toma de la respuesta ML. |
+| `clinicalFeatures` | objeto | Sí | 11 campos estrictos y finitos; única fuente del payload crudo. Nunca se completa desde `consultation.clinicalData`. |
+| `modelVersion` | string\|null | No | En 2.2 se pasa a `requested_model_version`: si no es null y no coincide con la versión efectiva del manifiesto ⇒ `422`; null resuelve el runtime actual, nunca `"v1"`. |
+| `reanalysisOf` | UUID | No | Crea ejecución nueva enlazada; no sobrescribe. Padre ajeno/inexistente ⇒ `404` uniforme; contexto de padre contradictorio ⇒ `422`. Padre legacy con consulta/ojo NULL usa la imagen autoritativa. |
+| `expected_context` | — | Prohibido | Lo genera el backend desde `prepare`; el frontend no lo envía ni lo recibe. |
 | `imageUrl` | — | Prohibido | No lo envía el frontend; el backend firma desde referencia confiable. |
 
-**Respuesta `202`:** `{ inferenceId: UUID, jobId: string, status: "QUEUED" }`. Si se pierde el `202`, se reintenta con la misma key; no se exige consultar un ID nunca recibido. El modelo queda fijado; la URL firmada dinámica no forma parte del payload/fingerprint. **Mientras B3 no esté aprobado, no se purgan** registros de idempotencia, tombstones ni vínculos de inferencia necesarios para replay. Cuando B3 se apruebe, la retención podrá acotarse sin romper el horizonte de replay definido; no se promete replay eterno arbitrario, pero la política vigente es no purgar. **B2:** una consulta completada no se reabre ni altera automáticamente; `requiredExecutionIds` no se promueve ni reemplaza tras cierre y los reanálisis históricos no modifican el frozen set.
+**Reglas de 2.2 para la creación:** el orden es auth/rol → ownership de imagen → ownership del padre (si existe) → validar ojo → validar contexto del padre → `prepare` ML (timeout 15 s, sin reintentos infinitos) → validar respuesta estricta → TX (`ClinicalSnapshot` + `Inference QUEUED`) → commit → firmar URL/encolar. Una preparación `404`/no soportada, timeout, 5xx, JSON inválido, features alteradas, `eyeSide` en la respuesta o huella/versión inválida devuelve `503` sin DB y sin fallback sin pin. Si falla el SQL, no queda snapshot huérfano. Si falla storage/cola después del commit, la ejecución queda pendiente explícita para 4.6 y se responde `503`, no `202`. La creación **no** actualiza `consultation.status`; `COMPLETED` de ML no completa la consulta.
+
+**Respuesta `202`:** `{ inferenceId: UUID, jobId: string, status: "QUEUED" }`. En el target 4.4, si se pierde el `202`, se reintenta con la misma key; no se exige consultar un ID nunca recibido. **En 2.2 (sin 4.4) no hay replay idempotente**: un `202` perdido no se reintenta a ciegas porque podría duplicar la ejecución; la key obligatoria y el replay siguen pendientes de 4.4. El modelo queda fijado; la URL firmada dinámica no forma parte del payload/fingerprint. **Mientras B3 no esté aprobado, no se purgan** registros de idempotencia, tombstones ni vínculos de inferencia necesarios para replay. Cuando B3 se apruebe, la retención podrá acotarse sin romper el horizonte de replay definido; no se promete replay eterno arbitrario, pero la política vigente es no purgar. **B2:** una consulta completada no se reabre ni altera automáticamente; `requiredExecutionIds` no se promueve ni reemplaza tras cierre y los reanálisis históricos no modifican el frozen set.
 
 ## 7. Artefactos, polling y entrega
 
@@ -355,6 +381,11 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 | RF07 unimodal / RF15 comparación | deferred (B7) | No se implementan ni simulan; no bloquean. |
 | Envío real de email forgot/reset | pendiente solo provisioning (B8), no bloquea 5.9 | 5.9 cerrada con `DISABLED` por defecto y sink en memoria solo para pruebas; no hay proveedor real, outbox ni garantía de entrega. Envío real futuro solo a destinatarios autorizados, sin PHI/enlaces secretos, sin versionar direcciones/credenciales. |
 | `DatabaseFeedbackSource` | fuera de alcance (B9) | No añade SQLAlchemy ni bloquea el change. |
+| Contexto clínico preparado (2.2) | implemented / QA PASSED (HITO19) | CURRENT: creación, reanálisis/snapshot, pin `expected_context` y manejo de estados implementados; H1 PASSED. No cierra 2.4/4.2/4.3 ni REG-002/003/004. |
+| `requiredExecutionIds`/freeze (2.5) | deferred (B2) | 2.2 no lee ni modifica el conjunto requerido; no hay promoción ni reapertura tras cierre. |
+| Agregación de consulta (2.3) y PDF (6.x) | deferred | La consulta no se autocompleta; `pollingStop`/`completionState` y PDF quedan para sus tareas. |
+| Idempotencia `Idempotency-Key` (4.4) | deferred | 2.2 no implementa replay, no emite `409` por idempotencia y no exige la key. |
+| Outbox/reconciliación (4.6) | deferred | Un fallo post-commit de storage/cola queda pendiente explícito; no se promete atomicidad Redis/outbox. |
 
 ## 11. Reglas de consumo para frontend
 
@@ -364,7 +395,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 4. No enviar `imageUrl`; no construir URLs de storage; pedir URL nueva al backend si expira.
 5. No asumir que `GET /inferences/:id` actual devuelve estado/artefactos; en TARGET sí, pero marcado `proposed`.
 6. No usar un endpoint `/reanalysis` independiente; usar `POST /inferences` con `reanalysisOf`.
-7. No reintentar sin `Idempotency-Key`; si se perdió el `202`, repetir la misma key.
+7. (Target 4.4) No reintentar sin `Idempotency-Key`; si se perdió el `202`, repetir la misma key. 2.2 no implementa la key: no reintentar a ciegas (ver regla 23).
 8. No presentar `gradcam`/`shap` como disponibles; son `NOT_SUPPORTED`.
 9. No presentar un PDF de revisión como caso completo.
 10. No confundir `hashMd5` actual con `checksumSha256` target.
@@ -378,3 +409,8 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 18. No enviar el token de reset en URL/query/fragmento ni en cabeceras, logs o JSON de terceros; `reset` usa solo `{ token, newPassword }` en el body y `Authorization` no lo sustituye.
 19. No reintentar `forgot`/`reset` ignorando `Retry-After`: las cuotas son independientes del login y un `429` no debe traducirse en un bucle de reintentos.
 20. Tras un `reset` `204`, no asumir sesión iniciada: no hay cookie/access nuevo y todas las sesiones previas quedan revocadas; volver al login. El lockout de login, si estaba vigente, no se limpia con el reset.
+21. En 2.2, enviar las 11 `clinicalFeatures` como fuente autoritativa; no enviar `consultationId`, `clinicalData` ni confiar en que el backend las complete desde la consulta.
+22. No llamar a `/v1/clinical-snapshots/prepare` desde el frontend ni enviar/recibir `expected_context`; es un contrato interno backend↔ML.
+23. Si `POST /inferences` devuelve `503`, no asumir que se creó un trabajo ni reintentar a ciegas: 2.2 no implementa idempotencia 4.4 y el fallo puede ser previo a DB o post-commit pendiente de 4.6.
+24. No asumir que un job `COMPLETED` completa la consulta: 2.2 elimina el autocompletado y 2.3/6.x siguen pendientes.
+25. No presentar una ejecución `REVIEW_REQUIRED` como fallo reintentable ni como completa: se preserva el estado y el resultado parcial; la resolución sigue siendo un reanálisis.

@@ -1,8 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { notFound, unprocessable } from "../lib/http-error.js";
+import { notFound } from "../lib/http-error.js";
 import type { PrismaClient } from "../lib/prisma.js";
 import { authenticate } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
@@ -13,12 +12,18 @@ import {
 } from "../schemas/inference.js";
 import type { ClinicalAccessService } from "../services/clinical-access.js";
 import { subjectFromRequest } from "../services/clinical-access.js";
+import { createInferenceCreationService } from "../services/inference-creation.js";
+import type { ClinicalContextPreparer } from "../services/ml-client.js";
+import type { AuthSessionService } from "../services/session.js";
 import { StorageService } from "../services/storage.js";
 import { enqueueInference } from "../workers/inference.queue.js";
 
 export interface InferenceRoutesOptions {
   prisma: PrismaClient;
   access: ClinicalAccessService;
+  authService: Pick<AuthSessionService, "verifySession">;
+  mlClient: ClinicalContextPreparer;
+  databaseSchema?: string;
 }
 
 export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async (
@@ -27,6 +32,18 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
 ) => {
   const { prisma, access } = opts;
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
+  const creation = createInferenceCreationService({
+    prisma,
+    access,
+    authService: opts.authService,
+    mlClient: opts.mlClient,
+    databaseSchema: opts.databaseSchema,
+    signMlDownloadUrl: async (storagePath) => {
+      const [bucket = "", ...rest] = storagePath.split("/");
+      return StorageService.getMlDownloadUrl(bucket, rest.join("/"));
+    },
+    enqueue: enqueueInference,
+  });
 
   // POST /inferences - Enqueue async inference job
   typedApp.post(
@@ -40,68 +57,25 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         response: {
           202: jobAcceptedSchema,
           400: errorResponseSchema,
+          403: errorResponseSchema,
           404: errorResponseSchema,
           409: errorResponseSchema,
           422: errorResponseSchema,
+          503: errorResponseSchema,
         },
       },
     },
     async (request, reply) => {
-      const subject = subjectFromRequest(request);
-      const { imageId, eyeSide, clinicalFeatures, modelVersion } = request.body;
-
-      // Ownership and laterality are checked before any DB write, signed URL or
-      // queue dispatch. A foreign/missing image is a uniform 404.
-      const { image: imageRecord } = await access.getOwnedImageContext(
-        subject,
-        imageId,
-      );
-
-      if (eyeSide !== imageRecord.eyeSide) {
-        // The stored image lateral side is authoritative; never trust the body.
-        throw unprocessable("eyeSide does not match the stored image laterality");
-      }
-
-      // The execution id is always server-generated. There is no client PK
-      // idempotency in the current contract, so a supplied id can never probe
-      // whether an execution exists in this or another case.
-      const inferenceId = randomUUID();
-
-      // 1. Create DB inference record
-      await prisma.inference.create({
-        data: {
-          id: inferenceId,
-          imageId,
-          probabilities: {},
-        },
+      const result = await creation.create({
+        subject: subjectFromRequest(request),
+        claims: request.user,
+        imageId: request.body.imageId,
+        eyeSide: request.body.eyeSide,
+        clinicalFeatures: request.body.clinicalFeatures,
+        modelVersion: request.body.modelVersion ?? null,
+        reanalysisOf: request.body.reanalysisOf ?? null,
       });
-
-      // Update consultation status to QUEUED (ML job dispatched)
-      await prisma.consultation.update({
-        where: { id: imageRecord.consultationId },
-        data: { status: "QUEUED" },
-      });
-
-      // 2. Generate presigned URL for the stored image (server-side only).
-      const [bucket = "", ...rest] = imageRecord.storagePath.split("/");
-      const key = rest.join("/");
-      const imageUrl = await StorageService.getMlDownloadUrl(bucket, key);
-
-      // 3. Enqueue job in BullMQ
-      const job = await enqueueInference({
-        inferenceId,
-        imageId,
-        imageUrl,
-        eyeSide: imageRecord.eyeSide as "OD" | "OS",
-        clinicalFeatures,
-        modelVersion,
-      });
-
-      return reply.status(202).send({
-        inferenceId,
-        jobId: job.id ?? inferenceId,
-        status: "QUEUED",
-      });
+      return reply.status(202).send(result);
     }
   );
 

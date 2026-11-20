@@ -1,18 +1,121 @@
+import { z } from "zod";
 import { env } from "../config/env.js";
+import type { PrepareClinicalSnapshotRequest } from "../schemas/clinical-context.js";
 import {
+  jobStatusEnum,
   JobAccepted,
   JobResponse,
 } from "../schemas/inference.js";
 
-export class MlClient {
+export interface MlClientOptions {
+  baseUrl?: string;
+  apiToken?: string | null;
+  timeoutMs?: number;
+}
+
+export interface ClinicalContextPreparer {
+  prepareClinicalSnapshot(payload: PrepareClinicalSnapshotRequest): Promise<unknown>;
+}
+
+export class MlClientHttpError extends Error {
+  constructor(public readonly status: number) {
+    super(`ML service request failed with status ${status}`);
+    this.name = "MlClientHttpError";
+  }
+}
+
+export class MlClientError extends Error {
+  constructor(message = "ML service is unavailable") {
+    super(message);
+    this.name = "MlClientError";
+  }
+}
+
+const WireModelPrediction = z.strictObject({
+  probabilities: z.record(z.string(), z.number().finite()),
+  predicted_class: z.string(),
+  confidence: z.number().finite(),
+});
+
+const WireInferenceResult = z.strictObject({
+  inference_id: z.string().uuid(),
+  eye_side: z.enum(["OD", "OS"]),
+  label: z.string().nullable(),
+  confidence: z.number().finite().nullable(),
+  probabilities: z.record(z.string(), z.number().finite()),
+  model_predictions: z.record(z.string(), WireModelPrediction),
+  cdr: z.number().finite().nullable(),
+  cdr_vertical: z.number().finite().nullable(),
+  quality: z.record(z.string(), z.unknown()),
+  artifacts: z.record(z.string(), z.string()),
+  model_versions: z.record(z.string(), z.string()),
+  elapsed_seconds: z.number().finite(),
+});
+
+const WireJobAccepted = z.strictObject({
+  inference_id: z.string().uuid(),
+  job_id: z.string().min(1),
+  status: jobStatusEnum,
+});
+
+const WireJobResponse = z.strictObject({
+  inference_id: z.string().uuid(),
+  job_id: z.string().min(1),
+  status: jobStatusEnum,
+  stage: z.string(),
+  message: z.string().nullable().optional(),
+  result: WireInferenceResult.nullable().optional(),
+});
+
+interface MlRequestInit {
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export class MlClient implements ClinicalContextPreparer {
   private baseUrl: string;
   private authHeaders: Record<string, string>;
+  private timeoutMs: number;
 
-  constructor(baseUrl = env.ML_SERVICE_URL) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.authHeaders = env.ML_API_TOKEN
-      ? { Authorization: `Bearer ${env.ML_API_TOKEN}` }
-      : {};
+  constructor(options: MlClientOptions = {}) {
+    this.baseUrl = (options.baseUrl ?? env.ML_SERVICE_URL).replace(/\/$/, "");
+    const token = options.apiToken === undefined ? env.ML_API_TOKEN : options.apiToken;
+    this.authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+    this.timeoutMs = options.timeoutMs ?? 15_000;
+  }
+
+  private async request(path: string, init: MlRequestInit): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      throw new MlClientError();
+    }
+    if (!response.ok) {
+      throw new MlClientHttpError(response.status);
+    }
+    try {
+      return await response.json();
+    } catch {
+      throw new MlClientError("ML service returned invalid JSON");
+    }
+  }
+
+  async prepareClinicalSnapshot(
+    payload: PrepareClinicalSnapshotRequest,
+  ): Promise<unknown> {
+    return this.request("/v1/clinical-snapshots/prepare", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.authHeaders,
+      },
+      body: JSON.stringify(payload),
+    });
   }
 
   async submitInference(payload: {
@@ -33,40 +136,42 @@ export class MlClient {
       VF_DM: number;
     };
     model_version?: string | null;
+    expected_context?: {
+      schema_version: string;
+      fingerprint_sha256: string;
+    } | null;
   }): Promise<JobAccepted> {
-    const res = await fetch(`${this.baseUrl}/v1/inferences`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...this.authHeaders,
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`ML service error ${res.status}: ${errorText}`);
+    const parsed = WireJobAccepted.safeParse(
+      await this.request("/v1/inferences", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...this.authHeaders,
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+    if (!parsed.success) {
+      throw new MlClientError("ML service returned an invalid payload");
     }
-
-    const data = (await res.json()) as any;
     return {
-      inferenceId: data.inference_id,
-      jobId: data.job_id,
-      status: data.status,
+      inferenceId: parsed.data.inference_id,
+      jobId: parsed.data.job_id,
+      status: parsed.data.status,
     };
   }
 
   async getJobStatus(jobId: string): Promise<JobResponse> {
-    const res = await fetch(`${this.baseUrl}/v1/inferences/${jobId}`, {
-      headers: this.authHeaders,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to fetch ML job ${jobId}: ${res.statusText}`);
+    const parsed = WireJobResponse.safeParse(
+      await this.request(`/v1/inferences/${jobId}`, {
+        method: "GET",
+        headers: this.authHeaders,
+      }),
+    );
+    if (!parsed.success) {
+      throw new MlClientError("ML service returned an invalid payload");
     }
-
-    const data = (await res.json()) as any;
+    const data = parsed.data;
     return {
       inferenceId: data.inference_id,
       jobId: data.job_id,
@@ -80,7 +185,16 @@ export class MlClient {
             label: data.result.label,
             confidence: data.result.confidence,
             probabilities: data.result.probabilities,
-            modelPredictions: data.result.model_predictions,
+            modelPredictions: Object.fromEntries(
+              Object.entries(data.result.model_predictions).map(([name, value]) => [
+                name,
+                {
+                  probabilities: value.probabilities,
+                  predictedClass: value.predicted_class,
+                  confidence: value.confidence,
+                },
+              ]),
+            ),
             cdr: data.result.cdr,
             cdrVertical: data.result.cdr_vertical,
             quality: data.result.quality,
@@ -94,8 +208,10 @@ export class MlClient {
 
   async isHealthy(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/health/live`);
-      return res.ok;
+      const response = await fetch(`${this.baseUrl}/health/live`, {
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      return response.ok;
     } catch {
       return false;
     }

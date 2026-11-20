@@ -13,7 +13,8 @@ export const inferenceCreateSchema = z
     // field and is rejected before any lookup/write/sign/queue.
     eyeSide: eyeSideEnum,
     clinicalFeatures: ClinicalFeaturesSchema,
-    modelVersion: z.string().optional().nullable(),
+    modelVersion: z.string().min(1).optional().nullable(),
+    reanalysisOf: z.string().uuid().optional().nullable(),
   })
   .strict();
 
@@ -24,6 +25,11 @@ export const RepoInferenceCreate = z.object({
   imageId: Uuid,
   jobId: Uuid.nullish(),
   modelVersion: z.string().max(128).nullish(),
+  consultationId: Uuid.nullish(),
+  eyeSide: eyeSideEnum.nullish(),
+  snapshotId: Uuid.nullish(),
+  reanalysisOfId: Uuid.nullish(),
+  status: JobStatus.nullish(),
 });
 export type InferenceCreate = z.input<typeof RepoInferenceCreate>;
 
@@ -39,6 +45,7 @@ export const InferenceResultUpdate = z.object({
   elapsedSeconds: z.number().min(0).nullable(),
   gradcamPath: z.string().nullish(),
   modelVersion: z.string().max(128).nullish(),
+  status: JobStatus.nullish(),
 });
 export type InferenceResultUpdate = z.input<typeof InferenceResultUpdate>;
 

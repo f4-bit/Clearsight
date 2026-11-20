@@ -15,6 +15,8 @@ from ml.inference.cdr import calculate_area_cdr, calculate_vertical_cdr
 from ml.inference.classification import ClassificationEngine
 from ml.inference.ensemble import combine_predictions
 from ml.inference.localization import (
+    SEGMENTATION_CLAHE_CLIP_LIMIT,
+    SEGMENTATION_CLAHE_TILE_GRID,
     apply_segmentation_preprocessing,
     create_classifier_crop,
     crop_around_disc,
@@ -27,6 +29,7 @@ from ml.inference.postprocessing import (
     segmentation_quality,
 )
 from ml.inference.segmentation import SegmentationRunner
+from ml.service.context import RuntimeContext, verify_expected_context
 from ml.service.schemas import InferenceRequest, JobStatus
 from ml.service.storage import ArtifactStore
 
@@ -61,12 +64,14 @@ class InferencePipeline:
         classification: ClassificationEngine,
         artifact_store: ArtifactStore,
         manifest: dict[str, Any],
+        context: RuntimeContext | None = None,
     ) -> None:
         self.settings = settings
         self.segmentation = segmentation
         self.classification = classification
         self.artifact_store = artifact_store
         self.manifest = manifest
+        self.context = context
 
     def _download_image(self, url: str) -> bytes:
         parsed = urlparse(url)
@@ -133,25 +138,51 @@ class InferencePipeline:
             for name, entry in artifacts.items()
         }
 
+    def _verify_pinned_context(self, request: InferenceRequest) -> None:
+        expected = request.expected_context
+        if expected is None:
+            return
+        verify_expected_context(
+            self.context,
+            schema_version=expected.schema_version,
+            fingerprint_sha256=expected.fingerprint_sha256,
+        )
+
     def run(
         self,
         request: InferenceRequest,
         stage_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        # Verify before download; a pinned request must never run against a
+        # context that differs from the one captured when the snapshot was made.
+        self._verify_pinned_context(request)
         started = time.perf_counter()
         callback = stage_callback or (lambda _: None)
         callback(JobStatus.DOWNLOADING.value)
         payload = self._download_image(request.image_url)
         image = decode_image(payload, self.settings.min_image_side)
         callback(JobStatus.LOCALIZING.value)
-        crop, context = crop_around_disc(
+        segmentation_settings = self.manifest["segmentation"]
+        clahe_clip_limit = segmentation_settings.get(
+            "clahe_clip_limit",
+            SEGMENTATION_CLAHE_CLIP_LIMIT,
+        )
+        clahe_tile_grid = segmentation_settings.get(
+            "clahe_tile_grid",
+            SEGMENTATION_CLAHE_TILE_GRID,
+        )
+        crop, crop_context = crop_around_disc(
             image,
-            self.manifest["segmentation"]["image_size"],
+            segmentation_settings["image_size"],
+            clahe_clip_limit=clahe_clip_limit,
+            clahe_tile_grid=clahe_tile_grid,
         )
         callback(JobStatus.SEGMENTING.value)
         segmentation_input = apply_segmentation_preprocessing(
             crop,
-            self.manifest["segmentation"]["image_size"],
+            segmentation_settings["image_size"],
+            clahe_clip_limit=clahe_clip_limit,
+            clahe_tile_grid=clahe_tile_grid,
         )
         probabilities = self.segmentation.predict(segmentation_input)
         segmentation = clean_segmentation(
@@ -184,11 +215,13 @@ class InferencePipeline:
         if quality["review_required"] or cdr is None or segmentation.disc_contour is None:
             base_result["status"] = JobStatus.REVIEW_REQUIRED.value
             return base_result
+        # Revalidate immediately before the model receives clinical inputs.
+        self._verify_pinned_context(request)
         callback(JobStatus.CLASSIFYING.value)
         classifier_input = create_classifier_crop(
             image,
             segmentation.disc_contour,
-            context,
+            crop_context,
             final_size=self.manifest["segmentation"]["classifier_crop_size"],
             margin=self.manifest["segmentation"]["crop_margin"],
             minimum_size=self.manifest["segmentation"]["classifier_crop_min"],

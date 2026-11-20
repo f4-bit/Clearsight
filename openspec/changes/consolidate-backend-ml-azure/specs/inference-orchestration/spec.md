@@ -243,3 +243,109 @@ El sistema SHALL permitir publicar o reintentar artefactos derivados de un resul
 - **WHEN** el frontend solicita el estado de una ejecución
 - **THEN** la respuesta no incluye tokens internos, credenciales de storage ni SAS de larga vida
 - **AND** solo incluye estados y referencias autorizadas.
+
+### Requirement: Preparación de contexto clínico en el servicio ML
+
+El servicio ML SHALL exponer `POST /v1/clinical-snapshots/prepare`, autenticado con el mismo `require_service_token` que `/v1/inferences` y con el mismo fallo `503` cuando el runtime no está disponible. El request MUST ser estricto y contener `clinical_features` y `requested_model_version` opcional; MUST NOT aceptar `eye_side`, `consultation_id`, `clinical_data` libre, URLs, archivos ni campos desconocidos. La respuesta MUST contener `rawCanonical`, `normalizedPayload`, `schemaVersion`, `modelVersions` y `contextFingerprintSha256`. `rawCanonical` MUST contener exactamente las once `clinical_features` validadas y MUST NOT contener el ojo ni claves extra. `normalizedPayload` MUST contener el orden canónico, `dtype="float32"`, once valores producidos por el helper real de normalización, el descriptor efectivo completo, `canonicalJson` exacto y `contextFingerprintSha256`. `schemaVersion` MUST ser `ml-zscore-f32-v1`. `modelVersions` MUST ser no vacío y real. La huella MUST ser SHA-256 lowercase de 64 hex sobre el descriptor canónico sin el propio campo. El endpoint MUST NOT escribir en base de datos, descargar pesos ni cargar modelos nuevos para una preparación; si no puede verificar el contexto, MUST responder `503` seguro sin secretos, URL ni PHI.
+
+#### Scenario: Preparación válida
+
+- **WHEN** el backend envía once features válidas y `requested_model_version=null`
+- **THEN** el ML responde con el snapshot crudo canónico, el vector normalizado float32, `schemaVersion="ml-zscore-f32-v1"`, versiones reales y huella hex
+- **AND** no descarga pesos ni escribe en DB.
+
+#### Scenario: Request con campos de contexto ojo/consulta
+
+- **WHEN** la preparación incluye `eye_side`, `consultation_id` o campos desconocidos
+- **THEN** el servicio responde `400`/`422` por contrato estricto
+- **AND** no prepara un snapshot con datos que no le corresponden.
+
+#### Scenario: Runtime no disponible
+
+- **WHEN** el runtime no está inicializado o su descriptor no es verificable
+- **THEN** la preparación responde `503` seguro antes de cualquier trabajo
+- **AND** no devuelve una huella inventada ni un snapshot parcial.
+
+### Requirement: Resolución efectiva de parámetros y modelo
+
+El servicio ML SHALL usar como fuente del snapshot el runner realmente cargado, no un duplicado en JavaScript ni un valor de entorno leído después del arranque. Los parámetros efectivos de normalización MUST corresponder a la misma resolución que usa `predict`: once nombres ordenados, `mean`/`std` con su fuente (`env` o `manifest`), `epsilon=1e-8` y `dtype=float32`. El descriptor de contexto MUST incluir la versión del manifiesto, el backend efectivo `pytorch`/`onnx`, las revisiones y checksums verificados de los artefactos y, si ONNX está habilitado, el SHA-256 real de los archivos ONNX fijados calculado una vez al arrancar. MUST incluir los settings no secretos de preprocessing/segmentation que afectan el resultado y MUST excluir secretos, endpoints, buckets, DSNs, rutas locales, device y timeouts. Cambiar cualquiera de los elementos que afectan el resultado MUST cambiar la huella; cambiar un secreto o una ruta de caché MUST NOT cambiarla.
+
+#### Scenario: Cambio de media/desviación
+
+- **WHEN** el runtime carga `mean`/`std` desde env en lugar del manifiesto, o viceversa
+- **THEN** el descriptor registra la fuente efectiva y la huella cambia
+- **AND** la preparación y `predict` usan exactamente el mismo vector.
+
+#### Scenario: Backend ONNX con archivos fijados
+
+- **WHEN** el backend efectivo es ONNX
+- **THEN** el descriptor incluye el SHA-256 real de los ONNX fijados, calculado una vez al runtime
+- **AND** no se recalcula por request ni se inventa un checksum.
+
+#### Scenario: Fallback de ONNX a PyTorch
+
+- **WHEN** se solicita ONNX pero faltan los archivos y el runtime usa PyTorch
+- **THEN** `modelVersions.backend` refleja `pytorch`, no el valor solicitado
+- **AND** la huella corresponde al runner realmente cargado.
+
+### Requirement: Pin `expected_context` en solicitudes ML
+
+El contrato `InferenceRequest` SHALL aceptar `expected_context` opcional con `{ schema_version: string, fingerprint_sha256: string }` estricto. Los jobs nuevos del backend MUST enviarlo siempre. El servicio ML MUST compararlo con su contexto efectivo al aceptar el job si puede hacerlo y MUST revalidarlo antes de descargar la imagen y segmentar. Un mismatch MUST producir un error seguro y no retryable, sin URL, PHI, tokens ni trazas; MUST NOT hacer fallback silencioso al contexto nuevo ni descartar el pin. Las solicitudes legacy sin pin MUST seguir aceptándose y ejecutándose con el runtime actual. El rollout MUST desplegar primero el ML que entiende el campo opcional, después el backend que prepara/envía el pin y después el worker que lo transmite/valida. Un `model_version` legado no nulo distinto de la versión efectiva MUST dejar de ignorarse en el camino nuevo de preparación y responder `422`.
+
+#### Scenario: Pin coincidente
+
+- **WHEN** el job incluye `expected_context` y coincide con el descriptor del runtime
+- **THEN** el ML acepta el job y continúa con la descarga/segmentación normal
+- **AND** el pin permanece asociado al trabajo.
+
+#### Scenario: Pin divergente al aceptar
+
+- **WHEN** el pin no coincide con el contexto del runtime al aceptar el job
+- **THEN** el ML responde un error seguro no retryable (por ejemplo `409 context_mismatch`)
+- **AND** no encola trabajo ni descarga la imagen.
+
+#### Scenario: Contexto cambia durante la ejecución
+
+- **WHEN** el contexto cambia después de aceptar el job pero antes de descargar/segmentar
+- **THEN** `run` revalida el pin y termina el job como `FAILED` con mensaje seguro `context_mismatch`
+- **AND** no produce un resultado con el contexto nuevo.
+
+#### Scenario: Request legacy sin pin
+
+- **WHEN** un cliente legacy envía `/v1/inferences` sin `expected_context`
+- **THEN** el ML lo acepta con el runtime actual
+- **AND** no lo rechaza por ausencia de pin ni inventa uno.
+
+### Requirement: Compatibilidad del worker con terminales y revisión
+
+El worker SHALL conservar `startInferenceWorker()` como bootstrap y MUST permitir probar el procesamiento con dependencias inyectadas sin importar Redis ni abrir conexiones al importar el módulo. El worker MUST transmitir el pin del job al servicio ML. Si el ML rechaza el pin al aceptar (por ejemplo `409 context_mismatch`), el worker MUST persistir `FAILED` seguro y MUST NOT reintentar sin pin ni con el contexto nuevo. MUST tratar `COMPLETED`, `REVIEW_REQUIRED` y `FAILED` como terminales. `REVIEW_REQUIRED` MUST persistir el resultado parcial disponible y MUST NOT lanzarse como fallo ni reintentarse. El polling MUST estar acotado (máximo 60 intentos de 2 s) y un timeout MUST terminar de forma segura, sin bucle infinito. Antes de persistir MUST validar que `result.inference_id` y `result.eye_side` coinciden con el job. Una etiqueta desconocida en un resultado `COMPLETED` MUST rechazarse de forma segura sin adivinar una clase. La persistencia terminal MUST ser condicional: una entrega duplicada no puede sobrescribir una ejecución ya terminal. El worker MUST NOT perder `cdrVertical`, `quality`, `artifacts`, `elapsedSeconds` ni `modelVersions` ya disponibles y MUST NOT inventar `"v1"`. La persistencia completa/exposición sigue siendo 4.2; el rechazo formal de etiquetas sigue siendo 4.3. El worker MUST NOT actualizar `consultation.status` ni autocompletar la consulta para ningún job, incluido legacy.
+
+#### Scenario: Resultado en revisión
+
+- **WHEN** el ML devuelve `REVIEW_REQUIRED` con evidencia parcial
+- **THEN** el worker persiste el estado y los campos parciales disponibles
+- **AND** no lanza el job como fallo genérico ni lo reintenta.
+
+#### Scenario: Resultado completo con etiqueta desconocida
+
+- **WHEN** un resultado `COMPLETED` trae una etiqueta fuera del catálogo canónico
+- **THEN** el worker falla de forma segura y no persiste una clase adivinada
+- **AND** no marca la ejecución como completada con datos inválidos.
+
+#### Scenario: IDs u ojo contradictorios
+
+- **WHEN** el resultado ML devuelve un `inference_id` o `eye_side` distintos del job
+- **THEN** el worker falla de forma segura sin persistir el resultado ajeno
+- **AND** no actualiza la consulta.
+
+#### Scenario: Entrega duplicada de un job terminal
+
+- **WHEN** el mismo resultado se entrega dos veces y la ejecución ya está `COMPLETED`/`REVIEW_REQUIRED`/`FAILED`
+- **THEN** la segunda persistencia es no-op idempotente
+- **AND** no se reemplaza un estado terminal ni se duplican artefactos.
+
+#### Scenario: Polling agotado
+
+- **WHEN** el job no alcanza un estado terminal en 60 intentos de 2 s
+- **THEN** el worker lo cierra de forma segura como fallo acotado
+- **AND** no queda un bucle infinito ni una consulta autocompletada.

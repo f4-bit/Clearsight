@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,9 +18,22 @@ from ml.inference.onnx_serving import OnnxClassificationRunner
 from ml.inference.pipeline import InferencePipeline
 from ml.inference.segmentation import SegmentationRunner
 from ml.models.registry import artifact_spec, ensure_artifact, load_manifest
+from ml.service.context import (
+    ClinicalContextError,
+    ContextMismatchError,
+    ContextUnavailableError,
+    InvalidClinicalInputError,
+    RequestedModelVersionError,
+    RuntimeContext,
+    build_runtime_context,
+    prepare_clinical_snapshot,
+    verify_expected_context,
+)
 from ml.service.metrics import metrics_response
 from ml.service.queue import create_job_queue
 from ml.service.schemas import (
+    ClinicalSnapshotPrepareRequest,
+    ClinicalSnapshotPrepareResponse,
     InferenceRequest,
     JobAccepted,
     JobResponse,
@@ -32,10 +46,14 @@ from ml.service.storage import create_artifact_store
 class Runtime:
     pipeline: InferencePipeline
     queue: Any
+    context: RuntimeContext | None = None
+    context_error: str | None = None
 
 
 def build_runtime(settings: Settings) -> Runtime:
-    manifest = load_manifest(settings.model_manifest_path)
+    # The pipeline, both classifier runners and the context descriptor must
+    # share one immutable snapshot of the manifest; never re-read the file.
+    manifest = copy.deepcopy(load_manifest(settings.model_manifest_path))
     cache = settings.model_cache_dir
     segmentation_path = ensure_artifact(
         artifact_spec(manifest, "segmentation"),
@@ -66,14 +84,46 @@ def build_runtime(settings: Settings) -> Runtime:
         classification = OnnxClassificationRunner(model_paths, settings, manifest)
     else:
         classification = ClassificationRunner(model_paths, settings, manifest)
+
+    context: RuntimeContext | None = None
+    context_error: str | None = None
+    try:
+        parameters = getattr(classification, "resolved_parameters", None)
+        if parameters is None:
+            raise ClinicalContextError("the loaded runner has no normalization context")
+        context = build_runtime_context(
+            manifest=manifest,
+            backend=(
+                "onnx"
+                if isinstance(classification, OnnxClassificationRunner)
+                else "pytorch"
+            ),
+            parameters=parameters,
+            artifact_paths={
+                "segmentation": segmentation_path,
+                "efficientnet_b3": efficientnet_path,
+                "resnet50": resnet_path,
+            },
+        )
+    except (ClinicalContextError, OSError):
+        # A context that cannot be verified must not make legacy unpinned
+        # routes unstartable. Prepare and every pinned request fail closed 503.
+        context_error = "context_unavailable"
+
     pipeline = InferencePipeline(
         settings=settings,
         segmentation=segmentation,
         classification=classification,
         artifact_store=create_artifact_store(settings),
         manifest=manifest,
+        context=context,
     )
-    return Runtime(pipeline=pipeline, queue=create_job_queue(settings))
+    return Runtime(
+        pipeline=pipeline,
+        queue=create_job_queue(settings),
+        context=context,
+        context_error=context_error,
+    )
 
 
 def create_app(initialize_runtime: bool = True) -> FastAPI:
@@ -129,11 +179,71 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
     )
     async def create_inference(request: InferenceRequest) -> JobAccepted:
         runtime = current_runtime()
+        if request.expected_context is not None:
+            try:
+                verify_expected_context(
+                    runtime.context,
+                    schema_version=request.expected_context.schema_version,
+                    fingerprint_sha256=request.expected_context.fingerprint_sha256,
+                )
+            except ContextUnavailableError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(error),
+                ) from error
+            except ContextMismatchError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(error),
+                ) from error
         job_id = await runtime.queue.enqueue(request)
         return JobAccepted(
             inference_id=request.inference_id,
             job_id=job_id,
             status=JobStatus.QUEUED,
+        )
+
+    @application.post(
+        "/v1/clinical-snapshots/prepare",
+        response_model=ClinicalSnapshotPrepareResponse,
+        dependencies=[Depends(require_service_token)],
+    )
+    async def prepare_snapshot(
+        request: ClinicalSnapshotPrepareRequest,
+    ) -> ClinicalSnapshotPrepareResponse:
+        runtime = current_runtime()
+        if runtime.context is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="context_unavailable",
+            )
+        try:
+            prepared = prepare_clinical_snapshot(
+                runtime.context,
+                request.clinical_features.model_dump(by_alias=True),
+                request.requested_model_version,
+            )
+        except RequestedModelVersionError as error:
+            raise HTTPException(
+                status_code=422,
+                detail="requested_model_version_mismatch",
+            ) from error
+        except InvalidClinicalInputError as error:
+            raise HTTPException(
+                status_code=422,
+                detail="invalid_clinical_features",
+            ) from error
+        except ClinicalContextError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="context_unavailable",
+            ) from error
+        return ClinicalSnapshotPrepareResponse(
+            rawCanonical=dict(prepared.raw_canonical),
+            normalizedPayload=dict(prepared.normalized_payload),
+            schemaVersion=prepared.schema_version,
+            modelVersions=dict(prepared.model_versions),
+            contextFingerprintSha256=prepared.context_fingerprint_sha256,
         )
 
     @application.get(

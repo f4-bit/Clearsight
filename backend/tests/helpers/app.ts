@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import type { PrismaClient } from "../../src/lib/prisma.js";
 import type { UserRole } from "../../src/schemas/common.js";
+import type { ClinicalContextPreparer } from "../../src/services/ml-client.js";
 import { makeSession } from "./db.js";
+import { createFakeMlClient } from "./ml.js";
 
 export const TEST_ENV = {
   NODE_ENV: "test",
@@ -23,9 +25,15 @@ export function withAuthOrigin(
 
 export async function buildTestApp(
   prisma: PrismaClient,
-  options: { now?: () => Date } = {},
+  options: { now?: () => Date; mlClient?: ClinicalContextPreparer } = {},
 ): Promise<FastifyInstance> {
-  const app = await buildApp({ env: TEST_ENV, prisma, now: options.now });
+  const app = await buildApp({
+    env: TEST_ENV,
+    prisma,
+    now: options.now,
+    // Default fake: existing ACL/RBAC tests must never reach a real ML service.
+    mlClient: options.mlClient ?? createFakeMlClient(),
+  });
   await app.ready();
   return app;
 }

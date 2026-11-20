@@ -5,6 +5,12 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+SEGMENTATION_CLAHE_CLIP_LIMIT = 2.0
+SEGMENTATION_CLAHE_TILE_GRID = 8
+CLASSIFIER_CLAHE_CLIP_LIMIT = 2.0
+CLASSIFIER_CLAHE_TILE_GRID = 8
+LOCALIZATION_GAUSSIAN_KERNEL_MAX = 151
+
 
 @dataclass(frozen=True)
 class CropContext:
@@ -28,7 +34,7 @@ def find_optic_disc_center(image: np.ndarray) -> tuple[int, int]:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     luminance = lab[:, :, 0]
     shortest_side = min(image.shape[:2])
-    kernel_size = min(151, shortest_side)
+    kernel_size = min(LOCALIZATION_GAUSSIAN_KERNEL_MAX, shortest_side)
     if kernel_size % 2 == 0:
         kernel_size -= 1
     kernel_size = max(kernel_size, 3)
@@ -37,7 +43,12 @@ def find_optic_disc_center(image: np.ndarray) -> tuple[int, int]:
     return int(location[0]), int(location[1])
 
 
-def crop_around_disc(image: np.ndarray, crop_size: int = 512) -> tuple[np.ndarray, CropContext]:
+def crop_around_disc(
+    image: np.ndarray,
+    crop_size: int = 512,
+    clahe_clip_limit: float = SEGMENTATION_CLAHE_CLIP_LIMIT,
+    clahe_tile_grid: int = SEGMENTATION_CLAHE_TILE_GRID,
+) -> tuple[np.ndarray, CropContext]:
     height, width = image.shape[:2]
     center_x, center_y = find_optic_disc_center(image)
     half_crop = crop_size // 2
@@ -69,24 +80,38 @@ def crop_around_disc(image: np.ndarray, crop_size: int = 512) -> tuple[np.ndarra
     if cropped.shape[0] != crop_size or cropped.shape[1] != crop_size:
         raise ValueError("The optic disc crop has an unexpected shape")
     lab = cv2.cvtColor(cropped, cv2.COLOR_BGR2LAB)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(
+        clipLimit=clahe_clip_limit,
+        tileGridSize=(clahe_tile_grid, clahe_tile_grid),
+    )
     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
     cropped = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
     return cropped, CropContext(x_offset=x1, y_offset=y1)
 
 
-def apply_segmentation_preprocessing(image: np.ndarray, image_size: int = 512) -> np.ndarray:
+def apply_segmentation_preprocessing(
+    image: np.ndarray,
+    image_size: int = 512,
+    clahe_clip_limit: float = SEGMENTATION_CLAHE_CLIP_LIMIT,
+    clahe_tile_grid: int = SEGMENTATION_CLAHE_TILE_GRID,
+) -> np.ndarray:
     resized = cv2.resize(image, (image_size, image_size))
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
     lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(
+        clipLimit=clahe_clip_limit,
+        tileGridSize=(clahe_tile_grid, clahe_tile_grid),
+    )
     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
     enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     return enhanced.astype(np.float32)
 
 
 def _enhance_channel(channel: np.ndarray) -> np.ndarray:
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(
+        clipLimit=CLASSIFIER_CLAHE_CLIP_LIMIT,
+        tileGridSize=(CLASSIFIER_CLAHE_TILE_GRID, CLASSIFIER_CLAHE_TILE_GRID),
+    )
     return clahe.apply(channel)
 
 

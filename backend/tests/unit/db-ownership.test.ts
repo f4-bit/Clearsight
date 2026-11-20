@@ -21,7 +21,7 @@ import { assertTestDatabaseOwnership, createTestPrisma, resetDb } from "../helpe
 const CONTAINER_URL = "postgresql://clearsight:clearsight@127.0.0.1:55432/clearsight_test_deadbeef";
 const RUN_ID = "11111111-2222-3333-4444-555555555555";
 const TRUNCATE_SQL =
-  "TRUNCATE TABLE inference_access_grants, auth_recovery_buckets, auth_login_buckets, clinical_feedback, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE";
+  "TRUNCATE TABLE inference_access_grants, auth_recovery_buckets, auth_login_buckets, clinical_feedback, clinical_snapshots, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE";
 const MARKER_SELECT_SQL = "SELECT run_id FROM test_meta";
 
 type ProvidedContext = Record<string, unknown>;

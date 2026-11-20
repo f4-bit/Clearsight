@@ -9,6 +9,11 @@ export function createInferenceRepository(db: Db) {
           imageId: input.imageId,
           jobId: input.jobId ?? null,
           modelVersion: input.modelVersion ?? null,
+          consultationId: input.consultationId ?? null,
+          eyeSide: input.eyeSide ?? null,
+          snapshotId: input.snapshotId ?? null,
+          reanalysisOfId: input.reanalysisOfId ?? null,
+          status: input.status ?? null,
         },
       }),
 
@@ -41,6 +46,7 @@ export function createInferenceRepository(db: Db) {
           elapsedSeconds: result.elapsedSeconds,
           gradcamPath: result.gradcamPath ?? null,
           ...(result.modelVersion !== undefined && { modelVersion: result.modelVersion }),
+          ...(result.status !== undefined && { status: result.status }),
         },
       }),
 

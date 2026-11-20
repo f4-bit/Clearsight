@@ -51,7 +51,7 @@ export async function resetDb(prisma: PrismaClient): Promise<void> {
   // cannot reach them; both must be truncated explicitly under the same
   // ownership gate.
   await prisma.$executeRawUnsafe(
-    "TRUNCATE TABLE inference_access_grants, auth_recovery_buckets, auth_login_buckets, clinical_feedback, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE",
+    "TRUNCATE TABLE inference_access_grants, auth_recovery_buckets, auth_login_buckets, clinical_feedback, clinical_snapshots, inferences, images, consultations, patients, users RESTART IDENTITY CASCADE",
   );
 }
 

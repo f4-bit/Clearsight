@@ -17,6 +17,8 @@ const INTEGRATION_INCLUDE = [
   "tests/integrity-migrations.test.ts",
   "tests/clinical-access-migrations.test.ts",
   "tests/clinical-access.integration.test.ts",
+  "tests/inference-creation.integration.test.ts",
+  "tests/inference-worker.integration.test.ts",
   "tests/migration-deploy.integration.test.ts",
   "tests/admin-bootstrap.integration.test.ts",
   "tests/jwt.test.ts",

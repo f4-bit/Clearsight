@@ -2,119 +2,70 @@ import { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
+import { createInferenceRunRepository } from "../repositories/inference-run.repo.js";
 import { mlClient } from "../services/ml-client.js";
-import { INFERENCE_QUEUE_NAME, InferenceJobData } from "./inference.queue.js";
+import {
+  INFERENCE_QUEUE_NAME,
+  type InferenceJobData,
+} from "./inference.contracts.js";
+import {
+  createInferenceProcessor,
+  InferenceRetryableError,
+  InferenceTerminalError,
+} from "./inference.processor.js";
 
-const connection = new Redis(env.REDIS_URL, {
-  maxRetriesPerRequest: null,
-});
+const sleep = (milliseconds: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-export function startInferenceWorker() {
+function safeErrorCode(error: Error): string {
+  if (error instanceof InferenceRetryableError) return "retryable";
+  if (error instanceof InferenceTerminalError) return error.message;
+  return error.name;
+}
+
+/** Preserved no-arg bootstrap. Redis is created only when this runs. */
+export function startInferenceWorker(): Worker<InferenceJobData> {
+  const connection = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+  });
+  connection.on("error", (error: Error) => {
+    // Never print the connection URL or driver message.
+    console.error("[Worker] Redis connection error", { error: error.name });
+  });
+  const processor = createInferenceProcessor({
+    db: createInferenceRunRepository(prisma),
+    mlClient,
+    sleep,
+    now: () => new Date(),
+  });
+
   const worker = new Worker<InferenceJobData>(
     INFERENCE_QUEUE_NAME,
-    async (job) => {
-      const { inferenceId, imageId, imageUrl, eyeSide, clinicalFeatures, modelVersion } =
-        job.data;
-
-      // 1. Submit to ML Service
-      const accepted = await mlClient.submitInference({
-        inference_id: inferenceId,
-        image_url: imageUrl,
-        eye_side: eyeSide,
-        clinical_features: clinicalFeatures,
-        model_version: modelVersion,
-      });
-
-      // 2. Poll until ML inference completes (or fails)
-      let attempts = 0;
-      const maxAttempts = 60; // 60 * 2s = 120s max
-      let statusResponse = await mlClient.getJobStatus(accepted.jobId);
-
-      while (
-        statusResponse.status !== "COMPLETED" &&
-        statusResponse.status !== "FAILED" &&
-        attempts < maxAttempts
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        statusResponse = await mlClient.getJobStatus(accepted.jobId);
-        attempts++;
-      }
-
-      if (statusResponse.status !== "COMPLETED" || !statusResponse.result) {
-        throw new Error(
-          `Inference job ${accepted.jobId} did not complete successfully. Status: ${statusResponse.status}`
-        );
-      }
-
-      const result = statusResponse.result;
-
-      // Canonical ML class order (ml/models/manifest.json -> class_names):
-      // 0 = Glaucoma, 1 = Non_Glaucoma, 2 = Suspicious_Glaucoma
-      const labelMap: Record<string, number> = {
-        glaucoma: 0,
-        non_glaucoma: 1,
-        suspicious_glaucoma: 2,
-      };
-      const predictedClass = result.label
-        ? labelMap[result.label.toLowerCase()] ??
-          (() => {
-            console.warn(`[Worker] Unrecognized model label "${result.label}", storing null`);
-            return null;
-          })()
-        : null;
-
-      // 3. Persist to PostgreSQL via Prisma
-      const gradcamPath = result.artifacts?.gradcam ?? null;
-      const primaryVersion =
-        result.modelVersions?.resnet50 ??
-        result.modelVersions?.efficientnet_b3 ??
-        modelVersion ??
-        "v1";
-
-      await prisma.inference.update({
-        where: { id: inferenceId },
-        data: {
-          predictedClass,
-          confidence: result.confidence,
-          probabilities: result.probabilities ?? {},
-          gradcamPath,
-          modelVersion: primaryVersion,
-        },
-      });
-
-      // 4. Update parent consultation status if all inferences are done
-      const inferenceRecord = await prisma.inference.findUnique({
-        where: { id: inferenceId },
-        include: { image: true },
-      });
-
-      if (inferenceRecord?.image?.consultationId) {
-        await prisma.consultation.update({
-          where: { id: inferenceRecord.image.consultationId },
-          data: { status: "COMPLETED" },
-        });
-      }
-
-      return result;
-    },
+    async (job) => processor(job.data),
     {
       connection,
       concurrency: 4,
-    }
+    },
   );
 
   worker.on("completed", (job) => {
-    console.log(`[Worker] Inference job completed: ${job.id}`);
+    console.log(`[Worker] Inference job completed: ${job?.id ?? "unknown"}`);
   });
 
-  worker.on("failed", (job, err) => {
-    console.error(`[Worker] Inference job failed: ${job?.id}`, err);
+  worker.on("failed", (job, error) => {
+    // Safe operational log: no driver messages, URLs, PHI or credentials.
+    console.error(`[Worker] Inference job failed: ${job?.id ?? "unknown"}`, {
+      code: safeErrorCode(error),
+    });
   });
 
   return worker;
 }
 
-if (process.argv[1]?.endsWith("inference.worker.ts") || process.argv[1]?.endsWith("inference.worker.js")) {
+if (
+  process.argv[1]?.endsWith("inference.worker.ts") ||
+  process.argv[1]?.endsWith("inference.worker.js")
+) {
   console.log("[Worker] Starting standalone Clearsight BullMQ inference worker...");
   startInferenceWorker();
 }

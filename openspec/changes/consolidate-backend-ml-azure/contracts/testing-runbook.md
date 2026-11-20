@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -348,6 +348,74 @@
 | Docker/cleanup | Cero contenedores/volúmenes propios residuales; `redkeep_db` ajeno intacto. |
 | Límites | Datos JSON planos tipados; profundidad patológica y getters de objetos JS (no HTTP) no cubiertos aún como hardening; no se promete protección universal ni nuevas fuentes/versiones. Sin full integration nueva. 2.2, Azure/provider y email real siguen pendientes. Detalle: `docs/hito18-clinical-snapshot-runbook.md`. |
 
+## 1.18 Registro HITO19 - preparación documental 2.2 (sin ejecución)
+
+> **Naturaleza:** solo documentación. No se implementó código, no se ejecutaron tests, no se creó un change nuevo y 2.2 **NO** está cerrada. `openspec validate` no se ejecutó en este turno porque la regla de permisos del entorno deniega el CLI; se sustituye por revisión estructural y `git diff --check`.
+
+| Elemento | Evidencia |
+|---|---|
+| Documentos | `design.md` D21/ADR-041..046 y riesgos; specs `clinical-case-execution` e `inference-orchestration`; `contracts/frontend-api-contract.md`; `tasks.md` 2.2 A/B/C; este runbook §4.5. |
+| Código/tests | Ninguno. No se cargaron ni descargaron modelos; no se tocó DB, Redis, MinIO, Azure, frontend ni SRS. |
+| Estado | 2.2 estaba abierta en ese turno; se cerró en §1.22 (A/B/C eran FUTURO; A/B/C se implementaron después, ver §1.19/§1.20/§1.21). REG-002/003/004 no se declaran resueltos; 2.4 parcial; 4.2/4.3/4.4/4.6/2.3/2.5/6.x pendientes. |
+| Comandos | No ejecutados en ese turno documental; A/B se ejecutan y registran en §1.19/§1.20. |
+| Límites | Sin QA, sin evidencia de implementación ni de verde. `docs/` no recibe un runbook nuevo de hito; el registro vive aquí. |
+
+## 1.19 Evidencia HITO19 - tarea A ML context/prepare/pin (B en §1.20; C en §1.21)
+
+> **Naturaleza:** tarea A implementada y verificada; B se implementó después (§1.20) y C se registró en §1.21; 2.2 se cerró en §1.22. Sin commit, sin Azure/frontend/DB/PHI, sin descarga de modelos ni TF/GPU.
+
+| Elemento | Evidencia |
+|---|---|
+| Código A | `ml/service/context.py` (descriptor inmutable, parámetros efectivos/fuentes, hashes reales, canonical JSON, fingerprint, prepare y verificación de pin; `normalizedPayload` incluye `descriptor` íntegro, `canonicalJson` exacto y `contextFingerprintSha256`), `ml/service/schemas.py` (`expected_context`, prepare request/response, floats finitos), `ml/service/main.py` (`POST /v1/clinical-snapshots/prepare`, 422/503, rechazo temprano de pin), `ml/inference/{classification,onnx_serving}.py` (resolver compartido), `pipeline.py` (verificación antes de descarga y antes del clasificador), `localization.py` (CLAHE desde el manifiesto copiado). |
+| Test focal A | `python -m pytest ml/tests/test_clinical_context.py -q` -> **30 passed**. |
+| Relacionados | `python -m pytest ml/tests/test_clinical_normalization.py ml/tests/test_service.py ml/tests/test_localization.py ml/tests/test_onnx_serving.py -q` -> **12 passed**; `python -m pytest ml/tests/test_azure_readiness.py -q` -> **4 passed**. |
+| Estático | `python -m ruff check ...` -> **All checks passed**; `python -m mypy ...` -> **Success: no issues found in 7 source files**. |
+| Contexto real | `OnnxClassificationRunner` con `models_cache` locales + `build_runtime_context`: fingerprint `feec85f9...` (64 hex), backend `onnx`, hashes reales de segmentación/ONNX y `mean/std` source `manifest`; sin descarga, TF ni GPU. |
+| Límites | B se registra en §1.20 y C en §1.21. 2.2 se cerró en §1.22. No se tocó `defects/regressions.md` ni se declararon REG-002/003/004 resueltos. |
+
+## 1.20 Evidencia HITO19 - tarea B creación backend (C en §1.21)
+
+> **Naturaleza:** B implementada y verificada sobre PostgreSQL owned de Testcontainers. C se implementa después (§1.21). Sin commit, sin Azure/frontend/PHI/modelos reales.
+
+| Elemento | Evidencia |
+|---|---|
+| Servicio | `backend/src/services/inference-creation.ts`: ownership/ojo/parent antes de prepare; prepare 15 s; revalidación de principal después del upstream; lock de usuario/sesión, parent inference, parent image y child image en el orden del trigger; snapshot+inference en una TX; sin query externa dentro de TX; sin mutar consulta/required set. |
+| Wire | `backend/src/schemas/clinical-context.ts`: DTO estricto, `rawCanonical` exacto, 11 nombres/valores finitos, descriptor con parámetros/checksums/preprocessing, hash SHA-256 exacto sobre `canonicalJson`, descriptor sin paths/tokens, `modelVersions` 5 claves. `MlClient` con URL/token inyectados y errores safe. |
+| Repos/rutas | `backend/src/routes/inferences.ts` usa el servicio; `backend/src/repositories/inference.repo.ts` persiste `consultationId/eyeSide/snapshotId/reanalysisOfId/status/modelVersion`; `backend/src/app.ts` inyecta `mlClient`, `authService`, schema y `AppDeps` ML opcional; `inference.queue.ts` solo añade `expectedContext` (C se registra en §1.21). |
+| Unit focal B | `tests/unit/clinical-context.test.ts` + `tests/unit/ml-client.test.ts` -> **13 passed**. Unit completo -> **29 files / 418 tests passed**. |
+| Integración B+ACL | `tests/inference-creation.integration.test.ts` -> **11 passed**; foco B+ACL+repos+rbac -> **4 files / 61 tests passed** (PostgreSQL owned). |
+| Cobertura B | snapshot exacto+descriptor+hash, consulta mutable ignorada, timeout/JSON inválido, 422 unknown model, 404/503 old ML, padre ajeno/ausente 404, consulta/ojo 422, legacy+new image, consulta congelada intacta, fallo storage/cola post-commit con fila `QUEUED`, concurrencia sin deadlock y rollback real forzado. |
+| Estático | `npm --prefix backend run typecheck` -> exit 0; `npm --prefix backend run build` -> exit 0. |
+| Límites | C registrado en §1.21. 2.2 se cerró en §1.22 con QA PASSED/H1 PASSED; baseline pre-H1 reutilizado. |
+
+## 1.21 Evidencia HITO19 - tarea C worker compatibility (QA PASSED; H1 PASSED)
+
+> **Naturaleza:** C implementada y verificada con processor DI/unit y Prisma real. Sin commit, sin Redis real, sin modelos, sin Azure/frontend/PHI.
+
+| Elemento | Evidencia |
+|---|---|
+| Processor | `backend/src/workers/inference.processor.ts`: DI db/ML/sleep/clock; valida imagen/ojo/raw/pin/modelo contra snapshot DB antes de ML; usa clinicalFeatures del snapshot; polling 60×2 s; terminales COMPLETED/REVIEW_REQUIRED/FAILED; CAS terminal; REVIEW parcial sin throw/retry; COMPLETED inválido/unknown label/NaN/IDs/eye/versions ⇒ FAILED sin resultado; timeout safe failure; sin mutar consulta/required set; sin publicar artifacts/PDF. |
+| Wiring | `inference.worker.ts`: `startInferenceWorker()` no-arg, Redis creado solo dentro del boot, concurrency 4, logs solo IDs/nombres de error. `inference.contracts.ts` puro; `inference.queue.ts` reexporta tipos y no se importa desde processor. `inference-run.repo.ts` con `updateMany` CAS contra terminal. `MlClient` parsea wire estricto de submit/getJobStatus. |
+| Unit focal C | `tests/unit/inference.processor.test.ts` + `inference.worker.test.ts` + `ml-client.test.ts` -> **20 passed**. Unit completo -> **31 files / 433 tests passed**. |
+| Integración C | `tests/inference-worker.integration.test.ts` -> **4 passed** (COMPLETED real, duplicate terminal, race 2 workers, frozen/snapshot inmutable); foco C+B+ACL+repos+rbac -> **5 files / 65 tests passed**. |
+| Estático | `npm --prefix backend run typecheck` -> exit 0; `npm --prefix backend run build` -> exit 0. |
+| Límites | 2.2 QA PASSED y H1 PASSED. 4.6/4.7/4.4/4.9 siguen pendientes: no se promete outbox, recuperación durable de job ML ni idempotencia global. `defects/regressions.md` intacto; REG-002/003/004 no declarados resueltos. |
+
+## 1.22 Cierre HITO19 / 2.2 - QA PASSED, H1 PASSED
+
+> **Lectura de cifras:** el baseline global QA es **pre-H1**: unit **31/437** y full integration **25/469**, reutilizado porque las ramas afectadas no cambiaron. ML baseline relacionado **44** (incluye ONNX/localization) pasó antes de H1 con source no afectado. H1 se validó con foco postfix; **no** se ejecutó un full 469 nuevo ni se suman las cifras como “full final”.
+
+| Aceptación | Implementación | Tests/evidencia |
+|---|---|---|
+| `1e300` finito float64 ⇒ 422; `mean/std` fuera de float32 ⇒ 503 | `ml/service/context.py`, `ml/service/main.py`, `inference-creation.ts` | ML context **37**; H1 añadió **5 tests ML**; B integration **1** |
+| Creación/reanálisis/snapshot/pin/estados | `inference-creation.ts`, schemas, repos, rutas | creación **13**; ACL **17** |
+| Worker terminal/CAS/sin autocompletado | `inference.processor.ts`, `inference-run.repo.ts`, `inference.worker.ts` | C unit **20**; C integration **4**; baseline 25/469 |
+| Legacy/pin/contexto/version drift | processor | unit C + integración C |
+| Backend wire estricto | `ml-client.ts` + schemas | backend unit **15** (clinical-context/ml-client) |
+| Cierre | 2.2 `[x]` | QA PASSED; H1 PASSED; QA sumó 7 baseline + H1 5 ML + 1 B int |
+
+**Riesgos residuales con dueño:** L1 retry transitorio agotado (BullMQ attempts 3) puede dejar `QUEUED` ⇒ **4.7**; L6 fallo de polling puede reenviar/resubmit ⇒ **4.4/4.6**; fallo storage/queue post-commit deja fila durable y `503` ⇒ **4.6**; agregados completos + PDF faltan ⇒ **2.3/6.x**; la huella identifica bytes, no certifica publisher ONNX; mutación de archivo de arranque entre load/hash queda fuera y no se promete universal; resultado `REVIEW_REQUIRED` desconocido/ajeno se descarta como review vacío sin datos ajenos, no se declara `FAILED` para todo parcial malo; L2 `P0001` no es alcanzable por los prechecks bajo locks y no se corrige. Guards/state machine fuera de 2.2; `defects/regressions.md` no se edita.
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -475,6 +543,50 @@ npm --prefix backend run test:integration -- tests/password-reset.integration.te
 
 **Criterio de salida:** unit/integration/typecheck/build en verde sobre el mismo source, recursos Docker propios limpios y ningún secreto/dato personal en la salida. R1/R2 tienen código y pruebas reales; 5.9 QA PASSED con full integration 23/444.
 
+### 4.5 Fase específica HITO19 — 2.2 contexto clínico (A+B+C CURRENT; QA PASSED; H1 PASSED)
+
+**Objetivo:** verificar el contrato D21 de 2.2 en tres etapas dependientes, sin descargar modelos ni tocar cloud real.
+
+**Precondiciones:**
+
+- Fase 1 verde y contrato D21, `contracts/frontend-api-contract.md` §3.3/§4.6 y specs `clinical-case-execution` e `inference-orchestration` revisados.
+- A (ML), B (backend) y C (worker) implementadas y verificadas; C se registra en §1.21. El rollout real despliega ML primero.
+- Tests ML con `build_runtime` fake y metadata realista; tests backend con `MlClient`/`prisma` inyectados y PostgreSQL owned de Testcontainers. Sin Azure, `.env.azure`, PHI, DB externa ni modelos reales.
+- `TEST_DATABASE_URL` ausente para la integración; Docker local disponible.
+
+**Comandos focalizados (A+B+C CURRENT; QA PASSED; H1 PASSED):**
+
+```powershell
+# A - ML: prepare, descriptor, pin y normalización real con runtime fake (CURRENT)
+python -m pytest ml/tests/test_clinical_context.py ml/tests/test_clinical_normalization.py ml/tests/test_service.py -q
+
+# B - Backend: contrato estricto, creación TX y errores sin ML real (CURRENT)
+npm --prefix backend run test:unit -- tests/unit/clinical-context.test.ts tests/unit/ml-client.test.ts
+npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/repositories.test.ts tests/rbac.test.ts
+
+# C - Worker: terminales, revisión, pin, IDs/ojo y persistencia condicional sin Redis real (CURRENT)
+npm --prefix backend run test:unit -- tests/unit/inference.processor.test.ts tests/unit/inference.worker.test.ts
+npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts
+```
+
+**Casos mínimos verificables:**
+
+1. **A — prepare válido:** 11 features + `requested_model_version=null` devuelve `rawCanonical` exacto (sin `eyeSide`), `normalizedPayload` con orden/`float32`/11 valores reales comparados con tolerancia float32, `schemaVersion="ml-zscore-f32-v1"`, `modelVersions` no vacío y huella hex 64; no descarga pesos ni escribe DB.
+2. **A — versión/modelo:** `requested_model_version` no nulo distinto del manifiesto ⇒ `422`; runtime/descriptor no verificable ⇒ `503`; nunca `"v1"` ni `modelVersions={}`.
+3. **A — descriptor:** media/desviación registran fuente `env`/`manifest`; epsilon `1e-8`; orden/dtype; backend efectivo; revisiones/checksums; SHA ONNX real calculado una vez si aplica; cambiar un secreto no cambia la huella y cambiar modelo/parámetros sí.
+4. **A — pin:** pin coincidente acepta; mismatch al aceptar ⇒ error seguro no retryable; mismatch en `run` antes de descargar/segmentar ⇒ `FAILED context_mismatch`; legacy sin pin sigue funcionando.
+5. **B — preparación fallida:** `404`/unsupported, timeout 15 s, 5xx, JSON inválido, features alteradas, `eyeSide` en respuesta o huella/versión inválida ⇒ `503` sin snapshot ni inference y sin fallback sin pin.
+6. **B — ownership/contexto:** imagen ajena/inexistente ⇒ `404` uniforme; `reanalysisOf` ajeno/inexistente ⇒ `404` uniforme; `eyeSide` contradictorio ⇒ `422`; padre con consulta/ojo contradictorio ⇒ `422` antes de prepare/DB; padre legacy NULL usa la imagen autoritativa.
+7. **B — TX:** snapshot + inference `QUEUED` con `id` de servidor, consulta/ojo/snapshot/padre en la misma TX; fallo SQL no deja snapshot huérfano; no se actualiza `consultation.status`; fallo storage/cola post-commit queda pendiente explícito (4.6) y responde `503`, no `202` falso.
+8. **C — terminales:** `COMPLETED` persiste campos disponibles y `modelVersions` reales; `REVIEW_REQUIRED` persiste parcial sin throw/retry; `FAILED`/timeout 60×2 s cierra seguro; `result.inference_id`/`eye_side` contradictorios o etiqueta desconocida ⇒ fallo seguro sin datos ajenos ni clase adivinada; entrega duplicada sobre terminal es no-op.
+9. **C — sin autocompletado:** ningún job (nuevo o legacy) actualiza `consultation.status` ni completa la consulta; `REVIEW_REQUIRED` se preserva.
+
+**Regresiones (mapeo, sin cerrar el registro):** REG-002 se cubre parcialmente con el caso 8 (`REVIEW_REQUIRED` terminal, sin throw/retry); REG-003 con el caso 9 (sin autocompletado de consulta), pero su solución completa requiere 2.3/6.x; REG-004 con el caso 8 (no perder `cdrVertical`/`quality`/`artifacts`/`elapsedSeconds`/`modelVersions`), pero 4.2 sigue siendo el cierre completo. `defects/regressions.md` no se reescribe y los estados no se cambian a `resuelto` desde 2.2. 2.4 queda parcial; 4.2/4.3 se siguen trackeando de forma independiente aunque un test accidentalmente cubra parte.
+
+**Stop:** si un test necesita descargar/cargar pesos reales, Azure/`.env.azure`, PHI, DB compartida/producción, Redis real o un `MlClient` no inyectado. Si aparece un `context_mismatch`, no se “arregla” quitando el pin; se investiga el descriptor.
+
+**Criterio de salida:** A+B+C verdes con los comandos focalizados pre-H1 (A **30 passed** + relacionados 12 + 4; B unit **13 passed**, integración B **11 passed**; C unit **20 passed**, integración C **4 passed**; foco C+B+ACL+repos+rbac **65 passed**). **QA final global PASSED (baseline 31/437 y 25/469) y H1 PASSED**; post-H1 foco ML **45**, backend unit **15**, B+ACL **30**. Sin descarga de modelos, sin Redis real, sin secretos en salida ni recursos propios residuales. **2.2 cerrada**; no se declara un full post-H1 nuevo.
+
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
 **Objetivo:** probar integración local de DB/cola/storage sin tocar recursos ajenos.
@@ -563,7 +675,8 @@ docker compose -p <proyecto-efimero-unico> -f <compose-test-only-verificado.yml>
 - artefacto faltante (`mask`/`overlay`/PDF);
 - token/credencial revocada;
 - Azure Blob stub (sin Azure real);
-- host no allowlisted, URL expirada, payload inválido, etiqueta desconocida.
+- host no allowlisted, URL expirada, payload inválido, etiqueta desconocida;
+- 2.2 A: `prepare` 404/no soportado, timeout 15 s, versión solicitada inexistente, respuesta con `eyeSide`/features alteradas/huella inválida, `context_mismatch` al aceptar y en `run`, request legacy sin pin, tokens/rutas fuera de la respuesta y descarga no iniciada con pin inválido.
 
 **Comandos CURRENT (baseline, no cubren todos los casos nuevos):**
 
@@ -579,6 +692,8 @@ python -m pytest ml/tests/test_azure_readiness.py -q
 ## 7. Fase 5 — ML local real con pesos y golden tolerances
 
 **Objetivo:** verificar readiness y estabilidad numérica con pesos locales, sin cloud.
+
+> **2.2 A no pertenece a esta fase:** la preparación de contexto y el pin se prueban con runtime fake (`§4.5`) y no requieren pesos. No se descargan modelos para verificar `prepare`, la huella ni el mismatch. La verificación real de A usó `models_cache` locales y `OnnxClassificationRunner` sin inferencia, TF ni GPU.
 
 **Precondiciones verificadas en el repo:**
 
@@ -648,6 +763,8 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 
 ## 10. Inventario de comandos: CURRENT vs FUTURO
 
+> **Lectura de cifras:** 31/437 y 25/469 son baseline QA **pre-H1** reutilizado; 45 ML, 15 unit B y 30 integración B+ACL son foco post-H1. No se ejecutó full 469 post-H1 ni se suman como “full final”.
+
 | Comando | Estado | Seguridad |
 |---|---|---|
 | `node --version`, `npm --version`, `python --version`, `docker --version`, `az version` | CURRENT | Seguro, read-only. |
@@ -677,6 +794,14 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `npm --prefix backend run test:integration -- tests/password-reset.integration.test.ts` | CURRENT (R2, HITO17 QA PASSED) | 28 tests; 6 QA: default disabled, IP exhaust, 503 uniforme, carreras, no auth substitute, 400 sin cuota; más revocaciones/expiry/audit rollback/compensación. |
 | Foco R2+R1+refresh+login-protection+lifecycle | HISTÓRICO PRE-QA | 5 files / 117 tests; no rerun de maker. |
 | Full integration QA HITO17 | QA PASSED | 23 files / 444 tests (401 baseline + 15 R1 + 22 R2 + 6 QA). |
+| `python -m pytest ml/tests/test_clinical_context.py -q` | CURRENT (2.2 A) | 30 passed; runtime fake, sin descarga de modelos ni cloud. |
+| `python -m pytest ml/tests/test_clinical_normalization.py ml/tests/test_service.py ml/tests/test_localization.py ml/tests/test_onnx_serving.py -q` | CURRENT (2.2 A relacionados) | 12 passed; sin descarga de modelos. |
+| `python -m pytest ml/tests/test_azure_readiness.py -q` | CURRENT (2.2 A relacionados) | 4 passed; `build_runtime` con fakes no exige contexto. |
+| `npm --prefix backend run test:unit -- tests/unit/clinical-context.test.ts tests/unit/ml-client.test.ts` | CURRENT (2.2 B) | 13 passed; wire/hash y cliente ML inyectado, sin red. |
+| Unit backend completo | CURRENT (2.2 A+B+C) | 31 files / 433 tests passed. |
+| `npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/repositories.test.ts tests/rbac.test.ts` | CURRENT (2.2 B foco) | 4 files / 61 tests passed; B 11 tests; PostgreSQL owned. |
+| `npm --prefix backend run test:unit -- tests/unit/inference.processor.test.ts tests/unit/inference.worker.test.ts tests/unit/ml-client.test.ts` | CURRENT (2.2 C) | 20 passed; processor/wiring/wire estricto sin Redis real. |
+| `npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts` | CURRENT (2.2 C) | 4 passed; CAS/duplicate/race/frozen con Prisma real. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

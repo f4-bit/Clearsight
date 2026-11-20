@@ -34,6 +34,10 @@ import { createClinicalAccessService } from "./services/clinical-access.js";
 import { assertProductionExportHmacSecret } from "./services/export-policy.js";
 import { createAuthLoginProtection } from "./services/login-guard.js";
 import {
+  MlClient,
+  type ClinicalContextPreparer,
+} from "./services/ml-client.js";
+import {
   createPasswordResetService,
   type PasswordResetService,
 } from "./services/password-reset.js";
@@ -57,9 +61,13 @@ export interface AppDeps {
         | "JWT_EXPIRES_IN"
         | "IP_RATE_LIMIT"
         | "IP_RATE_WINDOW_SECONDS"
+        | "ML_SERVICE_URL"
+        | "ML_API_TOKEN"
       >
     >;
   prisma: PrismaClient;
+  /** Trusted test seam; the real client is built from the injected env. */
+  mlClient?: ClinicalContextPreparer;
   logger?: boolean;
   /** Explicit target schema shared by the auth service and the login guard. */
   databaseSchema?: string;
@@ -86,6 +94,14 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
   const cfg = deps?.env ?? env;
   const nodeEnv = cfg.NODE_ENV ?? "test";
   const prisma = deps?.prisma ?? defaultPrisma;
+  // App DI never falls back to the process-wide env for ML credentials; an
+  // injected test client is used directly and missing config fails closed 503.
+  const mlClient =
+    deps?.mlClient ??
+    new MlClient({
+      baseUrl: cfg.ML_SERVICE_URL ?? (deps ? "" : env.ML_SERVICE_URL),
+      apiToken: cfg.ML_API_TOKEN ?? (deps ? null : env.ML_API_TOKEN),
+    });
 
   // Fail closed before plugins/routes if production uses a known/short secret
   // or the configured access lifetime violates the single TTL policy.
@@ -359,6 +375,9 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     prefix: "/inferences",
     prisma,
     access: clinicalAccess,
+    authService,
+    mlClient,
+    databaseSchema,
   });
   // Clinical feedback + gold-standard export (paths: /feedback, /export/gold-standard)
   await app.register(feedbackRoutes, {

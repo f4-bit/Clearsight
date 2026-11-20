@@ -452,6 +452,82 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 - Frontend, proxy, Azure, `.env.azure`, entornos reales, PDFs, PHI, proveedor real de correo, outbox y nuevas dependencias de email.
 - Cambiar `/auth/register` (`410`), el JSON de login, `/auth/me` o el contrato de access/sesión vigente. 5.9 quedó cerrada con QA PASSED; B8 (proveedor/credenciales reales) sigue pendiente de provisioning y no bloquea el cierre.
 
+### D21. Contexto clínico preparado, snapshot veraz y pin de contexto (HITO19, tarea 2.2)
+
+**Decisión (aprobada por el usuario; A, B y C completas; QA final global PASSED; H1 PASSED):** La creación de una ejecución contextualizada usa la `clinicalFeatures` de la request como fuente autoritativa y obtiene del runtime ML el snapshot normalizado real y la huella de contexto. El objetivo es que el snapshot persistido no pueda mentir por un redeploy, un cambio de parámetros, una diferencia de backend o un artefacto sustituido. A (ML), B (backend) y C (worker) tienen implementación, tests y QA; 2.4/4.2/4.3 siguen parciales con dueño independiente.
+
+**Alcance y límites duros**
+
+- 2.2 **NO** modifica `requiredExecutionIds`, **NO** adelanta el freeze/`requiredSetVersion` de 2.5 y **NO** implementa la agregación de consulta de 2.3.
+- **NO** implementa idempotencia 4.4, outbox/reconciliación 4.6, publicación/reintento de artefactos 3.5/3.6 ni PDF 6.x.
+- **NO** publica PDF, **NO** reintenta outbox, **NO** hace backfill y **NO** toca Azure, frontend, `.env` reales ni el SRS.
+- `COMPLETED` de ML sigue sin equivaler a consulta completada. 2.4 queda **parcial**: 2.2 solo elimina el autocompletado prematuro y preserva `REVIEW_REQUIRED`; la agregación y el PDF siguen en 2.3/2.5/6.x.
+- **REG-002/REG-003/REG-004 no se declaran resueltos.** `defects/regressions.md` es del humano y no se reescribe; 2.2 documenta mitigación/parcialidad y 4.2/4.3 siguen siendo las tareas que cierran su contrato completo cuando corresponda.
+
+**Fuente autoritativa y forma del snapshot**
+
+- `imageId`, consulta y ojo salen de la DB y del ownership. `eyeSide` de la request MUST coincidir con `Image.eyeSide` o `422`; el ojo **nunca** se toma de la respuesta ML.
+- `clinicalFeatures` de la request validada es la única fuente del payload crudo; **nunca** se lee `consultation.clinicalData` para construirlo.
+- `rawPayload` persistido: objeto `{ eyeSide, clinicalFeatures }` con las 11 claves canónicas y números finitos, exactamente los enviados (sin conversión de unidades, defaults ni recortes). El backend reconstruye el objeto en el orden de `CLINICAL_FEATURE_NAMES`; el orden efectivo también se documenta en el descriptor.
+- `normalizedPayload` persistido: objeto `{ eyeSide, orderedFeatureNames, dtype, values, descriptor, canonicalJson, contextFingerprintSha256 }`, donde `values` son 11 números producidos por el helper real `normalize_clinical_features` (`ml/inference/classification.py:17-33`) con `float32` y epsilon `1e-8`, `descriptor` es el descriptor efectivo completo (modelo/backend/artefactos/binarios, mean/std con fuente, orden, dtype, epsilon y preprocessing), `canonicalJson` son los bytes canónicos exactos usados para la huella y `contextFingerprintSha256` debe coincidir con la huella de nivel superior. El backend **no recalcula** el z-score en JS; solo copia los valores ya calculados y verifica SHA-256 sobre `canonicalJson` sin canonicalizar de nuevo. Un vector todo cero es válido (features en la media); “no vacío” significa 11 valores finitos, no “no cero”.
+- `schemaVersion` persistido: constante local del algoritmo `ml-zscore-f32-v1`. Describe z-score/float32/epsilon; **no inventa unidades clínicas** ni afirma equivalencia con el codebook.
+- `modelVersions` persistido: objeto no vacío y real, sin `{}` ni `"v1"` fabricado. Contiene `manifest`, `backend` (`pytorch`|`onnx` **efectivo**, no el solicitado si hubo fallback) y `segmentation`/`efficientnet_b3`/`resnet50` como `repository@revision` verificados del manifiesto. Si no se puede resolver, la preparación falla `503`; no se persiste un snapshot parcial.
+
+**Endpoint interno `POST /v1/clinical-snapshots/prepare` (ML)**
+
+- Autenticado con el mismo `require_service_token`; si el runtime no está disponible, `current_runtime()` responde `503` antes de tocar DB. No es un endpoint público y el frontend no lo llama.
+- Request estricto (`extra=forbid`): `{ clinical_features: <11 campos>, requested_model_version?: string | null }`. No acepta `eye_side`, `consultation_id`, `clinical_data` libre, URLs ni archivos.
+- `requested_model_version` no nulo MUST ser igual a la versión efectiva del manifiesto del runtime; si difiere, `422` seguro sin cargar/descargar modelos ni escribir DB. `null` resuelve el runtime actual; **nunca** se inventa `"v1"`.
+- Response estricta: `{ rawCanonical, normalizedPayload, schemaVersion, modelVersions, contextFingerprintSha256 }`.
+  - `rawCanonical = { clinicalFeatures: { ...11... } }`, sin `eyeSide` ni claves extra.
+  - `normalizedPayload = { orderedFeatureNames: [...11...], dtype: "float32", values: [...11...] }`, sin `eyeSide`.
+  - `schemaVersion = "ml-zscore-f32-v1"`.
+  - `contextFingerprintSha256` = SHA-256 hex lowercase 64 de la serialización canónica del descriptor, sin el campo de huella.
+- El backend añade `eyeSide` autoritativo al persistir. Si la respuesta ML contiene `eyeSide`, claves extra, valores no finitos, orden distinto, versión distinta o huella no hex, rechaza `503` y no escribe DB.
+- Errores seguros: `401` token interno inválido; `404` endpoint inexistente (ML viejo) ⇒ backend `503`; `422` versión solicitada inexistente o `clinical_features` finitas no representables en float32 (`invalid_clinical_features`); `503` runtime/contexto/artefacto no verificable, incluidos `mean`/`std` efectivos fuera de float32. El backend propaga cualquier `prepare` 422 como `422` genérico seguro y 404/otros como `503`. Sin URL, PHI, tokens, rutas ni valores crudos en body/log.
+
+**Descriptor inmutable y huella de contexto**
+
+El runtime construye una sola vez, al arrancar, un descriptor inmutable con:
+
+- `manifest_version`, `backend` efectivo y, por artefacto, `repository`, `revision` y `sha256` verificados del manifiesto;
+- si `backend=onnx`, SHA-256 real de los archivos ONNX fijados (`efficientnet_b3.fp16.onnx`, `resnet50.fp16.onnx`) calculado **una vez** al runtime, no por request;
+- normalización efectiva: `algorithm="zscore"`, `dtype="float32"`, `epsilon=1e-8`, `ordered_feature_names` del manifiesto, y `mean`/`std` con `value` y `source` (`env` si `ML_CLINICAL_MEAN_JSON`/`ML_CLINICAL_STD_JSON` aportó la lista completa; si no, `manifest`). Se conserva la semántica actual todo-o-nada: no se mezclan fuentes por elemento ni se relee env por request;
+- settings no secretos de preprocessing/segmentation que afectan el resultado (por ejemplo `image_size`, `disc_threshold`, `cup_threshold`, `crop_margin`, `classifier_crop_size/min/max`, `clahe_*`). No incluye tokens, endpoints, buckets, DSNs, rutas locales, device ni timeouts; la validación de tamaño mínimo de entrada no forma parte del descriptor porque rechaza antes de inferir y no cambia el resultado.
+
+La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, listas en orden de manifiesto y números en su forma JSON estable. `contextFingerprintSha256 = sha256(canonical_json(descriptor))`; el propio campo de huella no se incluye. Cambiar backend, revisión, checksum, media/desviación, epsilon, dtype, orden de features o un setting de preprocessing/segmentation cambia la huella; cambiar un secreto, un endpoint o una ruta de caché no.
+
+**Pin `expected_context` en el contrato ML**
+
+- `InferenceRequest` de `/v1/inferences` añade `expected_context?: { schema_version: string, fingerprint_sha256: string }` opcional, estricto si existe: `schema_version` no vacío (el valor preparado es `ml-zscore-f32-v1`) y `fingerprint_sha256` hex lowercase 64.
+- Los jobs nuevos del backend **siempre** envían el pin preparado. El worker lo transmite sin recortarlo ni sustituirlo.
+- ML compara el pin con el contexto del runtime:
+  - al aceptar el job, si puede comparar y difiere, responde error seguro no retryable (propuesta: `409` con `detail="context_mismatch"`, sin URL/PHI);
+  - en `run`, antes de descargar la imagen y de segmentar, revalida; si difiere, termina `FAILED` con `message="context_mismatch"` seguro;
+  - **nunca** hace fallback silencioso al contexto nuevo ni descarta el pin para “arreglar” el job.
+- Requests legacy sin `expected_context` siguen aceptándose y ejecutándose con el runtime actual (compatibilidad de rollout). El orden de despliegue es **ML primero** (entiende el campo opcional), después backend (prepara y envía pin) y después worker (transmite/valida). Un request legacy nunca obtiene un pin inventado.
+- `model_version` legado sigue aceptándose; en el camino nuevo de preparación, un valor no nulo distinto del manifiesto deja de ignorarse: `prepare` responde `422`. No se rompen llamadas legacy desconocidas que no traen contexto.
+
+**Creación backend transaccional (B)**
+
+- `POST /inferences` mantiene el `202 { inferenceId, jobId, status: "QUEUED" }` actual y añade errores de contrato `400/401/403/404/422/503`. `409` queda reservado a 4.4 y **no** lo emite 2.2.
+- Body: `{ imageId, eyeSide, clinicalFeatures, modelVersion?, reanalysisOf? }`; `reanalysisOf` es UUID opcional. No acepta `expected_context`, `eyeSide` de ML, `imageUrl`, `consultationId` ni `clinicalData`.
+- Orden: auth/rol → ownership de imagen (`404` uniforme ajeno/inexistente) → si hay `reanalysisOf`, ownership del padre (`404` uniforme) → validar `eyeSide` contra imagen (`422`) → validar contexto del padre (`422` antes de prepare/DB) → `prepare` ML (timeout 15 s, sin reintentos infinitos) → validar respuesta → TX DB → commit → firmar URL/enqueue.
+- Padre legacy: si `consultationId`/`eyeSide` son NULL, manda la imagen autoritativa; si no son NULL y contradicen consulta/ojo, `422`. No se compara el snapshot del padre con el contexto nuevo: el reanálisis crea snapshot nuevo.
+- `prepare` 404/unsupported, timeout, 5xx, JSON inválido, `clinicalFeatures` alteradas, `eyeSide` en la respuesta o huella/versión inválida ⇒ `503` seguro sin DB y **sin fallback sin pin**. Un `422` de prepare por versión solicitada inexistente se propaga como `422` sin DB, sin confundirlo con un fallo de disponibilidad.
+- TX misma DB: `ClinicalSnapshot` + `Inference` con `id` de servidor, `consultationId`, `eyeSide`, `snapshotId`, `reanalysisOfId`, `status="QUEUED"` y `modelVersion` igual a `modelVersions.manifest` de la preparación (versión efectiva; no el `requested_model_version` crudo ni `"v1"`). Si falla el SQL, no queda snapshot huérfano. Antes de insertar se releen imagen y padre bajo locks `FOR SHARE` en orden determinista (UUID), siguiendo los triggers de A/D; no se confía en la lectura previa de ownership (no TOCTOU). No se lockea la consulta completa ni agregados.
+- **NO** se actualiza `consultation.status` en creación ni en worker para ningún job (nuevo o legacy). `COMPLETED`/`REVIEW_REQUIRED`/`FAILED` son estados de ejecución; la consulta se deriva en 2.3/6.x. Se elimina el autocompletado actual, no se conserva un shim legacy que perpetúe REG-003.
+- Post-commit: si falla storage/firma/Redis/cola, la ejecución y el snapshot quedan persistidos y la cola queda pendiente explícita; se responde `503` seguro sin fingir `202`. No se promete atomicidad Redis/outbox; 4.6 la implementa. Mientras 4.4 no exista, esto es un riesgo residual documentado.
+
+**Worker (C) y regresiones**
+
+- `startInferenceWorker()` se conserva como bootstrap. El procesamiento se extrae a un processor con DI (`mlClient`, repos/`prisma`, reloj/sleep, intervalo 2 s, máximo 60 polls) para poder testear sin Redis ni import side effects.
+- El job data incluye `expectedContext` (camelCase) con `{ schemaVersion, fingerprintSha256 }`; `MlClient` lo mapea a `expected_context` snake_case. El worker **nunca** lo omite.
+- Terminales: `COMPLETED`, `REVIEW_REQUIRED`, `FAILED`. `REVIEW_REQUIRED` persiste resultado parcial disponible y **no** se lanza como fallo/retry. `FAILED` persiste causa segura. Un `409 context_mismatch` al aceptar se trata como `FAILED` terminal seguro, sin quitar el pin ni reintentar con el contexto nuevo. Poll acotado a 120 s (60×2 s); timeout ⇒ `FAILED` seguro, sin bucle infinito.
+- Antes de persistir valida `result.inference_id === job.inferenceId` y `result.eye_side === job.eyeSide`; si no, fallo terminal seguro sin persistir datos ajenos. Valida etiqueta canónica; etiqueta desconocida en `COMPLETED` ⇒ rechazo seguro/no adivinar (4.3 formaliza).
+- Persistencia terminal condicional: si la ejecución ya está `COMPLETED`/`REVIEW_REQUIRED`/`FAILED`, no se sobrescribe con una entrega duplicada; el segundo intento es no-op idempotente. No se pierden `cdrVertical`, `quality`, `artifacts`, `elapsedSeconds` ni `modelVersions` ya disponibles. `modelVersion` se deriva de `modelVersions.manifest` ya fijado (o de las versiones reales del resultado); **nunca** `"v1"`. La persistencia completa y su exposición siguen en 4.2.
+- **NO** se actualiza `consultation.status` ni se auto-completa la consulta para ningún job, incluido legacy. REG-002/003/004 quedan mitigados/parcialmente cubiertos, **no** declarados resueltos.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -496,6 +572,12 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-038 | Preferencia futura Azure: Container Apps con ingress público solo en web/proxy y backend/ML internos; B6 sigue bloqueando deploy y no se promete capa gratuita | future preference (deploy blocked) | D18, B6 |
 | ADR-039 | 5.8: cookie de refresh `clearsight_refresh` (host-only, `Path=/api/auth`, `Secure/Lax/HttpOnly`), `AUTH_PUBLIC_ORIGIN` exacto, refresh cookie-only, logout en 5.8 y reuso revoca la sesión | implemented 5.8 (QA PASSED) | D9, D19 |
 | ADR-040 | Forgot/reset: cuotas durables independientes de login, token single-use solo en body, revocación total en reset y entrega deshabilitada por defecto | implemented R1+R2 (HITO17); 5.9 QA PASSED; B8 provider pending (non-blocking) | D20 |
+| ADR-041 | 2.2: `clinicalFeatures` de la request es autoritativa; el runtime ML prepara `rawCanonical`/`normalizedPayload` reales, `schemaVersion=ml-zscore-f32-v1`, `modelVersions` verificados y huella de contexto | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
+| ADR-042 | 2.2: descriptor inmutable runtime/modelo/normalización + SHA-256 canónico sin el campo huella; `expected_context` opcional en el contrato ML y pin obligatorio en jobs nuevos | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
+| ADR-043 | 2.2: parámetros efectivos capturados del runner cargado (mean/std con fuente, epsilon 1e-8, orden, dtype), backend efectivo pytorch/onnx y checksums; sin JS duplicado, sin env posterior contradictorio y sin `"v1"` | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
+| ADR-044 | 2.2: snapshot + inference `QUEUED` en una TX con relectura bajo locks; sin mutar `consultation.status`; fracaso post-commit queda pendiente de 4.6 y no se finge `202` | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
+| ADR-045 | 2.2: worker con processor DI sin Redis import side effect; `COMPLETED`/`REVIEW_REQUIRED`/`FAILED` terminales, revisión sin retry, persistencia condicional y validación de IDs/ojo/etiqueta | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
+| ADR-046 | 2.2 no cierra 2.4/4.2/4.3 ni resuelve REG-002/003/004; solo mitiga/parcializa y el registro humano permanece intacto | agreed (scope restriction) | D21 |
 
 ## Risks / Trade-offs
 
@@ -521,6 +603,15 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | PDF presentado como diagnóstico validado | Aviso explícito, pseudonimización y lenguaje de apoyo; reportes de revisión no declaran completitud. |
 | Retención y consentimiento sin política | B3/B4/B5 aplican solo a producción real/purgas/reidentificación; no se fijan plazos ni se declara cumplimiento legal; fail closed con datos reales sin governance. |
 | Pruebas destructivas contra DB compartida | Solo base aislada por prueba; no ejecutar en este change. |
+| 2.2: drift de modelo/artefacto entre preparación y ejecución | Descriptor inmutable con manifiesto, revisiones, checksums y huella; `expected_context` se revalida al aceptar y antes de descargar/segmentar; mismatch falla seguro, sin fallback. |
+| 2.2: parámetros `env` posteriores contradicen el runner cargado | Se capturan una vez al construir el runtime y se declaran con fuente `env`/`manifest` por vector; `prepare` y `predict` consumen la misma resolución, sin releer env por request. |
+| 2.2: float32 no reproducible o recalculado en JS | Se usa el helper existente `normalize_clinical_features` con `float32`/epsilon 1e-8; el backend copia valores ya calculados y no re-normaliza. Tests con golden/tolerancia. |
+| 2.2: bloqueos cruzados entre casos | Locks solo de imagen/padre implicados, en orden determinista por UUID; no se bloquea la consulta ni agregados globales. |
+| 2.2: spoof de contexto/ojo/padre | `eyeSide` y ojo salen de la imagen DB; IDs son de servidor; `expected_context` no lo envía el cliente; padre se valida por ownership y contexto. |
+| 2.2: snapshot huérfano por fallo SQL | Snapshot + inference en la misma TX; rollback completo si falla el insert. |
+| 2.2: entrega duplicada sobrescribe una ejecución terminal | Persistencia terminal condicional; si ya es `COMPLETED`/`REVIEW_REQUIRED`/`FAILED`, la segunda entrega es no-op. |
+| 2.2: reapertura o autocompletado de consulta cerrada | Se elimina toda mutación de `consultation.status` en creación/worker; la agregación y el PDF quedan en 2.3/6.x. |
+| 2.2: fallo post-commit de storage/cola | Estado pendiente explícito y `503` seguro; 4.6 aporta outbox/reconciliación y 4.4 la idempotencia. No se promete atomicidad Redis. |
 
 ## Migration Plan
 
