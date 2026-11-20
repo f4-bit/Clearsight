@@ -12,6 +12,10 @@ src/
   repositories/               CRUD Prisma: user, patient, consultation, image, inference, feedback
   services/gold-standard-export.ts   export anonimizado JSON/CSV (lo usan la ruta y el ETL)
   services/audit.ts            auditoría transaccional compartida (wrapper + writer)
+  services/auth-web-session.ts refresh opaco (rotación/reuso) y logout transaccionales
+  services/auth-cookies.ts     cookie clearsight_refresh (serialización/lectura estricta)
+  services/web-auth-policy.ts  AUTH_PUBLIC_ORIGIN exacto y guard de origen
+  services/refresh-tokens.ts   CSPRNG 32 bytes + hash SHA-256 (nunca token crudo en DB)
   services/admin-bootstrap.ts  bootstrap controlado del primer ADMIN (transacción + auditoría)
   services/admin-users.ts      alta/lectura/ciclo de vida admin (lock global, actor fresco, revocación, auditoría)
   lib/canonical-email.ts       contrato canónico de email compartido login/bootstrap/alta
@@ -92,14 +96,25 @@ npm run admin:bootstrap
 - Cuota IP complementaria: `IP_RATE_LIMIT=100` intentos por `IP_RATE_WINDOW_SECONDS=60` s (enteros positivos; 0/negativo no desactiva). Comparte cuota entre cuentas detras de una NAT; usa `request.ip` y no confia en `X-Forwarded-For` (`trustProxy:false`). El `429` incluye `Retry-After` positivo y un body generico sin contador, email ni estado de cuenta.
 - Los contadores son buckets pseudonimos HMAC-SHA256 (email normalizado / IP), sin PII cruda en tablas ni logs. El reset es logico (ventana/bloqueo), no una purga de evidencia clinica. No se garantiza igualdad estricta de timing ni inmunidad DoS: la cuota IP es complementaria, no un escudo global.
 - Los clientes Prisma con schema distinto de `public` deben inyectar un `authService` y un guard construidos con `databaseSchema` igual al schema configurado en el cliente.
-- Este hito no es un release de seguridad completo: ownership/grants (5.2), refresh/logout/cookies (5.8), reset (5.9) y lectura de auditoría (9.2) siguen pendientes. El ciclo de vida administrativo 5.4/5.6/9.1 está implementado.
+
+### Refresh web, logout y origen público (5.8)
+
+- `POST /auth/login` conserva el JSON actual y entrega el refresh opaco (32 bytes CSPRNG, base64url) **solo** en la cookie `clearsight_refresh`: `HttpOnly`, `Secure`, `SameSite=Lax`, host-only (sin `Domain`) y `Path=/api/auth`. La cookie expira con la sesión absoluta (≤ 7 d). Si firmar, auditar o el commit falla, no se setea cookie.
+- `POST /auth/refresh` lee solo la cookie, rota a un único sucesor y responde solo `accessToken`, `tokenType` y `expiresIn`. En DB se guarda únicamente el hash SHA-256 lowercase; el token crudo nunca va a logs, auditoría ni JSON. “Sin body ni `Bearer`” describe el mecanismo de autenticación: el request recomendado no los envía, pero si llegan nunca se usan como credencial ni sustituyen la cookie.
+- La familia es la sesión (`user_sessions`) y sus `refresh_tokens`. El reuso (incluidas dos solicitudes concurrentes del mismo token) confirma la revocación de la sesión y de toda la cadena **antes** de responder `401`; no hay ventana de gracia. El cliente debe hacer single-flight.
+- `POST /auth/logout` exige `Bearer` de una sesión válida, responde `204`, revoca sesión y cadena con auditoría y limpia la cookie con los mismos atributos. La cookie sola nunca autoriza. Si el request incluye `Origin`, pasa el mismo guard.
+- Login/refresh exigen `Origin` exactamente igual a `AUTH_PUBLIC_ORIGIN` (URL `http(s)` normalizada, sin wildcard) antes de bcrypt/DB. `Origin` ausente/null/mismatch ⇒ `403`; `Sec-Fetch-Site: cross-site` ⇒ `403`. Si la configuración falta, los endpoints de cookie responden `503` fail closed; una configuración inválida aborta el arranque sin fallback. `/auth/me` no cambia.
+- Lock order refresh/logout: user → session → refresh. La lectura inicial es no bloqueante; toda decisión se re-lee fresca bajo locks. Los errores de store/auditoría/firma responden `503` con rollback y sin Set-Cookie de éxito.
+- **H2 (hardening futuro):** el reuso de un token ya consumido puede escribir auditoría/locks en cada intento; D19 no exige rate-limit adicional. Es un límite conocido de amplificación, no una regresión abierta, y no se promete resuelto.
+- **H3 (logging):** la redacción actual cubre `Authorization`, `Cookie`, `Set-Cookie` y campos de credenciales. Serializers custom futuros requieren revisión contra esa lista; no hay fuga actual.
+- Este hito no es un release de seguridad completo: reset de contraseña (5.9) y lectura de auditoría (9.2) siguen pendientes. Ownership/grants (5.2), ciclo de vida 5.4/5.6/9.1 y refresh/logout 5.8 están implementados; 5.8 cerrada por QA PASSED.
 
 ## Auditoria transaccional (5.5)
 
 - `src/services/audit.ts` expone `withAuditedTransaction(db, work, options?)` y `writeAuditEvent(context, input)`. El wrapper abre la transaccion con el `$transaction` publico de Prisma y entrega un contexto opaco con `.tx`; la identidad del contexto vive en un `WeakMap` privado y solo es valida durante el callback.
 - `writeAuditEvent` usa `context.tx.auditEvent.create` en la misma transaccion. Rechaza cliente raiz, `tx` crudo, objetos fabricados, clones y contextos cerrados antes de escribir. Un callback exitoso debe registrar al menos un evento; si la auditoria falla, el fallo es sticky y la transaccion revierte aunque el callback lo capture.
 - Los llamadores actuales son `services/admin-bootstrap.ts`, `services/admin-users.ts` y `services/session.ts`, todos con `await writeAuditEvent(...)`. La composicion anidada de `withAuditedTransaction` sobre el mismo root DB queda fuera de alcance; no se promete soporte para callbacks fire-and-forget ni codigo propio malicioso.
-- `POST /admin/users` (1.8) y GET/PATCH de ciclo de vida (5.4/5.6/9.1) están implementados sin frontend; lectura de auditoría 9.2, refresh/logout 5.8, reset 5.9 y ACL clínico 5.2 siguen pendientes.
+- `POST /admin/users` (1.8), GET/PATCH de ciclo de vida (5.4/5.6/9.1), ACL clínico (5.2) y refresh/logout web (5.8) están implementados sin frontend; lectura de auditoría 9.2 y reset de contraseña 5.9 siguen pendientes.
 
 ## Migraciones
 
@@ -154,8 +169,10 @@ npm run admin:bootstrap
 
 | Ruta | Rol | Notas |
 | --- | --- | --- |
-| `POST /auth/login` | Público (rate limit/HU01) | Zod; `200` token; `401` genérico; `429` genérico con `Retry-After` (5 fallos/15 min y cuota IP 100/60); `503` fail closed sin datos. |
-| `GET /auth/me` | Bearer + sesión vigente | Valida firma/claims, sesión durable, usuario activo y rol/versión; `401`/`503`. |
+| `POST /auth/login` | Público (rate limit/HU01 + `Origin` exacto) | Zod; `200` JSON actual + cookie `clearsight_refresh`; `401` genérico; `403` origen; `429` genérico con `Retry-After` (5 fallos/15 min y cuota IP 100/60); `503` fail closed sin datos ni cookie. |
+| `POST /auth/refresh` | Cookie `clearsight_refresh` (sin body/Bearer) | Rota single-use; `200 {accessToken,tokenType,expiresIn}`; `401` genérico (incluye reuso); `403` origen; `503` sin Set-Cookie de éxito. |
+| `POST /auth/logout` | Bearer + sesión válida | `204`; revoca sesión/cadena con auditoría y limpia la cookie; `401`/`403`/`503`; la cookie sola no autoriza. |
+| `GET /auth/me` | Bearer + sesión vigente | Valida firma/claims, sesión durable, usuario activo y rol/versión; `401`/`503`. Sin cambios por 5.8. |
 | `POST /feedback` | `OFTALMOLOGO` (dueño de la consulta) | Zod + upsert por `(inference_id, doctor_id)`. `doctor_id` sale del JWT; `predicted_class`, `confidence` y `agreement` se derivan de la inferencia guardada (lo que mande el cliente se ignora). `validated_class: null` = no concluyente y no puede ser gold standard. Siempre responde 200 con la fila guardada. |
 | `GET /export/gold-standard?format=json\|csv&since=<ISO>&limit=<n>` | `INVESTIGADOR`, `ADMIN` | Solo `is_gold_standard = true`. Anonimizado: `doctor_id` = HMAC-SHA256 con `EXPORT_HMAC_SECRET`; sin notas, sin ids de paciente/consulta. Cabecera `x-has-more`. El CSV tiene las columnas que lee `scripts/retrain_cycle.py --samples`. |
 
@@ -198,3 +215,18 @@ npm run test:integration # explícito; requiere Docker/Testcontainers
 - Límites: el runner unitario no cubre flujos de negocio/seguridad ni Prisma/Redis/SQL. La
   integración real se ejecutó con Docker/Testcontainers en PostgreSQL 16; no se probó Azure ni una
   base de producción.
+
+### Cierre 5.8 (HITO16, QA PASSED)
+
+```bash
+npm --prefix backend run test:unit
+npm --prefix backend run test:integration
+npm --prefix backend run typecheck
+npm --prefix backend run build
+```
+
+- Resultado QA final: unit **25 files / 377 tests**; full integration **21 files / 401 tests (270 s)**; `typecheck` **0** repetido después de los tests de QA; `build` reutilizado del mismo source.
+- Unitarios nuevos: `tests/unit/auth-cookies.test.ts`, `tests/unit/refresh-tokens.test.ts`, `tests/unit/web-auth-policy.test.ts` y `tests/unit/log-redaction.test.ts`; QA añadió la aserción de cookie duplicada con el mismo valor.
+- Integración real: `tests/refresh-session.integration.test.ts` (**21 tests**; QA añadió casos de guard/cookie). No existen `auth-refresh.integration.test.ts` ni `auth-origin.integration.test.ts`; fueron nombres prospectivos.
+- Los tests legítimos usan `TEST_ENV.AUTH_PUBLIC_ORIGIN`/`TEST_AUTH_ORIGIN`; los tests de guard inyectan `Origin` explícitamente sin ese helper.
+- Docker propios PG/Ryuk limpiados; `redkeep_db` ajeno intacto. Runbook: `docs/hito16-auth-refresh-runbook.md`.

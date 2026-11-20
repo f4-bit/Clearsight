@@ -255,11 +255,40 @@
 | Diff/cleanup | `git diff --check` limpio (solo warnings CRLF preexistentes); `docker ps -a` solo `redkeep_db` detenido no relacionado; cero contenedores propios residuales |
 | H-01 | Resuelto: `POST /inferences` rechaza `inferenceId`/`imageUrl` (400 identico fresh/own/foreign) antes de writes/sign/queue; sin el campo genera UUID de servidor (202). Sin oraculo cross-case ni PK de cliente. |
 | H-02 | Latente documentado: E congela columnas de la fila `inferences`; no agrega trigger sobre `images`. La mutacion SQL privilegiada del padre queda fuera de E y solo la cubre el guard D existente cuando aplica; sin writer de aplicacion. |
-| H-03 | Validado: produccion resuelve `DATABASE_URL` una sola vez en `app.ts`; rutas/servicio clinico comparten el mismo `prisma`+access inyectado. Factory global y worker diferidos. |
+| H-03 | Validado: el cliente Prisma (`backend/src/lib/prisma.ts`) resuelve `DATABASE_URL` una sola vez; rutas/servicio clinico comparten el mismo `prisma`+access inyectado. Factory global y worker diferidos. |
 | Historico pre-QA | Foco unit/schema 4 files / 41 tests y foco ACL/migracion/repositorios 3 files / 44 tests; no son conteos finales. |
 
 - Sin cambios de fuente/pruebas en este cierre documental; no se ejecutaron suites desde el agente de documentacion.
 - La tarea 5.2 queda cerrada con la evidencia QA anterior; 5.8/5.9 y 9.2 siguen pendientes y no se declara release clinica completa.
+
+## 1.14 Evidencia HITO16 — contrato de sesión web 5.8 (QA PASSED)
+
+> **Naturaleza:** QA independiente sobre PostgreSQL efímero/owned. 5.8 queda `[x]`. Full integration **21 files / 401 tests (270 s)**; `typecheck` **0** repetido después de los tests de QA; `build` reutilizado del mismo source (0). Sin `.env`, `.env.azure`, Azure, PHI ni correos reales. Docker propios PG/Ryuk limpiados; `redkeep_db` ajeno intacto.
+
+| Elemento | Resultado |
+|---|---|
+| Alcance | Login con JSON actual + cookie `clearsight_refresh`; refresh cookie-only single-use; logout `204`; guard de `Origin`; `AUTH_PUBLIC_ORIGIN`; reuso revoca la sesión/familia. |
+| Proxy local | Un proxy HTTPS documentado (no productivo) termina TLS, expone el origen público y quita `/api`; el backend recibe `/auth/*`. El `Origin` se valida contra el valor exacto; no se deriva de `Host` ni `X-Forwarded-*`. |
+| Cookie | Siempre `Secure`; `HttpOnly`; `SameSite=Lax`; host-only; `Path=/api/auth`; expiración ≤ 7 d. No se deshabilita `Secure` en producción ni como excepción silenciosa. `localhost` HTTP solo con configuración no productiva explícita y flujo HTTPS recomendado. |
+| Test real | `tests/refresh-session.integration.test.ts` → **21 tests** (QA amplió la suite con casos de guard/cookie). No existen `auth-refresh.integration.test.ts` ni `auth-origin.integration.test.ts`; esos nombres fueron solo prospectivos. |
+| DB/almacenamiento | PostgreSQL owned de Testcontainers; `refresh_tokens`/`user_sessions` existentes sin editar. Los triggers permiten revocación append-only desde `NULL`; no requieren migración nueva. |
+| Stop | Si hay que deshabilitar `Secure`, usar wildcard de origen, leer `.env`/`.env.azure`, tocar Azure/PHI o existe conflicto con triggers, se detiene la fase. |
+
+### Resultados HITO16 (QA final)
+
+| Comando | Resultado |
+|---|---|
+| `npm --prefix backend run test:unit` | **25 files / 377 tests passed** (QA final) |
+| `npm --prefix backend run test:integration` | **21 files / 401 tests passed (270 s)** |
+| `tests/refresh-session.integration.test.ts` | **21 tests** (incluidos en el full; QA añadió casos) |
+| `npm --prefix backend run typecheck` | exit `0`, repetido después de los tests de QA |
+| `npm --prefix backend run build` | reutilizado del mismo source, exit `0` |
+
+- **H1 (lectura estricta):** “sin body/Bearer” describe el mecanismo de autenticación de refresh, no una prohibición de coexistencia de headers. El request recomendado no envía body ni `Authorization`; si llegan, nunca se usan como credencial ni sustituyen la cookie, y su presencia sola no es error. Coincide con los tests de QA y no cambia el source.
+- **H2 (hardening futuro):** reutilizar un token ya consumido puede escribir auditoría/locks en cada intento; D19 no exige un rate-limit adicional. Es un límite conocido de amplificación, no una regresión abierta; no se promete resuelto.
+- **H3 (logging):** la redacción actual cubre `Cookie`, `Set-Cookie`, `Authorization` y campos de credenciales. Serializers custom futuros requieren revisión contra esa lista; no hay fuga actual.
+- QA añadió casos a `refresh-session.integration.test.ts` (21 tests) y la aserción de cookie duplicada con el mismo valor en unit.
+- Detalle: `docs/hito16-auth-refresh-runbook.md`.
 
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
@@ -540,6 +569,7 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `npm run e2e` | **NO EXISTE** | No usar ni documentar como disponible. |
 | `backend/vitest.unit.config.ts` + `test:unit` | CURRENT | Runner puro sin `globalSetup`; verificado 6 files / 57 tests. |
 | Guard de ownership marker | CURRENT | `test_meta` + label de run; verificado con mocks. |
+| `tests/refresh-session.integration.test.ts` | CURRENT (5.8, QA PASSED) | 21 tests; cubre login cookie, rotación/reuso, guard de Origin y logout. PostgreSQL owned de Testcontainers. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

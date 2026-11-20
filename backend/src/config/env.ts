@@ -13,6 +13,10 @@ import {
   MAX_IP_RATE_WINDOW_SECONDS,
 } from "../services/login-guard.js";
 import { assertProductionExportHmacSecret } from "../services/export-policy.js";
+import {
+  assertPublicOriginForEnvironment,
+  parseAuthPublicOrigin,
+} from "../services/web-auth-policy.js";
 
 dotenv.config();
 
@@ -45,6 +49,10 @@ const envSchema = z
   // Auth / JWT
   JWT_SECRET: z.string().default(KNOWN_DEV_JWT_SECRET),
   JWT_EXPIRES_IN: z.string().default(DEFAULT_JWT_ACCESS_TTL),
+  // Exact public web origin for login/refresh/logout. Empty/missing is allowed
+  // at construction; the cookie endpoints then fail closed with 503. An invalid
+  // value aborts startup instead of falling back to anything permissive.
+  AUTH_PUBLIC_ORIGIN: z.string().optional(),
   // Complementary per-IP login quota. Positive integers only: zero/negative is
   // rejected in every environment instead of disabling production protection.
   IP_RATE_LIMIT: z.coerce
@@ -105,6 +113,20 @@ const envSchema = z
         path: ["EXPORT_HMAC_SECRET"],
         message:
           error instanceof Error ? error.message : "Invalid export HMAC secret",
+      });
+    }
+
+    try {
+      const publicOrigin = parseAuthPublicOrigin(data.AUTH_PUBLIC_ORIGIN);
+      if (publicOrigin !== null) {
+        assertPublicOriginForEnvironment(publicOrigin, data.NODE_ENV);
+      }
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AUTH_PUBLIC_ORIGIN"],
+        message:
+          error instanceof Error ? error.message : "Invalid public auth origin",
       });
     }
   });

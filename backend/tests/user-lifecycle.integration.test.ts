@@ -8,7 +8,7 @@ import { PrismaClient as GeneratedPrismaClient } from "../src/generated/prisma/c
 import type { UserRole } from "../src/generated/prisma/enums.js";
 import type { PrismaClient } from "../src/lib/prisma.js";
 import { createAdminUsersService } from "../src/services/admin-users.js";
-import { bearer, buildTestApp, TEST_ENV } from "./helpers/app.js";
+import { bearer, buildTestApp, TEST_AUTH_ORIGIN, TEST_ENV } from "./helpers/app.js";
 import {
   createTestPrisma,
   hashPassword,
@@ -23,6 +23,7 @@ const prisma = createTestPrisma();
 let app: FastifyInstance;
 
 const PASSWORD = "synthetic-lifecycle-password-123";
+const AUTH_ORIGIN = { origin: TEST_AUTH_ORIGIN };
 let passwordHash: string;
 
 beforeAll(async () => {
@@ -751,6 +752,7 @@ describe("PATCH /admin/users lifecycle", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: "lifecycle-target@example.test", password: PASSWORD },
     });
     expect(login.statusCode).toBe(200);
@@ -1470,6 +1472,7 @@ describe("QA adversarial lifecycle invariants", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: "qa-locked-target@example.test", password: PASSWORD },
     });
     expect(login.statusCode).toBe(429);

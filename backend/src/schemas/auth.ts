@@ -136,6 +136,18 @@ export const tokenResponseSchema = z.object({
 
 export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
+/**
+ * Refresh response: the new access token plus its metadata. The rotated refresh
+ * token is never part of this schema; it travels only in the cookie.
+ */
+export const refreshResponseSchema = z.object({
+  accessToken: z.string(),
+  tokenType: z.literal("bearer").default("bearer"),
+  expiresIn: z.string(),
+});
+
+export type RefreshResponse = z.infer<typeof refreshResponseSchema>;
+
 export const currentUserSchema = z.object({
   id: z.uuid(),
   email: z.string().email(),

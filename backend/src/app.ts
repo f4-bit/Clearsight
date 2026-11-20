@@ -13,6 +13,7 @@ import {
 import { ZodError } from "zod";
 import { env, type Env } from "./config/env.js";
 import { HttpError } from "./lib/http-error.js";
+import { AUTH_LOG_REDACT_PATHS } from "./lib/log-redaction.js";
 import { prisma as defaultPrisma, type PrismaClient } from "./lib/prisma.js";
 import { createRepositories } from "./repositories/index.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -28,6 +29,7 @@ import {
   DEFAULT_JWT_ACCESS_TTL,
   parseAccessTtl,
 } from "./services/auth-policy.js";
+import { createAuthWebSessionService } from "./services/auth-web-session.js";
 import { createClinicalAccessService } from "./services/clinical-access.js";
 import { assertProductionExportHmacSecret } from "./services/export-policy.js";
 import { createAuthLoginProtection } from "./services/login-guard.js";
@@ -36,6 +38,7 @@ import {
   DEFAULT_DATABASE_SCHEMA,
   type AuthSessionService,
 } from "./services/session.js";
+import { createWebAuthPolicy, type WebAuthPolicy } from "./services/web-auth-policy.js";
 
 export interface AppDeps {
   env: Pick<Env, "JWT_SECRET" | "EXPORT_HMAC_SECRET"> &
@@ -43,6 +46,7 @@ export interface AppDeps {
       Pick<
         Env,
         | "NODE_ENV"
+        | "AUTH_PUBLIC_ORIGIN"
         | "CORS_ORIGIN"
         | "JWT_EXPIRES_IN"
         | "IP_RATE_LIMIT"
@@ -77,8 +81,16 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
   assertProductionExportHmacSecret(cfg.EXPORT_HMAC_SECRET, nodeEnv);
   const accessTtl = parseAccessTtl(cfg.JWT_EXPIRES_IN ?? DEFAULT_JWT_ACCESS_TTL);
 
+  const loggerEnabled = deps?.logger ?? (nodeEnv === "development" && !deps);
   const app = Fastify({
-    logger: deps?.logger ?? (nodeEnv === "development" && !deps),
+    logger: loggerEnabled
+      ? {
+          redact: {
+            paths: [...AUTH_LOG_REDACT_PATHS],
+            censor: "[REDACTED]",
+          },
+        }
+      : false,
     // request.ip is the actual socket peer; reverse-proxy XFF trust is a
     // deliberate future 8.x trusted-CIDR decision, never a global bypass.
     trustProxy: false,
@@ -137,6 +149,24 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
       loginProtection,
     });
   app.decorate("authService", authService);
+
+  // Opaque refresh rotation/logout shares the same client, schema and clock.
+  // Construction is lazy and performs no connection.
+  const authWebSessionService = createAuthWebSessionService(prisma, {
+    accessTtl,
+    databaseSchema,
+    now: deps?.now,
+  });
+  app.decorate("authWebSessionService", authWebSessionService);
+
+  // Public-origin policy for the credential endpoints. Missing config is
+  // allowed at construction (cookie endpoints fail closed per request), while
+  // an invalid configured origin aborts startup without any permissive fallback.
+  const webAuthPolicy: WebAuthPolicy = createWebAuthPolicy({
+    publicOrigin: cfg.AUTH_PUBLIC_ORIGIN,
+    nodeEnv,
+  });
+  app.decorate("webAuthPolicy", webAuthPolicy);
 
   // Administrative provisioning is also always built from the injected client
   // and the same explicit schema; construction never connects.

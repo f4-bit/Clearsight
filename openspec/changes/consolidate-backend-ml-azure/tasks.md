@@ -1,6 +1,6 @@
 # Tasks: consolidate-backend-ml-azure
 
-> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Implementadas: documentales 0.1/0.3/0.4, migraciones 1.1-1.6, alta 1.8, 3.1, 5.1, 5.3-5.7, 7.0/7.0.1 y ciclo de vida 5.4/5.6/9.1; el resto de tareas de implementación queda **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]`; salvo 9.1 (cerrada en HITO14), quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
+> **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Implementadas: documentales 0.1/0.3/0.4, migraciones 1.1-1.6, alta 1.8, 3.1, 5.1-5.8 (5.2 en HITO15; 5.8 con QA PASSED) y 7.0/7.0.1, más ciclo de vida 5.4/5.6/9.1; 5.9 y el resto de tareas de implementación quedan **pending** y sus comandos son criterios de verificación futuros. Las tareas de **hito posterior** se marcan `[LATER HITO]`; salvo 9.1 (cerrada en HITO14), quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.**
 
 ## 0. Documentación y salvaguardas
 
@@ -48,7 +48,7 @@
   - **When/Then:** WHEN se aplica THEN existen constraints de idempotencia única por alcance, auditoría append-only, sesiones durables y credenciales hash-only; WHEN se modifica una identidad/credencial/historial THEN la inmutabilidad o el append-only lo rechaza; WHEN se reaplica C THEN no se reescriben filas durables.
   - **Depends on:** 1.1.
   - **Test:** `npm --prefix backend run test:integration -- tests/identity-migrations.test.ts` → **1 file / 18 tests passed**; `npm --prefix backend run test:integration` → **10 files / 129 tests passed**; `npm --prefix backend run test:unit` → **6 files / 57 tests passed**; `typecheck`/`build` → exit 0; Prisma `validate`/`generate` con config temporal sin dotenv.
-  - **Coverage:** “Idempotencia persistida del backend” (solo unicidad/replay DB; servicio 4.4), “Auditoría append-only de acciones sensibles” (servicio 5.5), “Sesiones, refresh, logout y recuperación seguros” (comportamiento 5.7/5.8/5.9). El registro no convierte estas operaciones en implementadas.
+  - **Coverage:** “Idempotencia persistida del backend” (solo unicidad/replay DB; servicio 4.4), “Auditoría append-only de acciones sensibles” (servicio 5.5), “Sesiones, refresh, logout y recuperación seguros” (comportamiento 5.7/5.8/5.9). 5.7 y 5.8 están implementadas con QA; 5.9 sigue pendiente.
 
 - [x] 1.4 Constraints e índices de integridad.
   - **Scope:** `backend/prisma/migrations/20261118030000_integrity_hardening/migration.sql`, `backend/tests/integrity-migrations.test.ts`, allowlists; A/B/C sin editar. Incluye locks deterministas de selección/contexto, guard de reparentado de imagen y rol global `clearsight_app` con grants mínimos. No crea LOGIN, no cambia runtime/DSN ni credenciales.
@@ -93,7 +93,7 @@
     | `backend/src/services/admin-bootstrap.ts`, `session.ts`, `login-guard.ts` (email literal/compatible) | `tests/admin-bootstrap.integration.test.ts`, `auth-sessions.integration.test.ts`, `login-protection.integration.test.ts` | histórico foco 4/117 |
     | PostgreSQL owned, rol `clearsight_app`, auditoría y rollback | full integration + labels Docker | full 17/319; sin residuos |
 
-  - **Pendientes sin cambios:** 5.2 (ACL/ownership clínico), 5.8/5.9 (refresh/reset) y 9.2 (lectura de auditoría). 5.4/5.6/9.1 quedan implementados en HITO14; el alta 1.8 conserva su contrato y default `OFTALMOLOGO`. Release clínica **no** declarada lista.
+  - **Estado histórico en 1.8:** 5.2 (ACL/ownership clínico), 5.8/5.9 (refresh/reset) y 9.2 (lectura de auditoría) seguían pendientes. Actualización: 5.2 quedó cerrada en HITO15 y 5.8 en HITO16 con QA PASSED; 5.9 y 9.2 siguen pendientes. 5.4/5.6/9.1 quedan implementados en HITO14; el alta 1.8 conserva su contrato y default `OFTALMOLOGO`. Release clínica **no** declarada lista.
 
 ## 2. Modelo clínico de ejecución
 
@@ -268,7 +268,7 @@
   - **When/Then:** WHEN una cuenta inactiva, rol/version cambiados o sesion revocada/expirada usa token THEN `401`; WHEN el store no se puede verificar THEN `503` fail closed sin datos.
   - **Depends on:** 1.3.
   - **Test:** `npm --prefix backend run test:integration -- tests/auth-sessions.integration.test.ts tests/jwt.test.ts tests/rbac.test.ts tests/feedback.route.test.ts tests/export.route.test.ts` -> 5 files / 72 tests passed (foco previo 71; conteo final QA 72); full integration 14 files / 245 tests; unit 15 files / 247 tests; typecheck/build exit 0.
-  - **Coverage:** "Sesiones, refresh, logout y recuperacion seguros" (lector durable y fail closed; refresh/logout quedan en 5.8), "Desactivacion y preservacion de autoria" (rechazo de cuentas inactivas), REG-006.
+  - **Coverage:** "Sesiones, refresh, logout y recuperacion seguros" (lector durable y fail closed; refresh/logout cerrados en 5.8 con QA PASSED), "Desactivacion y preservacion de autoria" (rechazo de cuentas inactivas), REG-006.
 - [x] 5.2 Aplicar ownership y grants a pacientes, consultas, ejecuciones y artefactos.
   - **Scope:** `backend/src/routes/patients.ts:55-134`, `backend/src/routes/consultations.ts:173-229`, `backend/src/routes/inferences.ts:93-143`, middleware/helper de ownership.
   - **When/Then:** WHEN un médico pide recurso ajeno THEN `403`/`404` sin datos; WHEN `/patients` se lista THEN solo pacientes propios; WHEN admin/investigador no tiene grant THEN se deniega export/dataset.
@@ -277,7 +277,7 @@
   - **Cierre QA final (fuente sin cambios):** `npm --prefix backend run test:unit` -> **21 files / 355 tests passed (3.06 s)**; `npm --prefix backend run test:integration` -> **20 files / 380 tests passed (235.17 s)**; `git diff --check` limpio (solo warnings CRLF preexistentes); `docker ps -a` solo `redkeep_db` detenido no relacionado, cero residuales propios; `typecheck`/`build` reutilizados del mismo estado e inspeccionados por QA (exit 0).
   - **H-01 resuelto:** `POST /inferences` rechaza `inferenceId`/`imageUrl` como campos desconocidos (`400` identico para fresh/own/foreign) antes de writes/sign/queue y genera siempre UUID de servidor (`202` sin el campo); matriz en `tests/clinical-access.integration.test.ts`.
   - **H-02 latente documentado:** la migracion E congela columnas de la fila `inferences`; no agrega trigger sobre `images`. La mutacion SQL privilegiada del padre queda fuera de E y solo la cubre el guard D existente cuando aplica; no hay writer de aplicacion.
-  - **H-03 validado / worker diferido:** produccion resuelve `DATABASE_URL` una sola vez en `app.ts` y las rutas/servicio clinico comparten el mismo `prisma`+access inyectado; no se refactoriza el factory global ni el worker.
+  - **H-03 validado / worker diferido:** el cliente Prisma (`backend/src/lib/prisma.ts`) resuelve `DATABASE_URL` una sola vez y las rutas/servicio clinico comparten el mismo `prisma`+access inyectado; no se refactoriza el factory global ni el worker.
   - **Historico pre-QA de la correccion acotada:** unit/schema **4 files / 41 tests passed**; integracion foco ACL+migracion+repositorios **3 files / 44 tests passed** (no son conteos finales). Runbook: `docs/hito15-clinical-access-runbook.md`.
   - **Coverage:** “Tres roles con mínimo privilegio y default deny”, “Autenticación y autorización por endpoint y recurso”.
 
@@ -311,7 +311,7 @@
   | `backend/src/services/session.ts` (misma tx, `AUTH_STORE_UNAVAILABLE`) | `tests/auth-sessions.integration.test.ts`, `tests/login-protection.integration.test.ts` | foco 4/112 |
   | `backend/tests/audit.integration.test.ts` (fila exacta, timestamp DB, append-only, rollback) | PostgreSQL owned de Testcontainers | full 16/294 |
 
-  - **Pendientes al cierre de 5.5 (histórico):** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Estado actual: 1.8/5.4/5.6/9.1 cerrados; 5.2/5.8/5.9/9.2 pendientes. Este hito no añade endpoint público, UI admin ni permisos/grants clínicos.
+  - **Pendientes al cierre de 5.5 (histórico):** 1.8, 5.4, 5.6, 5.8, 5.9 y 5.2. Estado actual: 1.8/5.2/5.4/5.6/5.8/9.1 cerrados; 5.9/9.2 pendientes. Este hito no añade endpoint público, UI admin ni permisos/grants clínicos.
 
 - [x] 5.6 Implementar desactivación segura y bloqueo de supresión; hard delete fuera de este hito.
   - **Scope:** `backend/src/services/admin-users.ts` (`updateUser`), `backend/src/routes/admin.ts`, `backend/src/schemas/auth.ts`, tests `user-lifecycle.integration.test.ts`; desactivación/reactivación, revocación durable de `UserSession`/`RefreshToken`/`PasswordResetToken`, incremento de `tokenVersion`, auditoría y verificación de historial clínico intacto. **No se implementa DELETE/hard delete.**
@@ -325,13 +325,14 @@
   - **When/Then:** WHEN se emite acceso THEN incluye `sessionId`/`tokenVersion`, TTL 900 s y sesion absoluta de 7 d; WHEN cambia rol, version, password o se desactiva THEN tokens/permisos anteriores dejan de valer; WHEN store no verificable THEN fail closed; WHEN el cliente Prisma usa un schema explicito THEN el lock usa ese schema; los writers actuales comparten bcrypt cost 12.
   - **Depends on:** 1.3.
   - **Test:** `npm --prefix backend run test:integration -- tests/auth-sessions.integration.test.ts` -> 31 tests passed (suite focalizada de auth 5 files / 72 tests; foco previo 71, conteo final QA 72).
-  - **Coverage:** "Sesiones, refresh, logout y recuperacion seguros" (acceso durable, lock schema-qualified y password policy cost 12; refresh/logout 5.8, reset 5.9, lockout 5.3 pendientes).
-- [ ] 5.8 Implementar refresh opaco, rotación single-use, logout y revocación por familia.
-  - **Scope:** `backend/src/routes/auth.ts`, `backend/src/services/session.ts`, cookies web HttpOnly/Secure/SameSite.
-  - **When/Then:** WHEN refresh rota THEN el anterior no se reutiliza; WHEN se reutiliza THEN se revoca la familia; WHEN logout/desactivación THEN revocación inmediata; WHEN web THEN cookie y respuesta sin refresh token; cross-site evalúa origen/CSRF.
+  - **Coverage:** "Sesiones, refresh, logout y recuperacion seguros" (acceso durable, lock schema-qualified y password policy cost 12; refresh/logout 5.8 y lockout 5.3 cerrados; reset 5.9 pendiente).
+- [x] 5.8 Implementar refresh opaco, rotación single-use, logout y revocación por familia.
+  - **Scope:** `backend/src/routes/auth.ts` (login/refresh/logout), `backend/src/services/session.ts` (refresh de login), nuevos `backend/src/services/auth-web-session.ts`, `auth-cookies.ts`, `web-auth-policy.ts` y `refresh-tokens.ts`; `backend/src/app.ts` (DI/decoraciones, logger redactado), `backend/src/config/env.ts`, `backend/src/schemas/auth.ts`, `backend/src/types/fastify-auth.d.ts`; configuración `AUTH_PUBLIC_ORIGIN` (URL `http(s)` normalizada, sin wildcard); uso de `refresh_tokens`/`user_sessions` existentes **sin editar schema ni migraciones**. Documentación: `contracts/frontend-api-contract.md`, `contracts/testing-runbook.md`, `backend/README.md`, `docs/hito16-auth-refresh-runbook.md`. No frontend ni proxy implementado.
+  - **When/Then:** WHEN login correcto THEN conserva el JSON actual y entrega el refresh opaco solo en la cookie `clearsight_refresh` (`HttpOnly; Secure; SameSite=Lax`, host-only, `Path=/api/auth`, expiración ≤ 7 d); WHEN `Origin` falta, es null o no coincide exactamente con `AUTH_PUBLIC_ORIGIN` THEN `403` antes de KDF/store; WHEN `Sec-Fetch-Site: cross-site` THEN rechazo; WHEN `AUTH_PUBLIC_ORIGIN` falta THEN endpoints de cookie `503` fail closed sin romper `buildApp` lazy ni el `410` de `/auth/register`; WHEN refresh web THEN `POST /auth/refresh` usa solo la cookie, rota single-use y devuelve solo `accessToken/tokenType/expiresIn` (“sin body/Bearer” describe el mecanismo: si llegan, no se usan como credencial ni sustituyen la cookie, y su presencia sola no es error); WHEN se reutiliza (incluidas dos solicitudes concurrentes del mismo token) THEN como máximo una emite y la otra revoca esa sesión y todos sus refresh (familia = sesión), sin otras sesiones del usuario y sin ventana de gracia; WHEN logout con `Bearer` de sesión válida THEN `204`, revoca sesión y cadena auditada y limpia la cookie con los mismos atributos (la cookie sola no autoriza; un `Origin` presente pasa el mismo guard); WHEN falla firma/auditoría/commit THEN login no setea cookie, refresh no consume el padre y el reuso confirma revocación+auditoría antes de `401`; WHEN la auditoría cae THEN `503` con rollback, sin logout exitoso falso; WHEN respuesta de credenciales THEN `Cache-Control: no-store`; `/auth/me` no cambia.
+  - **Decisiones registradas:** cookie `clearsight_refresh`; `AUTH_PUBLIC_ORIGIN` explícito como solución limpia (no se deriva de `Host`/`X-Forwarded-*` ni de CORS wildcard); proxy HTTPS quita `/api` y el backend expone `/auth/*`; solo hash SHA-256 lowercase en DB; token crudo jamás en logs/auditoría/JSON; `refresh_tokens`/`user_sessions` sin cambios; single-flight en cliente documentado.
   - **Depends on:** 5.7.
-  - **Test:** `npm --prefix backend run test -- tests/jwt.test.ts tests/rbac.test.ts`.
-  - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”.
+  - **Test QA HITO16 (PASSED):** unit `npm --prefix backend run test:unit` → **25 files / 377 tests passed**; full integration `npm --prefix backend run test:integration` → **21 files / 401 tests passed (270 s)**; `tests/refresh-session.integration.test.ts` → **21 tests** (QA añadió casos; también la aserción de cookie duplicada con el mismo valor en unit); `typecheck` → **exit 0** repetido después de los tests de QA; `build` reutilizado del mismo source (exit 0). PostgreSQL/Ryuk propios limpiados; `redkeep_db` ajeno intacto; sin `.env`, `.env.azure`, Azure, PHI ni correos reales.
+  - **Coverage:** “Sesiones, refresh, logout y recuperación seguros”; D19. 5.8 cerrada por QA PASSED; 5.9 (reset) sigue pendiente. Runbook: `docs/hito16-auth-refresh-runbook.md`.
 
 - [ ] 5.9 Implementar forgot/reset con token 30 min, hash, sin logs y proveedor configurable.
   - **Scope:** `backend/src/routes/auth.ts`, `backend/src/services/password-reset.ts`; integración de envío configurable con adaptador memory sink primero.
@@ -505,7 +506,7 @@
 | Polling/backoff y entrega posterior | “Polling, Retry-After y entrega posterior a COMPLETED” | 4.10 | Test nuevo de polling/entrega |
 | Roles, grants y ownership | “Tres roles con mínimo privilegio y default deny”; “Autenticación y autorización por endpoint y recurso” | 5.1, 5.2 | `npm --prefix backend run test -- tests/rbac.test.ts` |
 | HU01 5 consecutivos/15 min | “Autenticación con bloqueo HU01 y rate limit” | 5.3 | `npm --prefix backend run test -- tests/jwt.test.ts` (reloj/concurrencia) |
-| Sesiones/refresh/reset técnicos | “Sesiones, refresh, logout y recuperación seguros” | 5.1, 5.7, 5.8, 5.9 | `npm --prefix backend run test -- tests/jwt.test.ts tests/rbac.test.ts` |
+| Sesiones/refresh/reset técnicos | “Sesiones, refresh, logout y recuperación seguros” | 5.1, 5.7, 5.8, 5.9 | `tests/refresh-session.integration.test.ts` (5.8, 21 tests QA) + `tests/jwt.test.ts tests/rbac.test.ts`; 5.9 pendiente |
 | Último admin | “Protección del último administrador activo” | 5.4 | `npm --prefix backend run test -- tests/rbac.test.ts` (concurrencia) |
 | Auditoría/desactivación/supresión | “Auditoría append-only de acciones sensibles”; “Desactivación y preservación de autoría”; “Borrado físico excepcional y supresión de identidad” | 5.5, 5.6, D-03/D-04/D-05 | `npm --prefix backend run test -- tests/rbac.test.ts` (fallo inyectado); sin hard delete en el hito |
 | PDF básico con original+mask+overlay | “PDF básico obligatorio para completitud”; “Contenido clínico y trazabilidad del PDF” | 6.1, 6.3 | Test nuevo de PDF real: texto, imágenes renderizadas, faltantes |

@@ -13,7 +13,7 @@ import {
   createAuthLoginProtection,
   type AuthLoginProtectionOptions,
 } from "../src/services/login-guard.js";
-import { bearer, buildTestApp, TEST_ENV } from "./helpers/app.js";
+import { bearer, buildTestApp, TEST_AUTH_ORIGIN, TEST_ENV } from "./helpers/app.js";
 import {
   createTestPrisma,
   hashPassword,
@@ -28,6 +28,7 @@ const prisma = createTestPrisma();
 let app: FastifyInstance;
 
 const PASSWORD = "synthetic-login-password";
+const AUTH_ORIGIN = { origin: TEST_AUTH_ORIGIN };
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -294,6 +295,7 @@ describe("durable access sessions", () => {
     const response = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: `  ${user.email.toUpperCase()}  `, password: PASSWORD },
     });
 
@@ -372,6 +374,7 @@ describe("durable access sessions", () => {
       const response = await app.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: attempt.payload,
       });
       expect(response.statusCode, attempt.label).toBe(401);
@@ -393,6 +396,7 @@ describe("durable access sessions", () => {
     const response = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: locked.email, password: PASSWORD },
     });
 
@@ -445,6 +449,7 @@ describe("durable access sessions", () => {
         const response = await racingApp.inject({
           method: "POST",
           url: "/auth/login",
+      headers: AUTH_ORIGIN,
           payload: { email: user.email, password: PASSWORD },
         });
         expect(response.statusCode, change.label).toBe(401);
@@ -461,6 +466,7 @@ describe("durable access sessions", () => {
     const loginResponse = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     const token = loginResponse.json().accessToken as string;
@@ -485,6 +491,7 @@ describe("durable access sessions", () => {
     const freshLogin = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     const freshToken = freshLogin.json().accessToken as string;
@@ -624,6 +631,7 @@ describe("durable access sessions", () => {
       const response = await failingLoginApp.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: { email: user.email, password: PASSWORD },
       });
       expect(response.statusCode).toBe(503);
@@ -646,6 +654,7 @@ describe("durable access sessions", () => {
       const response = await failingApp.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: { email: user.email, password: PASSWORD },
       });
       expect(response.statusCode).toBe(503);
@@ -704,6 +713,7 @@ describe("durable access sessions", () => {
     const response = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: {
         email: user.email,
         password: PASSWORD,
@@ -730,6 +740,7 @@ describe("durable access sessions", () => {
       const response = await app.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: { email: user.email, password: PASSWORD },
       });
       expect(response.statusCode).toBe(200);
@@ -828,6 +839,7 @@ describe("adversarial corners: bcrypt 72-byte bound", () => {
     const exact = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: secret72 },
     });
     expect(exact.statusCode).toBe(200);
@@ -836,6 +848,7 @@ describe("adversarial corners: bcrypt 72-byte bound", () => {
       const response = await app.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: { email: user.email, password: alias },
       });
       expect(response.statusCode, `alias of ${alias.length} chars`).toBe(401);
@@ -858,6 +871,7 @@ describe("adversarial corners: bcrypt 72-byte bound", () => {
     const exact = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: secret },
     });
     expect(exact.statusCode).toBe(200);
@@ -866,6 +880,7 @@ describe("adversarial corners: bcrypt 72-byte bound", () => {
       const response = await app.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: { email: user.email, password: alias },
       });
       expect(response.statusCode, `alias of ${alias.length} code points`).toBe(401);
@@ -877,6 +892,7 @@ describe("adversarial corners: bcrypt 72-byte bound", () => {
     const response = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: "" },
     });
     expect(response.statusCode).toBe(401);
@@ -899,6 +915,7 @@ describe("adversarial corners: lockout vs deactivation policy", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     expect(login.statusCode).toBe(200);
@@ -912,6 +929,7 @@ describe("adversarial corners: lockout vs deactivation policy", () => {
     const blocked = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     expect(blocked.statusCode).toBe(429);
@@ -935,6 +953,7 @@ describe("adversarial corners: lockout vs deactivation policy", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     const token = login.json().accessToken as string;
@@ -953,6 +972,7 @@ describe("adversarial corners: lockout vs deactivation policy", () => {
     const relogin = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     expect(relogin.statusCode).toBe(200);
@@ -1140,6 +1160,7 @@ describe("adversarial corners: DI seam and test-double source equality", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: PASSWORD },
     });
     const loginClaims = decodeToken(login.json().accessToken);
@@ -1191,6 +1212,7 @@ describe("adversarial corners: DI seam and test-double source equality", () => {
     const short = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: user.email, password: legacy },
     });
     expect(short.statusCode).toBe(200);

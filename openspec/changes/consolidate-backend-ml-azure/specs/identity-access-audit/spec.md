@@ -82,7 +82,9 @@ El sistema SHALL bloquear una cuenta durante 15 minutos tras cinco intentos fall
 
 ### Requirement: Sesiones, refresh, logout y recuperación seguros
 
-El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitecto dentro de la delegación industry; no es una decisión exacta de producto ni una funcionalidad ya implementada. El access token MUST ser un JWT breve con default 15 minutos, `sessionId` y `tokenVersion`. En cada request el servidor MUST consultar una sesión activa, la versión y el usuario activo/rol vigente en un store durable, y MUST aplicar fail closed si no puede verificar. El refresh token MUST ser opaco, generado con CSPRNG, almacenado como hash en reposo, rotado de forma atómica y de un solo uso; la reutilización MUST revocar la familia. Su expiración absoluta simple propuesta es 7 días, sin extensión por idle salvo configuración explícita. Logout MUST revocar la sesión de inmediato. Desactivar una cuenta MUST revocar todas las sesiones e incrementar la versión. Un cambio de rol MUST invalidar tokens y permisos de inmediato. El reset de contraseña MUST usar token de un solo uso, 30 minutos, hash, sin logs, y revocar todas las sesiones. `forgot` MUST responder `202` uniforme con rate limit y proveedor de envío configurable. Para web, el refresh MUST viajar en cookie `HttpOnly; Secure; SameSite` y no en JSON; si es cross-site, MUST evaluarse origen/CSRF. La respuesta de refresh MUST NOT exponer el refresh token. El access bearer MUST NOT sugerirse en `localStorage`. El cliente backend no-browser queda fuera de alcance. **B8 queda como restricción de provisioning:** el usuario autoriza usar sus correos reales cuando se llegue, pero direcciones y proveedor aún no están fijados. Las pruebas MUST usar primero un adaptador con sink en memoria; el envío real solo se habilitará a destinatarios autorizados explícitos, para casos sin PHI y sin enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales, con rate limiting y sin user enumeration. Los tokens MUST NOT registrarse en logs ni incluirse en URLs.
+El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitecto dentro de la delegación industry; no es una decisión exacta de producto. El contrato web 5.8 está implementado y validado por QA; el reset de contraseña 5.9 sigue pendiente. El access token MUST ser un JWT breve con default 15 minutos, `sessionId` y `tokenVersion`. En cada request el servidor MUST consultar una sesión activa, la versión y el usuario activo/rol vigente en un store durable, y MUST aplicar fail closed si no puede verificar. El refresh token MUST ser opaco, generado con CSPRNG, almacenado como hash en reposo, rotado de forma atómica y de un solo uso; la reutilización MUST revocar la familia. Su expiración absoluta simple propuesta es 7 días, sin extensión por idle salvo configuración explícita. Logout MUST revocar la sesión de inmediato. Desactivar una cuenta MUST revocar todas las sesiones e incrementar la versión. Un cambio de rol MUST invalidar tokens y permisos de inmediato. El reset de contraseña MUST usar token de un solo uso, 30 minutos, hash, sin logs, y revocar todas las sesiones. `forgot` MUST responder `202` uniforme con rate limit y proveedor de envío configurable.
+
+Para web (contrato 5.8), el login MUST conservar la respuesta JSON actual y entregar el refresh opaco CSPRNG solo en una cookie `clearsight_refresh` con `HttpOnly`, `Secure`, `SameSite=Lax`, host-only (sin `Domain`) y `Path=/api/auth`; la aplicación corre detrás de un proxy HTTPS que quita `/api` y expone internamente `/auth/*`; la expiración de la cookie MUST NOT superar la sesión absoluta (≤ 7 días). `POST /auth/refresh` MUST usar solo esa cookie (sin body y sin `Bearer`) y devolver únicamente `accessToken`, `tokenType` y `expiresIn`; la rotación MUST ser single-use; en DB MUST guardarse solo el hash SHA-256 lowercase y el token crudo MUST NOT aparecer en logs, auditoría ni JSON. La familia MUST ser la sesión y sus refresh: ante dos solicitudes concurrentes del mismo token, como máximo una MUST emitir y la otra MUST revocar esa sesión y todos sus refresh, sin afectar otras sesiones del usuario, sin ventana de gracia. Login y refresh MUST exigir `Origin` exactamente igual a `AUTH_PUBLIC_ORIGIN` (URL `http(s)` normalizada, sin wildcard) y MUST rechazar con `403` genérico antes de KDF/store si falta, es null o no coincide; `Sec-Fetch-Site: cross-site` MUST rechazarse si viene. El origen MUST NOT derivarse de `Host`/`X-Forwarded-*` no confiables ni de CORS wildcard. Si `AUTH_PUBLIC_ORIGIN` falta, los endpoints de cookie MUST fallar cerrado (`503`) sin romper `buildApp` lazy ni el `410` de `/auth/register` retirado. Logout MUST exigir `Bearer` de una sesión válida, revocar esa sesión y su cadena con auditoría, responder `204` y limpiar la cookie con los mismos atributos; la cookie sola MUST NOT autorizar y solo un `Origin` presente MUST pasar el mismo guard. Las pruebas locales MUST usar HTTPS/proxy documentado y MUST NOT deshabilitar `Secure` en producción ni como excepción silenciosa. Los errores MUST ser genéricos (`401/403/503`) y las respuestas de credenciales MUST llevar `Cache-Control: no-store`. Login MUST NOT setear cookie si falla sign/auditoría/commit; refresh MUST NOT consumir el padre si falla sign/auditoría; el reuso MUST confirmar revocación+auditoría y después devolver `401`, sin lanzar dentro de la transacción revirtiendo la revocación; auditoría caída MUST devolver `503` con rollback y MUST NOT declarar logout exitoso. `/auth/me` MUST NOT cambiar. La ausencia de body/`Bearer` en refresh describe el mecanismo de autenticación y no prohíbe la coexistencia de headers; si llegan, MUST NOT usarse como credencial ni sustituir la cookie, y su presencia sola no es error. La respuesta de refresh MUST NOT exponer el refresh token. El access bearer MUST NOT sugerirse en `localStorage`. El cliente backend no-browser queda fuera de alcance. **B8 queda como restricción de provisioning:** el usuario autoriza usar sus correos reales cuando se llegue, pero direcciones y proveedor aún no están fijados. Las pruebas MUST usar primero un adaptador con sink en memoria; el envío real solo se habilitará a destinatarios autorizados explícitos, para casos sin PHI y sin enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales, con rate limiting y sin user enumeration. Los tokens MUST NOT registrarse en logs ni incluirse en URLs.
 
 #### Scenario: Verificación por request
 
@@ -114,11 +116,47 @@ El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitec
 - **THEN** forgot responde `202` uniforme con rate limit
 - **AND** reset usa token de un solo uso de 30 minutos, hash, sin logs, y revoca todas las sesiones.
 
-#### Scenario: Refresh web
+#### Scenario: Login entrega refresh solo en cookie
 
-- **WHEN** el cliente web renueva la sesión
-- **THEN** el refresh viaja en cookie HttpOnly/Secure/SameSite y la respuesta no expone el refresh token
-- **AND** si es cross-site se evalúa origen/CSRF.
+- **WHEN** un cliente web completa el login correctamente con un `Origin` permitido
+- **THEN** recibe la respuesta JSON actual y el refresh opaco solo en la cookie `clearsight_refresh`
+- **AND** la cookie es `HttpOnly; Secure; SameSite=Lax`, host-only, `Path=/api/auth` y expira dentro de la sesión absoluta (≤ 7 días).
+
+#### Scenario: Refresh por cookie sin body
+
+- **WHEN** el cliente web llama a `POST /auth/refresh` con la cookie y sin body
+- **THEN** el sistema rota el refresh una sola vez y responde solo `accessToken`, `tokenType` y `expiresIn`
+- **AND** no acepta `Bearer` ni devuelve el refresh en JSON.
+
+#### Scenario: Reuso concurrente del mismo refresh
+
+- **WHEN** dos solicitudes concurrentes presentan el mismo refresh
+- **THEN** como máximo una emite el sucesor
+- **AND** la otra revoca esa sesión y todos sus refresh, sin afectar otras sesiones del usuario, y se trata como `401` sin ventana de gracia.
+
+#### Scenario: Origen público requerido en login y refresh
+
+- **WHEN** `Origin` está ausente, es `null` o no coincide exactamente con `AUTH_PUBLIC_ORIGIN`
+- **THEN** el sistema rechaza con `403` genérico antes de KDF/store
+- **AND** rechaza `Sec-Fetch-Site: cross-site` si viene y no deriva el origen de `Host`/`X-Forwarded-*` ni de CORS wildcard.
+
+#### Scenario: Configuración de origen ausente
+
+- **WHEN** `AUTH_PUBLIC_ORIGIN` no está configurado
+- **THEN** los endpoints de cookie fallan cerrado
+- **AND** `buildApp` sigue construyendo lazy y `/auth/register` sigue retirado sin depender de ese valor.
+
+#### Scenario: Logout revoca la sesión y limpia la cookie
+
+- **WHEN** el cliente llama a `POST /auth/logout` con `Bearer` de una sesión válida
+- **THEN** el sistema revoca esa sesión y su cadena con auditoría y responde `204`
+- **AND** limpia `clearsight_refresh` con los mismos atributos y no acepta cookie sola como autorización.
+
+#### Scenario: Fallos transaccionales no emiten ni consumen
+
+- **WHEN** falla la firma, la auditoría o el commit en login o refresh
+- **THEN** login no setea cookie y refresh no consume el padre
+- **AND** el reuso confirma revocación+auditoría antes de devolver `401`; si la auditoría cae, responde `503` con rollback.
 
 #### Scenario: Envío real de email no configurado
 

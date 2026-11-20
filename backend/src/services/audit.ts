@@ -27,6 +27,7 @@ export const AUDIT_CHANNELS = [
   "admin-api",
   "password-reset",
   "refresh",
+  "logout",
 ] as const;
 
 /** Profile fields an admin mutation may describe without exporting values. */

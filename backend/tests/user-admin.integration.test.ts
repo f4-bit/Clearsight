@@ -9,7 +9,7 @@ import { PrismaClient as GeneratedPrismaClient } from "../src/generated/prisma/c
 import type { UserRole } from "../src/generated/prisma/enums.js";
 import type { PrismaClient } from "../src/lib/prisma.js";
 import { ADMIN_LIFECYCLE_LOCK_KEY, bootstrapAdmin } from "../src/services/admin-bootstrap.js";
-import { bearer, buildTestApp, TEST_ENV } from "./helpers/app.js";
+import { bearer, buildTestApp, TEST_AUTH_ORIGIN, TEST_ENV } from "./helpers/app.js";
 import {
   createTestPrisma,
   hashPassword,
@@ -23,6 +23,7 @@ const prisma = createTestPrisma();
 let app: FastifyInstance;
 
 const PASSWORD = "synthetic-admin-created-password-123";
+const AUTH_ORIGIN = { origin: TEST_AUTH_ORIGIN };
 const CREATED_EMAIL = "admin-created@clearsight.test";
 const FULL_NAME = "Dra. Muñoz";
 
@@ -397,6 +398,7 @@ describe("POST /admin/users creation", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: "  CREATED-LOGIN@EXAMPLE.TEST ", password: PASSWORD },
     });
     expect(login.statusCode).toBe(200);
@@ -611,6 +613,7 @@ describe("bootstrap and restricted application role", () => {
     const login = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: `  ${email.toUpperCase()}  `, password: PASSWORD },
     });
     expect(login.statusCode).toBe(200);
@@ -876,6 +879,7 @@ describe("literal email identity across login and guard (QA)", () => {
     const wrongUser = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: "literal_x@clearsight.test", password: PASSWORD },
     });
     expect(wrongUser.statusCode).toBe(401);
@@ -885,6 +889,7 @@ describe("literal email identity across login and guard (QA)", () => {
     const control = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: "literalAx@clearsight.test", password: PASSWORD },
     });
     expect(control.statusCode).toBe(200);
@@ -904,6 +909,7 @@ describe("literal email identity across login and guard (QA)", () => {
       const failure = await app.inject({
         method: "POST",
         url: "/auth/login",
+      headers: AUTH_ORIGIN,
         payload: { email: "literal_x@clearsight.test", password: "wrong-password-12345" },
       });
       statuses.push(failure.statusCode);
@@ -918,6 +924,7 @@ describe("literal email identity across login and guard (QA)", () => {
     const control = await app.inject({
       method: "POST",
       url: "/auth/login",
+      headers: AUTH_ORIGIN,
       payload: { email: "literalAx@clearsight.test", password: PASSWORD },
     });
     expect(control.statusCode).toBe(200);

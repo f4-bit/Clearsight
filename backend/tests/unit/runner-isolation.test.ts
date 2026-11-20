@@ -21,6 +21,7 @@ const INTEGRATION_INCLUDE = [
   "tests/admin-bootstrap.integration.test.ts",
   "tests/jwt.test.ts",
   "tests/auth-sessions.integration.test.ts",
+  "tests/refresh-session.integration.test.ts",
   "tests/login-protection.integration.test.ts",
   "tests/feedback.route.test.ts",
   "tests/export.route.test.ts",

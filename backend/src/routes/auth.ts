@@ -1,13 +1,20 @@
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
 import { unauthorized } from "../lib/http-error.js";
 import { authenticate } from "../middleware/auth.js";
 import {
   currentUserSchema,
   loginRequestSchema,
+  refreshResponseSchema,
   tokenResponseSchema,
 } from "../schemas/auth.js";
 import { errorResponseSchema } from "../schemas/common.js";
+import {
+  readRefreshCookie,
+  serializeRefreshCookie,
+  serializeRefreshCookieClear,
+} from "../services/auth-cookies.js";
 import { AuthSessionError } from "../services/session.js";
 
 /** Public self-registration is retired for security (REG-005). */
@@ -23,6 +30,12 @@ const INVALID_CREDENTIALS = {
   statusCode: 401,
 } as const;
 
+const INVALID_SESSION = {
+  error: "Unauthorized",
+  message: "Invalid or expired session",
+  statusCode: 401,
+} as const;
+
 /** One generic body for identifier lockout and the complementary IP quota. */
 const LOGIN_THROTTLED = {
   error: "Too Many Requests",
@@ -35,6 +48,18 @@ const AUTHENTICATION_UNAVAILABLE = {
   message: "Authentication is temporarily unavailable",
   statusCode: 503,
 } as const;
+
+async function noStore(_request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  reply.header("Cache-Control", "no-store");
+}
+
+async function requireWebOrigin(request: FastifyRequest): Promise<void> {
+  request.server.webAuthPolicy.assertRequiredOrigin(request.headers);
+}
+
+async function optionalWebOrigin(request: FastifyRequest): Promise<void> {
+  request.server.webAuthPolicy.assertOptionalOrigin(request.headers);
+}
 
 export async function authRoutes(app: FastifyInstance) {
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
@@ -69,10 +94,12 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: tokenResponseSchema,
           401: errorResponseSchema,
+          403: errorResponseSchema,
           429: errorResponseSchema,
           503: errorResponseSchema,
         },
       },
+      onRequest: [noStore, requireWebOrigin],
     },
     async (request, reply) => {
       try {
@@ -81,7 +108,19 @@ export async function authRoutes(app: FastifyInstance) {
           (claims, expiresInSeconds) => app.jwt.sign(claims, { expiresIn: expiresInSeconds }),
           { clientIp: request.ip }
         );
-        return reply.send(result);
+
+        // Explicit split: the JSON body never contains the opaque refresh
+        // secret. Only the cookie carries it.
+        reply.header(
+          "Set-Cookie",
+          serializeRefreshCookie(result.refreshToken, result.refreshMaxAgeSeconds),
+        );
+        return reply.send({
+          accessToken: result.accessToken,
+          tokenType: result.tokenType,
+          expiresIn: result.expiresIn,
+          user: result.user,
+        });
       } catch (error) {
         if (error instanceof AuthSessionError) {
           if (error.code === "AUTH_INVALID_CREDENTIALS") {
@@ -96,6 +135,95 @@ export async function authRoutes(app: FastifyInstance) {
               .send(LOGIN_THROTTLED);
           }
           // Store/sign/audit failures are safe and never expose driver output.
+          return reply.status(503).send(AUTHENTICATION_UNAVAILABLE);
+        }
+        throw error;
+      }
+    }
+  );
+
+  // POST /auth/refresh — cookie-only, no body and no Bearer.
+  typedApp.post(
+    "/refresh",
+    {
+      schema: {
+        tags: ["Auth"],
+        summary: "Rotate the opaque refresh cookie",
+        response: {
+          200: refreshResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+      onRequest: [noStore, requireWebOrigin],
+    },
+    async (request, reply) => {
+      const rawRefreshToken = readRefreshCookie(request.headers);
+      if (rawRefreshToken === null) {
+        return reply.status(401).send(INVALID_SESSION);
+      }
+
+      try {
+        const result = await app.authWebSessionService.refresh(
+          rawRefreshToken,
+          (claims, expiresInSeconds) =>
+            app.jwt.sign(claims, { expiresIn: expiresInSeconds }),
+        );
+        reply.header(
+          "Set-Cookie",
+          serializeRefreshCookie(result.refreshToken, result.refreshMaxAgeSeconds),
+        );
+        return reply.send({
+          accessToken: result.accessToken,
+          tokenType: result.tokenType,
+          expiresIn: result.expiresIn,
+        });
+      } catch (error) {
+        if (error instanceof AuthSessionError) {
+          if (error.code === "AUTH_SESSION_INVALID") {
+            return reply.status(401).send(INVALID_SESSION);
+          }
+          return reply.status(503).send(AUTHENTICATION_UNAVAILABLE);
+        }
+        throw error;
+      }
+    }
+  );
+
+  // POST /auth/logout — Bearer authorization is mandatory; the cookie alone is
+  // never sufficient. An Origin header, when present, passes the same guard.
+  typedApp.post(
+    "/logout",
+    {
+      schema: {
+        tags: ["Auth"],
+        summary: "Revoke the current session and clear the refresh cookie",
+        response: {
+          204: z.void(),
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+      onRequest: [noStore, optionalWebOrigin],
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      const principal = request.authenticatedUser;
+      if (!principal) {
+        throw unauthorized();
+      }
+
+      try {
+        await app.authWebSessionService.logout(principal);
+        reply.header("Set-Cookie", serializeRefreshCookieClear());
+        return reply.status(204).send();
+      } catch (error) {
+        if (error instanceof AuthSessionError) {
+          if (error.code === "AUTH_SESSION_INVALID") {
+            return reply.status(401).send(INVALID_SESSION);
+          }
           return reply.status(503).send(AUTHENTICATION_UNAVAILABLE);
         }
         throw error;

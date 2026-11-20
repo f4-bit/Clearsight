@@ -14,6 +14,7 @@ import {
   LoginProtectionThrottledError,
 } from "./login-guard.js";
 import { PASSWORD_DUMMY_HASH } from "./password-policy.js";
+import { generateRefreshToken, hashRefreshToken } from "./refresh-tokens.js";
 
 export { assertValidDatabaseSchema, DEFAULT_DATABASE_SCHEMA };
 
@@ -122,6 +123,9 @@ export interface LoginResult {
   readonly tokenType: "bearer";
   readonly expiresIn: string;
   readonly user: LoginUser;
+  /** Internal-only secret. The route moves it to the cookie and never to JSON. */
+  readonly refreshToken: string;
+  readonly refreshMaxAgeSeconds: number;
 }
 
 export interface SafePrincipal extends LoginUser {
@@ -340,14 +344,31 @@ export function createAuthSessionService(
           // counters. A later audit/sign failure rolls the reset back.
           await loginProtection.assertAndResetForSuccess(tx, email, current.id);
 
+          const sessionExpiresAt = new Date(issuedAt.getTime() + sessionTtlMs);
           const session = await tx.userSession.create({
             data: {
               userId: current.id,
               issuedTokenVersion: current.tokenVersion,
               createdAt: issuedAt,
-              expiresAt: new Date(issuedAt.getTime() + sessionTtlMs),
+              expiresAt: sessionExpiresAt,
             },
             select: { id: true },
+          });
+
+          // The opaque refresh value exists only in this closure and in the
+          // browser cookie. The DB stores only its SHA-256 hash. If audit or
+          // signing fails, the whole transaction (session + refresh) rolls back
+          // before any cookie is set.
+          const refreshToken = generateRefreshToken();
+          await tx.refreshToken.create({
+            data: {
+              userId: current.id,
+              sessionId: session.id,
+              parentTokenId: null,
+              tokenHash: hashRefreshToken(refreshToken),
+              createdAt: issuedAt,
+              expiresAt: sessionExpiresAt,
+            },
           });
 
           await writeAuditEvent(context, {
@@ -389,6 +410,11 @@ export function createAuthSessionService(
               email: current.email,
               role: current.role,
             },
+            refreshToken,
+            refreshMaxAgeSeconds: Math.max(
+              0,
+              Math.ceil((sessionExpiresAt.getTime() - issuedAt.getTime()) / 1000),
+            ),
           } satisfies LoginResult;
         },
         { isolationLevel: "ReadCommitted" },

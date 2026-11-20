@@ -9,7 +9,17 @@ export const TEST_ENV = {
   JWT_SECRET: "test-jwt-secret-test-jwt-secret-1234",
   JWT_EXPIRES_IN: "15m",
   EXPORT_HMAC_SECRET: "test-hmac-secret-test-hmac-secret-12",
+  AUTH_PUBLIC_ORIGIN: "https://app.clearsight.test",
 } as const;
+
+export const TEST_AUTH_ORIGIN = TEST_ENV.AUTH_PUBLIC_ORIGIN;
+
+/** Merges the legitimate test Origin unless a guard test overrides it. */
+export function withAuthOrigin(
+  headers: Record<string, string> = {},
+): Record<string, string> {
+  return { origin: TEST_AUTH_ORIGIN, ...headers };
+}
 
 export async function buildTestApp(
   prisma: PrismaClient,

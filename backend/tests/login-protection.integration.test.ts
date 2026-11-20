@@ -17,7 +17,7 @@ import {
   type AuthLoginProtectionOptions,
 } from "../src/services/login-guard.js";
 import { createAuthSessionService } from "../src/services/session.js";
-import { buildTestApp, TEST_ENV } from "./helpers/app.js";
+import { buildTestApp, TEST_AUTH_ORIGIN, TEST_ENV } from "./helpers/app.js";
 import {
   createTestPrisma,
   hashPassword,
@@ -105,7 +105,9 @@ function login(
     url: "/auth/login",
     payload,
     ...(options.remoteAddress === undefined ? {} : { remoteAddress: options.remoteAddress }),
-    ...(options.headers === undefined ? {} : { headers: options.headers }),
+    // Legitimate suites get the explicit public Origin by default. Origin-guard
+    // tests build their own requests without this helper.
+    headers: { origin: TEST_AUTH_ORIGIN, ...(options.headers ?? {}) },
   });
 }
 

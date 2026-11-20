@@ -29,7 +29,7 @@ La rama `feat/backend-ml-consolidation` integra piezas que hoy no forman un cont
 - `artifact-evidence`: catálogo y ciclo de vida de artefactos, referencias estables, almacenamiento lógico, URLs firmadas bajo demanda, estados de ausencia/fallo y reconciliación.
 - `inference-orchestration`: contrato público del servicio ML, cola/worker, idempotencia, recuperación, mapeo de clases, persistencia de resultados y reintentos acotados.
 - `clinical-api-contract`: contrato HTTP para frontend: endpoints, cuerpos, errores, autenticación, ownership, compatibilidad y funciones diferidas marcadas como no implementadas.
-- `identity-access-audit`: roles, autenticación, bloqueo por intentos consecutivos, sesiones con decisión técnica propuesta, administración segura, auditoría append-only y desactivación/revocación con supresión pendiente.
+- `identity-access-audit`: roles, autenticación, bloqueo por intentos consecutivos, sesiones técnicas con refresh web 5.8 implementado/QA PASSED, administración segura, auditoría append-only y desactivación/revocación con supresión pendiente; reset 5.9 pendiente.
 - `clinical-pdf-report`: PDF básico obligatorio para completitud, contenido mínimo, ausencia de secretos, idempotencia y versionado.
 - `azure-isolated-deployment`: provisión y limpieza aislada por ejecución, seguridad de recursos, verificación de eliminación y bloqueos de decisión.
 - `azure-deployment-automation`: capacidad inicial del repo para provisión Azure aislada por ejecución, etiquetada, con manifest y cleanup verificado; incluye la verificación E2E de pipeline.
@@ -42,7 +42,7 @@ Ninguna baseline versionada. Las specs locales bajo `openspec/specs/` no están 
 
 ## Impact
 
-- **Documentación**: este change es la fuente de verdad para backend, ML, Azure, seguridad y contrato de frontend. Ninguna funcionalidad descrita se declara implementada.
+- **Documentación**: este change es la fuente de verdad para backend, ML, Azure, seguridad y contrato de frontend. Las tareas marcadas `[x]` con evidencia (incluida 5.8 con QA PASSED) están implementadas; el resto de funcionalidades descritas no se declara implementado y 5.9 sigue pendiente.
 - **Backend/Node**: rutas, autenticación/RBAC, repositorios, worker BullMQ, almacenamiento y contrato de persistencia. Evidencia estática actual: `backend/src/routes/auth.ts`, `backend/src/routes/inferences.ts`, `backend/src/workers/inference.worker.ts`, `backend/src/repositories/inference.repo.ts`, `backend/src/services/storage.ts`, `backend/prisma/schema.prisma`.
 - **ML/Python**: arranque de storage, contrato `/v1/inferences`, pipeline, estados y publicación de artefactos. Evidencia estática actual: `ml/service/storage.py`, `ml/service/queue.py`, `ml/inference/pipeline.py`, `ml/service/schemas.py`.
 - **Base de datos**: nuevas entidades/campos para ejecución, evidencia, PDF, auditoría e idempotencia; cambios de estado y migración condicionada. Baseline actual: `docker/init.sql`, `backend/prisma/migrations/20261027000000_prisma_alignment/migration.sql`.
