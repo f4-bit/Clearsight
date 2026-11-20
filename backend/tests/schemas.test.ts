@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { CLASS_LABELS } from "../src/schemas/common.js";
-import { CLINICAL_FEATURE_NAMES, ClinicalFeaturesSchema, extractClinicalFeatures } from "../src/schemas/clinical.js";
+import { CLINICAL_FEATURE_NAMES, ClinicalFeaturesSchema, ClinicalSnapshotCreateSchema, extractClinicalFeatures } from "../src/schemas/clinical.js";
 import { FeedbackCreate } from "../src/schemas/feedback.js";
 import { patientCreateSchema, registerRequestSchema } from "../src/schemas/index.js";
 import { FEATURES } from "./fixtures/clinical.js";
@@ -102,5 +102,120 @@ describe("auth and patient schemas", () => {
       clinicalHistoryFlags: { diabetes: true },
     });
     expect(res.success).toBe(true);
+  });
+});
+
+describe("clinical snapshot schema", () => {
+  const base = () => ({
+    consultationId: randomUUID(),
+    rawPayload: { age: 63, laterality: "OD", nested: { values: [1, "x", null, true] } },
+    normalizedPayload: { age: 63, features: { cdr: 0.4 } },
+    schemaVersion: "clinical-v1",
+    modelVersions: {
+      classifier: { name: "efficientnet", version: "2026-09-24" },
+      segmenter: { versions: ["v1", "v2"] },
+    },
+  });
+
+  it("accepts independent raw/normalized objects and preserves nested model versions", () => {
+    const input = base();
+    const result = ClinicalSnapshotCreateSchema.safeParse(input);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.rawPayload).toEqual(input.rawPayload);
+    expect(result.success && result.data.normalizedPayload).toEqual(input.normalizedPayload);
+    expect(result.success && result.data.modelVersions).toEqual(input.modelVersions);
+  });
+
+  it("defaults modelVersions to an empty object without inventing revisions", () => {
+    const { modelVersions: _modelVersions, ...input } = base();
+    const parsed = ClinicalSnapshotCreateSchema.parse(input);
+    expect(parsed.modelVersions).toEqual({});
+  });
+
+  it("requires raw and normalized payloads independently", () => {
+    const input = base();
+    expect(ClinicalSnapshotCreateSchema.safeParse({ ...input, rawPayload: undefined }).success).toBe(false);
+    expect(ClinicalSnapshotCreateSchema.safeParse({ ...input, normalizedPayload: undefined }).success).toBe(false);
+    expect(ClinicalSnapshotCreateSchema.safeParse({ ...input, rawPayload: [] }).success).toBe(false);
+    expect(ClinicalSnapshotCreateSchema.safeParse({ ...input, normalizedPayload: [] }).success).toBe(false);
+  });
+
+  it("requires a UUID consultation id", () => {
+    for (const consultationId of ["not-a-uuid", "", 42, null, undefined]) {
+      expect(
+        ClinicalSnapshotCreateSchema.safeParse({ ...base(), consultationId }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("accepts empty JSON objects as raw, normalized and model versions", () => {
+    const parsed = ClinicalSnapshotCreateSchema.parse({
+      ...base(),
+      rawPayload: {},
+      normalizedPayload: {},
+      modelVersions: {},
+    });
+    expect(parsed.rawPayload).toEqual({});
+    expect(parsed.normalizedPayload).toEqual({});
+    expect(parsed.modelVersions).toEqual({});
+  });
+
+  it("requires an explicit non-blank schemaVersion within the DB width", () => {
+    const { schemaVersion: _schemaVersion, ...withoutVersion } = base();
+    expect(ClinicalSnapshotCreateSchema.safeParse(withoutVersion).success).toBe(false);
+    for (const schemaVersion of ["", "   ", "x".repeat(129)]) {
+      expect(ClinicalSnapshotCreateSchema.safeParse({ ...base(), schemaVersion }).success).toBe(false);
+    }
+    expect(ClinicalSnapshotCreateSchema.safeParse({ ...base(), schemaVersion: "x".repeat(128) }).success).toBe(true);
+  });
+
+  it("rejects non-object roots and non-JSON values at any depth without coercion", () => {
+    for (const rawPayload of [[], null, "x", 3]) {
+      expect(ClinicalSnapshotCreateSchema.safeParse({ ...base(), rawPayload }).success).toBe(false);
+    }
+
+    const invalidValues = [
+      undefined,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      1n,
+      () => "x",
+      new Date(),
+      new Map(),
+      new Set(),
+    ];
+    for (const value of invalidValues) {
+      expect(
+        ClinicalSnapshotCreateSchema.safeParse({
+          ...base(),
+          rawPayload: { nested: { value } },
+        }).success,
+      ).toBe(false);
+      expect(
+        ClinicalSnapshotCreateSchema.safeParse({
+          ...base(),
+          normalizedPayload: { value },
+        }).success,
+      ).toBe(false);
+      expect(
+        ClinicalSnapshotCreateSchema.safeParse({
+          ...base(),
+          modelVersions: { classifier: { value } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("rejects cyclic payloads instead of recursing", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(ClinicalSnapshotCreateSchema.safeParse({ ...base(), rawPayload: cyclic }).success).toBe(false);
+  });
+
+  it("rejects unknown snapshot fields", () => {
+    expect(
+      ClinicalSnapshotCreateSchema.safeParse({ ...base(), sources: ["x"] }).success,
+    ).toBe(false);
   });
 });

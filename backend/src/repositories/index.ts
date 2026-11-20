@@ -1,4 +1,5 @@
 import type { Db } from "./types.js";
+import { createClinicalSnapshotRepository } from "./clinical-snapshot.repo.js";
 import { createConsultationRepository } from "./consultation.repo.js";
 import { createFeedbackRepository } from "./feedback.repo.js";
 import { createImageRepository } from "./image.repo.js";
@@ -12,6 +13,7 @@ export function createRepositories(db: Db) {
     users: createUserRepository(db),
     patients: createPatientRepository(db),
     consultations: createConsultationRepository(db),
+    snapshots: createClinicalSnapshotRepository(db),
     images: createImageRepository(db),
     inferences: createInferenceRepository(db),
     feedback: createFeedbackRepository(db),

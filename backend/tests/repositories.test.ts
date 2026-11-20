@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { Client } from "pg";
+import { ZodError } from "zod";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createRepositories } from "../src/repositories/index.js";
-import { createTestPrisma, makeStudy, makeUser, resetDb } from "./helpers/db.js";
+import { createTestPrisma, makeStudy, makeUser, resetDb, testDatabaseUrl } from "./helpers/db.js";
 
 const prisma = createTestPrisma();
 const repos = createRepositories(prisma);
@@ -219,5 +221,179 @@ describe("feedback", () => {
       },
     });
     expect(both.map((row) => row.inferenceId)).toEqual([b.inference.id]);
+  });
+});
+
+describe("clinical snapshots", () => {
+  const snapshotInput = (consultationId: string) => ({
+    consultationId,
+    rawPayload: {
+      age: 63,
+      laterality: "OD",
+      nested: { values: [1, "x", null, true] },
+    },
+    normalizedPayload: {
+      age: 63,
+      features: { cdr: 0.4 },
+    },
+    schemaVersion: "clinical-v1",
+    modelVersions: {
+      classifier: { name: "efficientnet", version: "2026-09-24" },
+      segmenter: { versions: ["v1", "v2"] },
+    },
+  });
+
+  it("round-trips raw, normalized and nested model versions exactly", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const input = snapshotInput(study.consultation.id);
+
+    const created = await repos.snapshots.create(input);
+    expect(created.consultationId).toBe(study.consultation.id);
+    expect(created.schemaVersion).toBe("clinical-v1");
+    expect(created.createdAt).toBeInstanceOf(Date);
+
+    const found = await repos.snapshots.findById(created.id);
+    expect(found).not.toBeNull();
+    expect(found?.rawPayload).toEqual(input.rawPayload);
+    expect(found?.normalizedPayload).toEqual(input.normalizedPayload);
+    expect(found?.modelVersions).toEqual(input.modelVersions);
+  });
+
+  it("stores an omitted modelVersions as the unresolved empty object", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const { modelVersions: _modelVersions, ...input } = snapshotInput(study.consultation.id);
+
+    const created = await repos.snapshots.create(input);
+
+    expect(created.modelVersions).toEqual({});
+    expect((await repos.snapshots.findById(created.id))?.modelVersions).toEqual({});
+  });
+
+  it("keeps the snapshot intact when consultation data or the input object changes", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const input = snapshotInput(study.consultation.id);
+    const originalRaw = structuredClone(input.rawPayload);
+    const originalNormalized = structuredClone(input.normalizedPayload);
+    const originalVersions = structuredClone(input.modelVersions);
+
+    const created = await repos.snapshots.create(input);
+    await repos.consultations.updateClinicalData(study.consultation.id, { changed: true });
+    input.rawPayload.age = 99;
+    input.rawPayload.nested.values.push("mutated");
+    input.normalizedPayload.features.cdr = 0.9;
+    input.modelVersions.classifier.version = "changed";
+
+    expect(created.rawPayload).toEqual(originalRaw);
+    const found = await repos.snapshots.findById(created.id);
+    expect(found?.rawPayload).toEqual(originalRaw);
+    expect(found?.normalizedPayload).toEqual(originalNormalized);
+    expect(found?.modelVersions).toEqual(originalVersions);
+  });
+
+  it("rejects invalid payloads and versions before any insert", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const valid = snapshotInput(study.consultation.id);
+
+    await expect(
+      repos.snapshots.create({ ...valid, rawPayload: [] } as unknown as typeof valid),
+    ).rejects.toThrow(ZodError);
+    await expect(
+      repos.snapshots.create({
+        ...valid,
+        normalizedPayload: { deep: { date: new Date() } },
+      } as unknown as typeof valid),
+    ).rejects.toThrow(ZodError);
+    await expect(
+      repos.snapshots.create({ ...valid, schemaVersion: "   " }),
+    ).rejects.toThrow(ZodError);
+    const { schemaVersion: _schemaVersion, ...withoutVersion } = valid;
+    await expect(
+      repos.snapshots.create(withoutVersion as unknown as typeof valid),
+    ).rejects.toThrow(ZodError);
+
+    expect(await prisma.clinicalSnapshot.count()).toBe(0);
+  });
+
+  it("returns null for malformed and unknown UUIDs", async () => {
+    expect(await repos.snapshots.findById("not-a-uuid")).toBeNull();
+    expect(await repos.snapshots.findById("")).toBeNull();
+    expect(await repos.snapshots.findById(randomUUID())).toBeNull();
+  });
+
+  it("works with a transaction client and rolls back with the caller", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    let snapshotId: string | undefined;
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        const txRepos = createRepositories(tx);
+        const created = await txRepos.snapshots.create(snapshotInput(study.consultation.id));
+        snapshotId = created.id;
+        expect(await txRepos.snapshots.findById(created.id)).not.toBeNull();
+        throw new Error("rollback snapshot");
+      }),
+    ).rejects.toThrow("rollback snapshot");
+
+    expect(snapshotId).toBeDefined();
+    expect(await repos.snapshots.findById(snapshotId as string)).toBeNull();
+  });
+
+  it("denies direct UPDATE/DELETE for the application role", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const created = await repos.snapshots.create(snapshotInput(study.consultation.id));
+
+    const app = new Client({ connectionString: testDatabaseUrl() });
+    await app.connect();
+    try {
+      await app.query("SET ROLE clearsight_app");
+      await expect(
+        app.query("UPDATE clinical_snapshots SET schema_version = 'changed' WHERE id = $1", [created.id]),
+      ).rejects.toThrow(/permission denied for table clinical_snapshots/);
+      await expect(
+        app.query("DELETE FROM clinical_snapshots WHERE id = $1", [created.id]),
+      ).rejects.toThrow(/permission denied for table clinical_snapshots/);
+    } finally {
+      await app.query("RESET ROLE");
+      await app.end();
+    }
+
+    expect((await repos.snapshots.findById(created.id))?.schemaVersion).toBe("clinical-v1");
+  });
+
+  it("keeps the database trigger rejecting owner updates and deletes", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const created = await repos.snapshots.create(snapshotInput(study.consultation.id));
+
+    const owner = new Client({ connectionString: testDatabaseUrl() });
+    await owner.connect();
+    try {
+      await expect(
+        owner.query("UPDATE clinical_snapshots SET created_at = $2 WHERE id = $1", [created.id, new Date(0)]),
+      ).rejects.toThrow(/clinical_snapshots are immutable/);
+      await expect(
+        owner.query("DELETE FROM clinical_snapshots WHERE id = $1", [created.id]),
+      ).rejects.toThrow(/clinical_snapshots are immutable/);
+    } finally {
+      await owner.end();
+    }
+  });
+
+  it("resetDb clears snapshots through the consultations cascade", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    await repos.snapshots.create(snapshotInput(study.consultation.id));
+    expect(await prisma.clinicalSnapshot.count()).toBe(1);
+
+    await resetDb(prisma);
+
+    expect(await prisma.clinicalSnapshot.count()).toBe(0);
+    expect(await prisma.consultation.count()).toBe(0);
   });
 });

@@ -332,6 +332,22 @@
 | Docker/cleanup | Contenedores/volúmenes propios sin residuos; recursos ajenos intactos. |
 | Límites | 5.9 cerrada; B8 provider/credenciales reales pendiente de provisioning sin bloquear cierre. Sin frontend, proxy, Azure, `.env` reales, correo real, PHI ni PDF. Detalle: `docs/hito17-password-recovery-runbook.md`. |
 
+## 1.17 Evidencia HITO18 - snapshot clínico 2.1 (QA PASSED)
+
+> **Naturaleza:** QA focal sobre PostgreSQL owned y runner unitario aislado. 2.1 queda `[x]`. Sin full integration nueva; cierre solo documental, sin source/test edits ni reruns.
+
+| Elemento | Evidencia |
+|---|---|
+| Alcance | Schema de snapshot en `backend/src/schemas/clinical.ts`, repositorio `backend/src/repositories/clinical-snapshot.repo.ts` y `repos.snapshots` en `backend/src/repositories/index.ts`. Sin 2.2, auth, worker, endpoints ni migración/schema. |
+| Validación | `create` valida estructura y JSON anidado de datos planos tipados antes de DB, sin normalizar/coercionar. Raw y normalized independientes; `schemaVersion` explícito/nonblank/<=128; `modelVersions` JSON anidado con `{}` = no resuelto. |
+| Schemas focal | `npm --prefix backend run test:unit -- tests/schemas.test.ts` -> **25 tests** (2 QA nuevos). |
+| Repositorio focal | `npm --prefix backend run test:integration -- tests/repositories.test.ts` -> **22 tests**; 4 asserts reforzadas para esperar `ZodError`. Cubre roundtrip, mutación de input/consulta, TX rollback, UUID inválido, app role y `resetDb` cascade. |
+| Migraciones snapshot | `npm --prefix backend run test:integration -- tests/migrations.test.ts` -> **25 tests**. |
+| Unit completo | `npm --prefix backend run test:unit` -> **27 files / 405 tests**. |
+| Estático | `typecheck` **0** después de los tests QA; `build` **0** reutilizado del mismo source. |
+| Docker/cleanup | Cero contenedores/volúmenes propios residuales; `redkeep_db` ajeno intacto. |
+| Límites | Datos JSON planos tipados; profundidad patológica y getters de objetos JS (no HTTP) no cubiertos aún como hardening; no se promete protección universal ni nuevas fuentes/versiones. Sin full integration nueva. 2.2, Azure/provider y email real siguen pendientes. Detalle: `docs/hito18-clinical-snapshot-runbook.md`. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
