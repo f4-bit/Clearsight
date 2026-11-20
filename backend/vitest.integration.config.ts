@@ -27,6 +27,8 @@ export default defineConfig({
       "tests/auth-sessions.integration.test.ts",
       "tests/refresh-session.integration.test.ts",
       "tests/login-protection.integration.test.ts",
+      "tests/password-recovery-quota.integration.test.ts",
+      "tests/password-reset.integration.test.ts",
       "tests/feedback.route.test.ts",
       "tests/export.route.test.ts",
       "tests/etl.test.ts",

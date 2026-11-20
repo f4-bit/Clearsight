@@ -14,4 +14,6 @@ export const AUTH_LOG_REDACT_PATHS = [
   'req.body.newPassword',
   'req.body.currentPassword',
   'req.body.refreshToken',
+  'req.body.token',
+  'req.body.email',
 ] as const;

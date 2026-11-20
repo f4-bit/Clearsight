@@ -193,7 +193,7 @@
 - Dummy bcrypt cost 12 compartido por bootstrap/seed/altas futuras; hashes legacy de coste menor siguen aceptados sin rehash offline y conservan variabilidad de timing residual.
 - Lock SQL cualificado por `databaseSchema` (default `public`; custom explicito para clientes Prisma con otro schema).
 - El guard de produccion rechaza los placeholders publicos de `.env.example` (`replace-me...`), variantes `change-me`/`changeme` y valores vacios o cortos; una clave valida no-placeholder de 32+ caracteres sigue aceptada. No se leen `.env` reales ni `.env.azure`.
-- Este hito **no** declara toda la autenticacion como asegurada: 5.2, 5.3, 5.6, 5.8 y 5.9 siguen pendientes.
+- Este hito **no** declara toda la autenticacion como asegurada: en ese momento 5.2, 5.3, 5.6, 5.8 y 5.9 seguían pendientes; se cerraron en hitos posteriores (5.9 QA PASSED en HITO17).
 
 ## 1.11 Evidencia HITO 11 - login protection 5.3 (2026-11-19)
 
@@ -259,7 +259,7 @@
 | Historico pre-QA | Foco unit/schema 4 files / 41 tests y foco ACL/migracion/repositorios 3 files / 44 tests; no son conteos finales. |
 
 - Sin cambios de fuente/pruebas en este cierre documental; no se ejecutaron suites desde el agente de documentacion.
-- La tarea 5.2 queda cerrada con la evidencia QA anterior; 5.8/5.9 y 9.2 siguen pendientes y no se declara release clinica completa.
+- La tarea 5.2 quedó cerrada con la evidencia QA anterior; 5.8/5.9 se cerraron después con QA PASSED y 9.2 sigue pendiente. No se declara release clinica completa.
 
 ## 1.14 Evidencia HITO16 — contrato de sesión web 5.8 (QA PASSED)
 
@@ -289,6 +289,48 @@
 - **H3 (logging):** la redacción actual cubre `Cookie`, `Set-Cookie`, `Authorization` y campos de credenciales. Serializers custom futuros requieren revisión contra esa lista; no hay fuga actual.
 - QA añadió casos a `refresh-session.integration.test.ts` (21 tests) y la aserción de cookie duplicada con el mismo valor en unit.
 - Detalle: `docs/hito16-auth-refresh-runbook.md`.
+
+## 1.15 Evidencia HITO17 - R1 persistencia y guard de cuotas de recuperación (2026-11-19)
+
+> **Naturaleza:** evidencia de una tarea parcial. R1 implementa la migración incremental y el guard de cuotas; en su momento 5.9 seguía pendiente, pero R2 y QA final la cerraron en HITO17 (ver §1.16).
+
+| Elemento | Evidencia |
+|---|---|
+| Migración | `backend/prisma/migrations/20261119020000_password_recovery_quotas/migration.sql`: `auth_recovery_buckets` con `PK(kind,key_hash)`, `kind IN ('FORGOT_EMAIL','FORGOT_IP','RESET_IP')`, hash lowercase 64 hex, contador acotado por kind, ventana e `updated_at >= window_started_at`. Sin editar migraciones históricas, `0_init` ni `docker/init.sql`; sin reutilizar `auth_login_buckets`. |
+| Modelo | `AuthRecoveryBucket` en `backend/prisma/schema.prisma` mapeado a `auth_recovery_buckets`. |
+| Guard | `backend/src/services/password-recovery-quota.ts`: DI de Prisma/schema/reloj, secreto HMAC con propósito `clearsight:auth-password-recovery:v1` distinto de login, cuotas fijas, transición pura y errores genéricos de store/input. No lockea usuarios, no hace KDF y no consulta cuentas. |
+| Permisos | `clearsight_app` recibe solo `SELECT/INSERT/UPDATE`; `DELETE/TRUNCATE/TRIGGER/REFERENCES` revocados; el bloque falla cerrado ante rol ausente/inseguro, ownership o grant efectivo prohibido, incluido PUBLIC. |
+| Tests unitarios | `backend/tests/unit/password-recovery-quota.test.ts`: vectores HMAC externos, normalización de email/IP, límites, boundary exacto, errores genéricos y rechazo barato sin store. |
+| Tests integración | `backend/tests/password-recovery-quota.integration.test.ts`: límites/boundary, concurrencia, aislamiento IP/email/login, datos no crudos, constraints/replay/privilegios/PUBLIC en schema real, harness reset y allowlist. |
+| Harness | `backend/tests/helpers/db.ts` y `backend/tests/unit/db-ownership.test.ts` incluyen `auth_recovery_buckets` en el `TRUNCATE`; `backend/vitest.integration.config.ts` y `backend/tests/unit/runner-isolation.test.ts` incluyen la nueva suite sin relajar guards. |
+| Prisma | `npx prisma validate --schema prisma/schema.prisma` y `npx prisma generate --schema prisma/schema.prisma` con `DATABASE_URL` sintética; no se leyeron `.env` reales. |
+| Unit focal | `npm --prefix backend run test:unit -- tests/unit/password-recovery-quota.test.ts` -> **1 file / 12 tests passed**. |
+| Unit completo | `npm --prefix backend run test:unit` -> **26 files / 389 tests passed**. |
+| Integración foco R1 | `npm --prefix backend run test:integration -- tests/password-recovery-quota.integration.test.ts` -> **1 file / 15 tests passed (11.45 s)**; PostgreSQL 16-alpine owned. |
+| Estático | `npm --prefix backend run typecheck` -> exit 0; `npm --prefix backend run build` -> exit 0. |
+| Docker/cleanup | Inventario posterior con labels `com.clearsight.test.owner=backend-integration` y `com.clearsight.test.run-id`: sin contenedores ni volúmenes propios residuales. |
+| Límites | Evidencia pre-QA de R1: sin endpoints/token lifecycle en ese momento; R2 y full integration QA los cubrieron después (§1.16). Sin frontend, proxy, Azure, PHI, PDF ni correo real. |
+
+## 1.16 Evidencia HITO17 - R2 endpoints y ciclo de vida de reset (2026-11-19)
+
+> **Naturaleza:** R2 implementa endpoints y ciclo de token/email; **5.9 QA PASSED** en HITO17 con full integration **23 files / 444 tests**. B8 (proveedor/credenciales reales) sigue pendiente de provisioning y no bloquea el cierre.
+
+| Elemento | Evidencia |
+|---|---|
+| Servicio | `backend/src/services/password-reset.ts`: forgot/reset públicos, cuotas R1 en orden IP→email y IP→lookup/KDF, token 32 bytes/base64url 43/SHA-256/30 min, último token bajo lock de usuario, reset con bcrypt cost 12, `tokenVersion + 1`, consumo del token, revocación de otros reset/sesiones/refresh y auditoría en la misma tx. |
+| Entrega | `backend/src/services/password-reset-delivery.ts`: `DISABLED` por defecto y memory sink explícito de pruebas; post-commit; fallo de entrega responde 202, revoca condicionalmente solo el token exacto y registra código operativo sin email/token. |
+| Rutas | `/auth/password/forgot` y `/auth/password/reset` públicas, sin cookie/sesión; `onRequest` no-store + Origin opcional igual a logout; JSON estricto; 202/204/400/401/403/429/503 genéricos. Path público previsto `/api/auth/password/*`; proxy no implementado. |
+| Esquemas/DI | `passwordSchema` compartido alta/reset (12 code points/72 UTF-8), schemas estrictos, `AppDeps`/decoración/tipos Fastify, redacción `req.body.token/email/newPassword`. |
+| Tests R2 | `tests/unit/password-reset.test.ts` y `tests/password-reset.integration.test.ts`: noenum, último token, reset concurrente, reset+forgot, reset+refresh, admin deactivation race, 401 variantes, expiry exacto, HU01 preservado, cuotas 20/900 y forgot email/IP, disabled, sink failure/compensación exacta, audit rollback, store failure, JWT/refresh previos inválidos y DB final. |
+| Unit focal R2 | `tests/unit/password-reset.test.ts` -> **7 tests** (el 8 previo incluía `log-redaction`). |
+| Unit focal R1+R2 | `tests/unit/password-recovery-quota.test.ts tests/unit/password-reset.test.ts` -> **19 tests**. |
+| Integration R2 | QA final, `tests/password-reset.integration.test.ts` -> **28 tests**; incluye 6 QA nuevos: default disabled, IP exhaust, 503 uniforme, carreras, no auth substitute y 400 sin consumo de cuota. |
+| Foco combinado pre-QA | R2+R1+refresh+login-protection+lifecycle -> **5 files / 117 tests** (histórico pre-QA; no rerun de maker). |
+| Full integration QA | **23 files / 444 tests** (401 baseline + 15 R1 + 22 R2 + 6 QA). |
+| Unit completo | **27 files / 396 tests**. |
+| Estático | `typecheck` 0 después de los tests QA; `build` reutilizado del mismo source maker 0. |
+| Docker/cleanup | Contenedores/volúmenes propios sin residuos; recursos ajenos intactos. |
+| Límites | 5.9 cerrada; B8 provider/credenciales reales pendiente de provisioning sin bloquear cierre. Sin frontend, proxy, Azure, `.env` reales, correo real, PHI ni PDF. Detalle: `docs/hito17-password-recovery-runbook.md`. |
 
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
@@ -374,6 +416,48 @@ npm --prefix backend run test:integration
 > **Nota de vigencia:** este apartado conserva el estado del HITO 2. La ejecución real posterior se registra en §1.4 (HITO 3).
 
 **Stop:** si el comando intenta conectarse a una DB no aislada, si el contenedor no puede crearse o si aparece un error preexistente no registrado.
+
+### 4.4 Fase específica 5.9 — R1+R2 (CURRENT; QA PASSED)
+
+**Objetivo:** verificar el contrato D20 de recuperación de contraseña. R1 (persistencia/guard) y R2 (endpoints/token/entrega) están implementados y **5.9 QA PASSED** según §1.16. B8 proveedor real sigue pendiente sin bloquear el cierre.
+
+**Precondiciones:**
+
+- Fase 1 verde y contrato D20/§3.1.2/spec de identidad revisados.
+- R1/R2 CURRENT: `backend/tests/unit/password-recovery-quota.test.ts`, `backend/tests/password-recovery-quota.integration.test.ts`, `backend/tests/unit/password-reset.test.ts` y `backend/tests/password-reset.integration.test.ts` existen y están en la allowlist.
+- Docker local y PostgreSQL owned de Testcontainers; `TEST_DATABASE_URL` ausente; sin `.env.azure`, Azure, correos reales ni DB externa/producción.
+- Memory sink inyectado solo por DI de pruebas; `DISABLED` por defecto; ningún envío real ni proveedor configurado.
+
+**Comandos R1+R2 CURRENT (focalizados; ver §1.15/§1.16):**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/password-recovery-quota.test.ts
+npm --prefix backend run test:unit -- tests/unit/password-reset.test.ts
+npm --prefix backend run test:integration -- tests/password-recovery-quota.integration.test.ts
+npm --prefix backend run test:integration -- tests/password-reset.integration.test.ts
+```
+
+**QA final HITO17 (evidencia reportada por QA; sin rerun de maker):**
+
+- Unit total `27 files / 396 tests`.
+- Full integration `23 files / 444 tests` (401 baseline + 15 R1 + 22 R2 + 6 QA).
+- Foco R2 `28 tests`; typecheck `0` después de QA; build reutilizado del mismo source maker `0`.
+- Docker propio limpio; ajeno intacto.
+
+**Casos mínimos verificables:**
+
+1. `forgot` con email conocido, desconocido e inactivo devuelve el mismo `202 {accepted:true}` sin token/usuario/estado; body inválido `400` sin cuota.
+2. Cuotas `forgot` 3/3600 s por email y 20/3600 s por IP: orden IP→email, consumo de IP aunque email esté agotado, `429` con `Retry-After >= 1` y sin efecto en login/HU01.
+3. Cuota `reset` 20/900 s por IP antes del lookup/bcrypt; token inválido también consume; fallo del store de cuotas `503` para cualquiera.
+4. `DISABLED`: `202` sin crear token ni revocar anteriores. Sink de pruebas: token 32 bytes/43 chars, hash SHA-256 en DB, 30 min, revocación de anteriores y auditoría antes de entregar; fallo de auditoría revierte y no entrega; fallo de entrega `202` y revocación condicional del token exacto.
+5. Dos `forgot` concurrentes del mismo usuario: solo el último token comprometido queda válido; la entrega fuera de orden no revive tokens anteriores.
+6. `reset` exitoso: `204` sin sesión/cookie, bcrypt cost 12, `tokenVersion + 1` una vez, consume el token usado y revoca otros reset/sesiones/refresh en la tx auditada; `failedLoginCount`/`lockedUntil` no cambian.
+7. `reset` inválido/expirado/usado/revocado/inactivo: `401` genérico sin reactivar; fallo de store/auditoría/hash: `503` con rollback sin consumo.
+8. Transporte y fugas: sin lectura/emisión de cookies, `Authorization` no sustituye al token, `Origin` opcional con política de logout, `Cache-Control: no-store` también en errores, y ningún token/email en logs, JSON, cabeceras, URLs o artefactos de prueba.
+
+**Stop:** si un test necesita un proveedor real, lee `.env.azure`, usa una DB compartida/producción, imprime token/email crudos o no puede aislar PostgreSQL/recursos. Un `429` no se reintenta en bucle; se respeta `Retry-After`.
+
+**Criterio de salida:** unit/integration/typecheck/build en verde sobre el mismo source, recursos Docker propios limpios y ningún secreto/dato personal en la salida. R1/R2 tienen código y pruebas reales; 5.9 QA PASSED con full integration 23/444.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
@@ -570,6 +654,13 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `backend/vitest.unit.config.ts` + `test:unit` | CURRENT | Runner puro sin `globalSetup`; verificado 6 files / 57 tests. |
 | Guard de ownership marker | CURRENT | `test_meta` + label de run; verificado con mocks. |
 | `tests/refresh-session.integration.test.ts` | CURRENT (5.8, QA PASSED) | 21 tests; cubre login cookie, rotación/reuso, guard de Origin y logout. PostgreSQL owned de Testcontainers. |
+| `npm --prefix backend run test:unit -- tests/unit/password-recovery-quota.test.ts` | CURRENT (R1, HITO17) | 12 tests; HMAC externo, límites, boundary y validación barata. |
+| `npm --prefix backend run test:integration -- tests/password-recovery-quota.integration.test.ts` | CURRENT (R1, HITO17) | 15 tests; PostgreSQL owned, constraints/replay/privilegios/concurrencia/aislamiento. |
+| `npm --prefix backend run test:unit -- tests/unit/password-reset.test.ts` | CURRENT (R2, HITO17) | 7 tests; token, política compartida y puertos de entrega. |
+| `npm --prefix backend run test:unit -- tests/unit/password-recovery-quota.test.ts tests/unit/password-reset.test.ts` | CURRENT (R1+R2, HITO17 QA) | 19 tests. |
+| `npm --prefix backend run test:integration -- tests/password-reset.integration.test.ts` | CURRENT (R2, HITO17 QA PASSED) | 28 tests; 6 QA: default disabled, IP exhaust, 503 uniforme, carreras, no auth substitute, 400 sin cuota; más revocaciones/expiry/audit rollback/compensación. |
+| Foco R2+R1+refresh+login-protection+lifecycle | HISTÓRICO PRE-QA | 5 files / 117 tests; no rerun de maker. |
+| Full integration QA HITO17 | QA PASSED | 23 files / 444 tests (401 baseline + 15 R1 + 22 R2 + 6 QA). |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

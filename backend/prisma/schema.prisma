@@ -329,6 +329,23 @@ model AuthLoginBucket {
   @@map("auth_login_buckets")
 }
 
+/// Fixed-window password-recovery quota bucket. Only purpose-scoped
+/// HMAC-SHA256 pseudonymous key hashes are stored; there is no raw email/IP/
+/// secret/token column and no FK to users (unknown/inactive identifiers share
+/// the same guard path). `kind` is one of FORGOT_EMAIL, FORGOT_IP or RESET_IP.
+model AuthRecoveryBucket {
+  kind            String   @db.VarChar(16)
+  keyHash         String   @map("key_hash") @db.VarChar(64)
+  attemptCount    Int      @default(0) @map("attempt_count")
+  windowStartedAt DateTime @map("window_started_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([kind, keyHash])
+  @@index([windowStartedAt], map: "idx_auth_recovery_buckets_window_started_at")
+  @@index([updatedAt], map: "idx_auth_recovery_buckets_updated_at")
+  @@map("auth_recovery_buckets")
+}
+
 /// Append-only audit record. Actor/target identity, action, outcome, timestamp
 /// and metadata are immutable; SQL rules enforce actor/target pairing and the
 /// bounded metadata defense. No tokens, SAS or URLs are expected.

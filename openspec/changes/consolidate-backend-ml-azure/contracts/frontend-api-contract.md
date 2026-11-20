@@ -7,8 +7,8 @@
 | Tema | Contrato |
 |---|---|
 | Base local | `http://localhost:8080` |
-| Auth | `Authorization: Bearer <accessToken>` salvo salud, login público controlado y refresh por cookie. Logout exige Bearer; la cookie no autoriza. |
-| Origen público | Login/refresh exigen `Origin` exactamente igual a `AUTH_PUBLIC_ORIGIN` (URL `http(s)` normalizada, sin wildcard); logout valida ese guard solo si envía `Origin`. |
+| Auth | `Authorization: Bearer <accessToken>` salvo salud, login/forgot/reset públicos controlados y refresh por cookie. Logout exige Bearer; la cookie no autoriza. |
+| Origen público | Login/refresh exigen `Origin` exactamente igual a `AUTH_PUBLIC_ORIGIN` (URL `http(s)` normalizada, sin wildcard); logout valida ese guard solo si envía `Origin`; `forgot`/`reset` usan la misma validación opcional porque no hay cookie como credencial. |
 | Content-Type | JSON `application/json`; upload de imagen `multipart/form-data` solo en el endpoint de imagen. |
 | Fechas | ISO-8601 con zona horaria y tipo `string(date-time)`. |
 | IDs | UUID v4, tipo `string(uuid)`. |
@@ -60,7 +60,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 ## 2. CURRENT VERIFIED — contrato actual (leído del código)
 
-> Esta sección describe el comportamiento actual aunque sea incompleto o inseguro. No es el contrato recomendado para nuevas integraciones. Login/refresh/logout reflejan la implementación 5.8 validada por QA; el resto mantiene su estado actual.
+> Esta sección describe el comportamiento actual aunque sea incompleto o inseguro. No es el contrato recomendado para nuevas integraciones. Login/refresh/logout reflejan la implementación 5.8 validada por QA; forgot/reset reflejan 5.9 (R2) validada por QA; el resto mantiene su estado actual.
 
 | Método | Ruta | Auth actual | Request actual | Response actual | Limitaciones actuales |
 |---|---|---|---|---|---|
@@ -69,7 +69,9 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | POST | `/auth/login` | Público + `Origin` exacto | `{ email: string(email), password: string }` | `200 { accessToken: string, tokenType: "bearer", expiresIn: string, user: { id: UUID, email: string, role } }` + `Set-Cookie: clearsight_refresh=…` | **Implementado 5.8:** JWT HS256 900 s con `sessionId`/`tokenVersion`; cookie `HttpOnly/Secure/SameSite=Lax`, host-only, `Path=/api/auth`, ≤ 7 d; `AUTH_PUBLIC_ORIGIN` obligatorio (`403` si falta/null/mismatch; `503` si la config falta); no setea cookie si falla sign/audit/commit; `401` uniforme; `429` con `Retry-After` (HU01 5/15 min y cuota IP 100/60). |
 | POST | `/auth/refresh` | Cookie `clearsight_refresh` | Sin body ni Bearer recomendados | `200 { accessToken, tokenType: "bearer", expiresIn }` + nueva cookie rotada | **Implementado 5.8:** single-use; hash SHA-256 en DB; `401` genérico (incl. reuso), `403` por `Origin`, `503` fail closed; no devuelve refresh en JSON. “Sin body/Bearer” describe el mecanismo: si llegan, no se usan como credencial ni sustituyen la cookie. |
 | POST | `/auth/logout` | Bearer + sesión válida | — | `204`; limpia `clearsight_refresh` | **Implementado 5.8:** revoca sesión y cadena con auditoría; la cookie sola no autoriza; si incluye `Origin`, pasa el mismo guard; `401/403/503`. |
-| GET | `/auth/me` | Bearer | - | `{ id: UUID, email: string, role }` | Valida firma, claims, sesion durable, usuario activo, rol/version vigentes y expiracion; `401` y `503`. Sin cambios por 5.8. |
+| POST | `/auth/password/forgot` | Público, sin sesión/cookie; `Origin` opcional | `{ email: string(email canónico, trim/lowercase, <=255) }` estricto | `202 { accepted: true }` fijo; `Cache-Control: no-store` | **Implementado 5.9 QA PASSED:** cuotas `FORGOT_IP` 20/3600 y `FORGOT_EMAIL` 3/3600; `DISABLED` por defecto sin token; no enumera; `429` con `Retry-After`; `503` solo store de cuotas. |
+| POST | `/auth/password/reset` | Público; token solo en body; sin cookie/Bearer; `Origin` opcional | `{ token: string, newPassword: string(>=12 code points, <=72 UTF-8 bytes) }` estricto | `204` vacío; sin sesión nueva; `Cache-Control: no-store` | **Implementado 5.9 QA PASSED:** cuota `RESET_IP` 20/900; `401` genérico para inválido/expirado/usado/revocado/inactivo; reset revoca sesiones/refresh/otros reset y conserva HU01. |
+| GET | `/auth/me` | Bearer | - | `{ id: UUID, email: string, role }` | Valida firma, claims, sesion durable, usuario activo, rol/version vigentes y expiracion; `401` y `503`. Sin cambios por 5.8/5.9. |
 | POST | `/admin/users` | Bearer, ADMIN | `{ email: string(canonico, trim/lower, <=255), password: string(>=12 code points, <=72 UTF-8 bytes), fullName: string(trim 1..255), role?: "OFTALMOLOGO"\|"INVESTIGADOR"\|"ADMIN" = "OFTALMOLOGO" }` | `201 { id: UUID, email: string, fullName: string, role, isActive: true, createdAt: ISO, updatedAt: ISO }` | **Alta controlada implementada (1.8):** actor/sesion frescos en la misma tx, `USER_CREATED` auditado, email literal case-insensitive, `400/401/403/409/503`; no emite JWT. `GET/PATCH` y ciclo de vida implementados en 5.4/5.6/9.1; DELETE no implementado. |
 | GET | `/admin/users` | Bearer, ADMIN | `limit?: number(1..100)=20`, `offset?: number(>=0)=0`, `role?`, `isActive?: "true"\|"false"`, `q?: string(trim<=255)` | `200 { items: User[7 safe fields], total: number, limit, offset }`; orden `createdAt DESC id ASC`; `q` literal case-insensitive sobre email/fullName | `400/401/403/503`; lectura sin auditoría masiva ni datos clínicos. |
 | GET | `/admin/users/:id` | Bearer, ADMIN | path UUID | `200 User` (7 safe fields; email/fullName string, sin imponer formato a legacy) | `400/401/403/404/503`. |
@@ -100,8 +102,8 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | GET | `/auth/me` | unchanged (current) | Bearer + sesion vigente | - | `{ id, email, role }` (sin cambios por 5.8) | `401`, `503` |
 | POST | `/auth/logout` | implemented (5.8) | Bearer + sesión; cookie nunca autoriza | — | `204`; revoca sesión y cadena auditada y limpia `clearsight_refresh` con los mismos atributos | `401`, `403` (si `Origin` presente no coincide), `503` |
 | POST | `/auth/refresh` | implemented (5.8) | Cookie `clearsight_refresh`; sin body ni Bearer | — | `200 { accessToken, tokenType, expiresIn }`; rota single-use; **no** refresh token en JSON | `401` (incl. reuso), `403` (`Origin`), `503` |
-| POST | `/auth/password/forgot` | proposed | Público con rate limit | `{ email }` | `202` uniforme | `429` |
-| POST | `/auth/password/reset` | proposed | Token de un solo uso | `{ token, newPassword }` | `204` | `400`, `401`, `429` |
+| POST | `/auth/password/forgot` | implemented (5.9 QA PASSED) | Público, sin sesión/cookie; `Origin` opcional | `{ email: string(email canónico, trim/lowercase, <=255) }` estricto | `202 { accepted: true }` fijo; `Cache-Control: no-store` | `400`, `403` (`Origin` presente inválido), `429` (`Retry-After`), `503` (store de cuotas) |
+| POST | `/auth/password/reset` | implemented (5.9 QA PASSED) | Público; token solo en body; sin cookie/Bearer; `Origin` opcional | `{ token: string, newPassword: string(>=12 code points, <=72 UTF-8 bytes) }` estricto | `204` vacío; sin sesión nueva; `Cache-Control: no-store` | `400`, `401`, `403` (`Origin` presente inválido), `429` (`Retry-After`), `503` |
 
 #### 3.1.1 Cookie de refresh, origen público y proxy (implementado 5.8, QA PASSED)
 
@@ -118,7 +120,20 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 - **H2 (hardening futuro):** reutilizar un token ya consumido puede escribir auditoría/locks en cada intento; D19 no exige rate-limit adicional. Límite conocido de amplificación; no se promete resuelto.
 - **H3 (logging):** la redacción actual cubre `Cookie`, `Set-Cookie`, `Authorization` y campos de credenciales. Serializers custom futuros requieren revisión contra esa lista; no hay fuga actual.
 
-**Sesiones:** diseño técnico propuesto por el arquitecto (industry), no una decisión exacta de producto. El acceso durable y el contrato web 5.8 están implementados y validados por QA; reset de contraseña 5.9 sigue pendiente. Access JWT 15 min default + `sessionId` + `tokenVersion`; verificación durable y fail closed por request; refresh opaco CSPRNG, hash en reposo, rotación atómica single-use, reutilización revoca familia, expiración absoluta 7 d; logout/deactivate/role change invalidan de inmediato; reset 30 min single-use, hash, sin logs, revoca todas. Web (5.8): refresh solo en cookie `clearsight_refresh` (`HttpOnly; Secure; SameSite=Lax`, host-only, `Path=/api/auth`) y guard de `Origin` exacto; no refresh en JSON; no sugerir `localStorage` para access (ver 3.1.1). Cliente backend no-browser fuera de alcance. El envío real de email requiere proveedor/remitente/credenciales no acordados: bloquea solo habilitar envío, no diseño/implementación.
+#### 3.1.2 Recuperación de contraseña (implementado 5.9, QA PASSED)
+
+> R2/5.9 implementa los endpoints internos y su contrato. El backend expone internamente `/auth/password/forgot` y `/auth/password/reset`; el path público previsto es `/api/auth/password/*` detrás de un proxy HTTPS que quita `/api`, pero **el proxy no se implementa en este hito**. La entrega real de email sigue deshabilitada y B8 queda pendiente de provisioning sin bloquear el cierre de 5.9.
+
+- **Transporte:** ambos endpoints son públicos, no leen ni emiten cookies y no abren sesión. `reset` autoriza solo con `token` del body; `Authorization` no sustituye al token y los campos/claims desconocidos son `400`. `Origin` se valida solo si el header está presente, con la misma política exacta que logout (`403` mismatch/null; `503` si falta configuración); ausente se permite porque no hay cookie como credencial.
+- **`forgot` request:** `{ email: string(email canónico, trim/lowercase, <=255) }` estricto. Respuesta uniforme para conocida, desconocida e inactiva: `202 { accepted: true }`, `Cache-Control: no-store`. No incluye token, usuario, rol ni estado de entrega. Es un acuse de recepción: no prueba emisión ni entrega y la UI no debe inferir si la cuenta existe.
+- **Cuotas de `forgot`:** 3 intentos por email canónico/3600 s y 20 por IP de socket/3600 s, ventana fija durable desde el primer intento, independientes de login/HU01. Con body válido se consume primero IP y después email, aunque el email ya esté agotado; `429` con `Retry-After` entero `>= 1`. Un fallo del store de cuotas antes del lookup es `503` genérico para cualquier cuenta.
+- **Cuota de `reset`:** 20 intentos por IP de socket/900 s antes del lookup del token y de bcrypt; un token inválido/expirado/usado/revocado o un usuario inactivo también consume la cuota. `429` con `Retry-After >= 1`. La IP es la del socket: no se lee `X-Forwarded-For` ni se habilita `trustProxy` global.
+- **`reset` request/response:** `{ token: string, newPassword: string(>=12 code points Unicode, <=72 UTF-8 bytes) }` estricto. `204` vacío, sin `Set-Cookie`, sin access token y sin sesión nueva. `400` para DTO inválido; `401` genérico idéntico para token inválido/expirado/usado/revocado o usuario inactivo; `503` si falla store/auditoría/hash (rollback sin consumo).
+- **Efecto de `reset` exitoso:** bcrypt cost 12, `tokenVersion + 1` una sola vez (access previos inválidos), consume el token usado y revoca los demás reset tokens, todas las sesiones y todos los refresh del usuario en una transacción auditada. **No** reinicia `failedLoginCount`/`lockedUntil` ni las cuotas de login: el lockout vigente se conserva y el usuario debe volver a autenticarse.
+- **Entrega:** puerto inyectable con modo `DISABLED` por defecto. Sin sink explícito de pruebas, `forgot` responde `202` sin generar token ni invalidar anteriores. Con sink habilitado, token+revocación+auditoría commitean antes de la entrega; fallo de auditoría revierte y no entrega; fallo de entrega devuelve `202` sin prometer entrega y solo revoca condicionalmente el token exacto. El sink en memoria es solo de pruebas y no se expone por HTTP. No hay outbox ni proveedor real; B8 sigue pendiente y `202` no garantiza entrega.
+- **Secretos:** token crudo de 32 bytes CSPRNG/base64url (43 caracteres), en DB solo SHA-256 lowercase, expiración 30 min. Nunca en logs, JSON, cabeceras ni enlaces con URL/query/fragmento. `Cache-Control: no-store` en todas las respuestas, incluidas las de error.
+
+**Sesiones:** diseño técnico propuesto por el arquitecto (industry), no una decisión exacta de producto. El acceso durable y el contrato web 5.8 están implementados y validados por QA; reset de contraseña está implementado en R2/HITO17 con 5.9 QA PASSED y su contrato verificable está en 3.1.2/D20. Access JWT 15 min default + `sessionId` + `tokenVersion`; verificación durable y fail closed por request; refresh opaco CSPRNG, hash en reposo, rotación atómica single-use, reutilización revoca familia, expiración absoluta 7 d; logout/deactivate/role change invalidan de inmediato; reset 30 min single-use, hash, sin logs, revoca todas y conserva el lockout de login. Web (5.8): refresh solo en cookie `clearsight_refresh` (`HttpOnly; Secure; SameSite=Lax`, host-only, `Path=/api/auth`) y guard de `Origin` exacto; no refresh en JSON; no sugerir `localStorage` para access (ver 3.1.1). Cliente backend no-browser fuera de alcance. El envío real de email requiere proveedor/remitente/credenciales no acordados: bloquea solo habilitar envío, no diseño/implementación; 5.9 usa un sink de pruebas y `DISABLED` por defecto.
 
 ### 3.2 Pacientes y consultas
 
@@ -338,7 +353,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 | Supresión de identidad/legal | pendiente solo producción (B5) | Sin automatización ni plazos; excepción futura con política. |
 | Deploy Azure real | parcialmente satisfecho CLI / no deployment ready (B6) | Contexto CLI read-only sin crear recursos; faltan presupuesto/duración/scope y confirmación/permisos. |
 | RF07 unimodal / RF15 comparación | deferred (B7) | No se implementan ni simulan; no bloquean. |
-| Envío real de email forgot/reset | pendiente solo provisioning (B8) | Sink en memoria primero; envío real solo a destinatarios autorizados, sin PHI/enlaces secretos, sin versionar direcciones/credenciales. |
+| Envío real de email forgot/reset | pendiente solo provisioning (B8), no bloquea 5.9 | 5.9 cerrada con `DISABLED` por defecto y sink en memoria solo para pruebas; no hay proveedor real, outbox ni garantía de entrega. Envío real futuro solo a destinatarios autorizados, sin PHI/enlaces secretos, sin versionar direcciones/credenciales. |
 | `DatabaseFeedbackSource` | fuera de alcance (B9) | No añade SQLAlchemy ni bloquea el change. |
 
 ## 11. Reglas de consumo para frontend
@@ -359,3 +374,7 @@ Estos campos son derivados; **no** se añaden como enum DB nuevo.
 14. No enviar login/refresh sin `Origin`: el origen debe coincidir exactamente con `AUTH_PUBLIC_ORIGIN` (sin wildcard); un mismatch es `403`.
 15. No llamar a refresh en paralelo sin single-flight: dos refresh concurrentes del mismo token pueden revocar la sesión y su familia.
 16. No leer la cookie `clearsight_refresh` desde JavaScript (`HttpOnly`), no esperar el refresh en el JSON y no usar la cookie sola como autorización de logout.
+17. No interpretar `202` de `/auth/password/forgot` como prueba de que la cuenta existe, de que se emitió un token o de que el correo se entregó; es solo un acuse uniforme.
+18. No enviar el token de reset en URL/query/fragmento ni en cabeceras, logs o JSON de terceros; `reset` usa solo `{ token, newPassword }` en el body y `Authorization` no lo sustituye.
+19. No reintentar `forgot`/`reset` ignorando `Retry-After`: las cuotas son independientes del login y un `429` no debe traducirse en un bucle de reintentos.
+20. Tras un `reset` `204`, no asumir sesión iniciada: no hay cookie/access nuevo y todas las sesiones previas quedan revocadas; volver al login. El lockout de login, si estaba vigente, no se limpia con el reset.

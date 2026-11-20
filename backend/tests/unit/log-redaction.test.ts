@@ -9,5 +9,8 @@ describe("credential log redaction", () => {
     expect(paths.has('res.headers["set-cookie"]')).toBe(true);
     expect(paths.has("req.body.password")).toBe(true);
     expect(paths.has("req.body.refreshToken")).toBe(true);
+    expect(paths.has("req.body.newPassword")).toBe(true);
+    expect(paths.has("req.body.token")).toBe(true);
+    expect(paths.has("req.body.email")).toBe(true);
   });
 });

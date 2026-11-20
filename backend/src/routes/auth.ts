@@ -5,8 +5,11 @@ import { unauthorized } from "../lib/http-error.js";
 import { authenticate } from "../middleware/auth.js";
 import {
   currentUserSchema,
+  forgotPasswordAcceptedSchema,
+  forgotPasswordRequestSchema,
   loginRequestSchema,
   refreshResponseSchema,
+  resetPasswordRequestSchema,
   tokenResponseSchema,
 } from "../schemas/auth.js";
 import { errorResponseSchema } from "../schemas/common.js";
@@ -15,6 +18,7 @@ import {
   serializeRefreshCookie,
   serializeRefreshCookieClear,
 } from "../services/auth-cookies.js";
+import { PasswordResetError } from "../services/password-reset.js";
 import { AuthSessionError } from "../services/session.js";
 
 /** Public self-registration is retired for security (REG-005). */
@@ -46,6 +50,30 @@ const LOGIN_THROTTLED = {
 const AUTHENTICATION_UNAVAILABLE = {
   error: "service_unavailable",
   message: "Authentication is temporarily unavailable",
+  statusCode: 503,
+} as const;
+
+const PASSWORD_RECOVERY_THROTTLED = {
+  error: "Too Many Requests",
+  message: "Too many password recovery attempts",
+  statusCode: 429,
+} as const;
+
+const PASSWORD_RECOVERY_INVALID = {
+  error: "Bad Request",
+  message: "Invalid password recovery request",
+  statusCode: 400,
+} as const;
+
+const INVALID_RESET_TOKEN = {
+  error: "Unauthorized",
+  message: "Invalid or expired reset token",
+  statusCode: 401,
+} as const;
+
+const PASSWORD_RECOVERY_UNAVAILABLE = {
+  error: "service_unavailable",
+  message: "Password recovery is temporarily unavailable",
   statusCode: 503,
 } as const;
 
@@ -140,6 +168,99 @@ export async function authRoutes(app: FastifyInstance) {
         throw error;
       }
     }
+  );
+
+  // POST /auth/password/forgot — public, no session/cookie, uniform 202 after
+  // the quota stage. The delivery port is DISABLED by default.
+  typedApp.post(
+    "/password/forgot",
+    {
+      schema: {
+        tags: ["Auth"],
+        summary: "Request a password-reset token",
+        body: forgotPasswordRequestSchema,
+        response: {
+          202: forgotPasswordAcceptedSchema,
+          400: errorResponseSchema,
+          403: errorResponseSchema,
+          429: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+      onRequest: [noStore, optionalWebOrigin],
+    },
+    async (request, reply) => {
+      try {
+        await app.passwordResetService.forgot({
+          email: request.body.email,
+          clientIp: request.socket.remoteAddress ?? null,
+        });
+        return reply.status(202).send({ accepted: true });
+      } catch (error) {
+        if (error instanceof PasswordResetError) {
+          if (error.code === "PASSWORD_RESET_THROTTLED") {
+            return reply
+              .header("Retry-After", String(error.retryAfterSeconds ?? 1))
+              .status(429)
+              .send(PASSWORD_RECOVERY_THROTTLED);
+          }
+          if (error.code === "PASSWORD_RESET_INVALID_INPUT") {
+            return reply.status(400).send(PASSWORD_RECOVERY_INVALID);
+          }
+          return reply.status(503).send(PASSWORD_RECOVERY_UNAVAILABLE);
+        }
+        throw error;
+      }
+    },
+  );
+
+  // POST /auth/password/reset — token-only public endpoint, no session/cookie.
+  // Invalid/expired/used/revoked/inactive all share one generic 401.
+  typedApp.post(
+    "/password/reset",
+    {
+      schema: {
+        tags: ["Auth"],
+        summary: "Reset a password with a single-use token",
+        body: resetPasswordRequestSchema,
+        response: {
+          204: z.void(),
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          429: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+      onRequest: [noStore, optionalWebOrigin],
+    },
+    async (request, reply) => {
+      try {
+        await app.passwordResetService.reset({
+          token: request.body.token,
+          newPassword: request.body.newPassword,
+          clientIp: request.socket.remoteAddress ?? null,
+        });
+        return reply.status(204).send();
+      } catch (error) {
+        if (error instanceof PasswordResetError) {
+          if (error.code === "PASSWORD_RESET_INVALID_INPUT") {
+            return reply.status(400).send(PASSWORD_RECOVERY_INVALID);
+          }
+          if (error.code === "PASSWORD_RESET_INVALID_TOKEN") {
+            return reply.status(401).send(INVALID_RESET_TOKEN);
+          }
+          if (error.code === "PASSWORD_RESET_THROTTLED") {
+            return reply
+              .header("Retry-After", String(error.retryAfterSeconds ?? 1))
+              .status(429)
+              .send(PASSWORD_RECOVERY_THROTTLED);
+          }
+          return reply.status(503).send(PASSWORD_RECOVERY_UNAVAILABLE);
+        }
+        throw error;
+      }
+    },
   );
 
   // POST /auth/refresh — cookie-only, no body and no Bearer.

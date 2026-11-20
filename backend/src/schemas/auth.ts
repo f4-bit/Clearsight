@@ -9,6 +9,19 @@ const PASSWORD_MIN_CODEPOINTS_MESSAGE = "password must contain at least 12 Unico
 const PASSWORD_MAX_UTF8_BYTES_MESSAGE = "password must be at most 72 UTF-8 bytes";
 
 /**
+ * Shared write-policy for every password-setting path (administrative create
+ * and password reset). Login remains a bounded compare-only schema.
+ */
+export const passwordSchema = z
+  .string()
+  .refine((value) => [...value].length >= 12, PASSWORD_MIN_CODEPOINTS_MESSAGE)
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= 72,
+    PASSWORD_MAX_UTF8_BYTES_MESSAGE,
+  );
+export type PasswordInput = z.infer<typeof passwordSchema>;
+
+/**
  * JWT payload shared by the auth routes (issuer) and the middleware (verifier).
  * The four principal claims are mandatory; exp/iat are added by the signer and
  * validated separately from the raw verified payload.
@@ -49,13 +62,7 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export const adminCreateUserRequestSchema = z
   .object({
     email: canonicalEmailSchema,
-    password: z
-      .string()
-      .refine((value) => [...value].length >= 12, PASSWORD_MIN_CODEPOINTS_MESSAGE)
-      .refine(
-        (value) => Buffer.byteLength(value, "utf8") <= 72,
-        PASSWORD_MAX_UTF8_BYTES_MESSAGE,
-      ),
+    password: passwordSchema,
     fullName: z.string().trim().min(1).max(255),
     role: roleEnum.default("OFTALMOLOGO"),
   })
@@ -155,3 +162,29 @@ export const currentUserSchema = z.object({
 });
 
 export type CurrentUser = z.infer<typeof currentUserSchema>;
+
+/** Public password-recovery inputs. Unknown fields are rejected (strict). */
+export const forgotPasswordRequestSchema = z
+  .object({
+    email: canonicalEmailSchema,
+  })
+  .strict();
+
+export type ForgotPasswordRequest = z.infer<typeof forgotPasswordRequestSchema>;
+
+export const resetPasswordRequestSchema = z
+  .object({
+    // Shape is checked cheaply by the service after the IP quota; the DTO only
+    // rejects a missing/oversized transport value as a generic 400.
+    token: z.string().min(1).max(512),
+    newPassword: passwordSchema,
+  })
+  .strict();
+
+export type ResetPasswordRequest = z.infer<typeof resetPasswordRequestSchema>;
+
+export const forgotPasswordAcceptedSchema = z.object({
+  accepted: z.literal(true),
+});
+
+export type ForgotPasswordAccepted = z.infer<typeof forgotPasswordAcceptedSchema>;

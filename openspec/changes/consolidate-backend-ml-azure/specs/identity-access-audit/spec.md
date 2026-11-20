@@ -82,7 +82,7 @@ El sistema SHALL bloquear una cuenta durante 15 minutos tras cinco intentos fall
 
 ### Requirement: Sesiones, refresh, logout y recuperación seguros
 
-El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitecto dentro de la delegación industry; no es una decisión exacta de producto. El contrato web 5.8 está implementado y validado por QA; el reset de contraseña 5.9 sigue pendiente. El access token MUST ser un JWT breve con default 15 minutos, `sessionId` y `tokenVersion`. En cada request el servidor MUST consultar una sesión activa, la versión y el usuario activo/rol vigente en un store durable, y MUST aplicar fail closed si no puede verificar. El refresh token MUST ser opaco, generado con CSPRNG, almacenado como hash en reposo, rotado de forma atómica y de un solo uso; la reutilización MUST revocar la familia. Su expiración absoluta simple propuesta es 7 días, sin extensión por idle salvo configuración explícita. Logout MUST revocar la sesión de inmediato. Desactivar una cuenta MUST revocar todas las sesiones e incrementar la versión. Un cambio de rol MUST invalidar tokens y permisos de inmediato. El reset de contraseña MUST usar token de un solo uso, 30 minutos, hash, sin logs, y revocar todas las sesiones. `forgot` MUST responder `202` uniforme con rate limit y proveedor de envío configurable.
+El sistema SHALL adoptar el siguiente diseño técnico propuesto por el arquitecto dentro de la delegación industry; no es una decisión exacta de producto. El contrato web 5.8 está implementado y validado por QA; el reset de contraseña está implementado en R2/HITO17 y 5.9 QA PASSED. El access token MUST ser un JWT breve con default 15 minutos, `sessionId` y `tokenVersion`. En cada request el servidor MUST consultar una sesión activa, la versión y el usuario activo/rol vigente en un store durable, y MUST aplicar fail closed si no puede verificar. El refresh token MUST ser opaco, generado con CSPRNG, almacenado como hash en reposo, rotado de forma atómica y de un solo uso; la reutilización MUST revocar la familia. Su expiración absoluta simple propuesta es 7 días, sin extensión por idle salvo configuración explícita. Logout MUST revocar la sesión de inmediato. Desactivar una cuenta MUST revocar todas las sesiones e incrementar la versión. Un cambio de rol MUST invalidar tokens y permisos de inmediato. El reset de contraseña MUST usar token de un solo uso, 30 minutos, hash, sin logs, y revocar todas las sesiones. `forgot` MUST responder `202` uniforme con rate limit y proveedor de envío configurable.
 
 Para web (contrato 5.8), el login MUST conservar la respuesta JSON actual y entregar el refresh opaco CSPRNG solo en una cookie `clearsight_refresh` con `HttpOnly`, `Secure`, `SameSite=Lax`, host-only (sin `Domain`) y `Path=/api/auth`; la aplicación corre detrás de un proxy HTTPS que quita `/api` y expone internamente `/auth/*`; la expiración de la cookie MUST NOT superar la sesión absoluta (≤ 7 días). `POST /auth/refresh` MUST usar solo esa cookie (sin body y sin `Bearer`) y devolver únicamente `accessToken`, `tokenType` y `expiresIn`; la rotación MUST ser single-use; en DB MUST guardarse solo el hash SHA-256 lowercase y el token crudo MUST NOT aparecer en logs, auditoría ni JSON. La familia MUST ser la sesión y sus refresh: ante dos solicitudes concurrentes del mismo token, como máximo una MUST emitir y la otra MUST revocar esa sesión y todos sus refresh, sin afectar otras sesiones del usuario, sin ventana de gracia. Login y refresh MUST exigir `Origin` exactamente igual a `AUTH_PUBLIC_ORIGIN` (URL `http(s)` normalizada, sin wildcard) y MUST rechazar con `403` genérico antes de KDF/store si falta, es null o no coincide; `Sec-Fetch-Site: cross-site` MUST rechazarse si viene. El origen MUST NOT derivarse de `Host`/`X-Forwarded-*` no confiables ni de CORS wildcard. Si `AUTH_PUBLIC_ORIGIN` falta, los endpoints de cookie MUST fallar cerrado (`503`) sin romper `buildApp` lazy ni el `410` de `/auth/register` retirado. Logout MUST exigir `Bearer` de una sesión válida, revocar esa sesión y su cadena con auditoría, responder `204` y limpiar la cookie con los mismos atributos; la cookie sola MUST NOT autorizar y solo un `Origin` presente MUST pasar el mismo guard. Las pruebas locales MUST usar HTTPS/proxy documentado y MUST NOT deshabilitar `Secure` en producción ni como excepción silenciosa. Los errores MUST ser genéricos (`401/403/503`) y las respuestas de credenciales MUST llevar `Cache-Control: no-store`. Login MUST NOT setear cookie si falla sign/auditoría/commit; refresh MUST NOT consumir el padre si falla sign/auditoría; el reuso MUST confirmar revocación+auditoría y después devolver `401`, sin lanzar dentro de la transacción revirtiendo la revocación; auditoría caída MUST devolver `503` con rollback y MUST NOT declarar logout exitoso. `/auth/me` MUST NOT cambiar. La ausencia de body/`Bearer` en refresh describe el mecanismo de autenticación y no prohíbe la coexistencia de headers; si llegan, MUST NOT usarse como credencial ni sustituir la cookie, y su presencia sola no es error. La respuesta de refresh MUST NOT exponer el refresh token. El access bearer MUST NOT sugerirse en `localStorage`. El cliente backend no-browser queda fuera de alcance. **B8 queda como restricción de provisioning:** el usuario autoriza usar sus correos reales cuando se llegue, pero direcciones y proveedor aún no están fijados. Las pruebas MUST usar primero un adaptador con sink en memoria; el envío real solo se habilitará a destinatarios autorizados explícitos, para casos sin PHI y sin enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales, con rate limiting y sin user enumeration. Los tokens MUST NOT registrarse en logs ni incluirse en URLs.
 
@@ -168,6 +168,86 @@ Para web (contrato 5.8), el login MUST conservar la respuesta JSON actual y entr
 
 - **WHEN** el usuario autoriza destinatarios explícitos
 - **THEN** el envío real solo usa esos destinatarios, sin PHI ni enlaces secretos no autorizados, sin versionar direcciones/datos personales/credenciales, con rate limit y sin user enumeration.
+
+### Requirement: Recuperación de contraseña con cuotas independientes y entrega configurable
+
+El sistema SHALL exponer `POST /auth/password/forgot` y `POST /auth/password/reset` como endpoints públicos sin sesión ni cookie. `forgot` MUST aceptar un email canónico y responder `202` con un body fijo y genérico para cuenta conocida, desconocida o inactiva, sin token, usuario ni estado de entrega; ese `202` MUST ser solo un acuse de recepción y MUST NOT interpretarse como prueba de emisión o entrega. `reset` MUST aceptar `{ token, newPassword }`, MUST autorizar únicamente con el token del body y MUST responder `204` sin crear sesión ni emitir cookie/access token. `Authorization` MUST NOT sustituir al token ni usarse como credencial; un body con campos o claims desconocidos MUST rechazarse con `400`.
+
+Las cuotas de recuperación MUST ser durables, de ventana fija desde el primer intento y **independientes** de login/HU01 y de `auth_login_buckets`: `forgot` MUST permitir 3 intentos por email canónico y 3600 s y 20 por IP de socket y 3600 s; `reset` MUST permitir 20 por IP de socket y 900 s. Cada request con esquema válido de `forgot` MUST consumir primero la cuota IP y después la de email, aunque el email ya esté agotado; `reset` MUST consumir la cuota IP antes del lookup del token y de cualquier KDF bcrypt. Un `429` MUST usar body genérico y `Retry-After` entero `>= 1`; un fallo del store de cuotas antes del lookup MUST responder `503` genérico para cualquier cuenta. La IP MUST provenir del socket; el sistema MUST NOT habilitar `trustProxy` global ni confiar en `X-Forwarded-For`/`Forwarded` del cliente.
+
+El token de recuperación MUST ser de un solo uso, 32 bytes de CSPRNG en base64url (43 caracteres), expirar a los 30 minutos y almacenarse solo como hash SHA-256 lowercase. El boundary `expiresAt <= now`, un token inválido, consumido, revocado o de usuario inactivo MUST responder `401` genérico; un usuario inactivo MUST NOT reactivarse. `reset` exitoso MUST ejecutarse en una transacción auditada con bcrypt cost 12, incrementar `tokenVersion` exactamente una vez (invalidando los access tokens previos), consumir el token usado, revocar los demás `PasswordResetToken`, todas las `UserSession` y todos los `RefreshToken` del usuario, y responder `204`; MUST NOT modificar `failedLoginCount`, `lockedUntil` ni `auth_login_buckets`, por lo que el lockout de login vigente se conserva. Un fallo de store, auditoría o hash MUST responder `503` con rollback sin cambio ni consumo.
+
+La entrega de email MUST ser un puerto inyectable con modo deshabilitado por defecto; sin un sink explícito de pruebas, `forgot` MUST responder `202` sin generar token y sin invalidar tokens anteriores. Con sink habilitado, el token, la revocación de anteriores y la auditoría MUST confirmarse antes de la entrega; un fallo de auditoría MUST revertir la creación y no entregar, y un fallo de entrega MUST devolver `202` sin prometer entrega y registrar el fallo operativo sin email ni token crudos. Dos `forgot` exitosos del mismo usuario MUST serializarse por usuario y solo el token de la última transacción comprometida MUST permanecer válido. El sink en memoria MUST ser exclusivo de pruebas, recibir `recipient` y token crudo sin persistirlos en logs/JSON/URLs, no exponerse por HTTP y no contener enlaces con el token. 5.9 quedó cerrada con esta entrega `DISABLED`/memory sink; no hay outbox ni proveedor real. B8 sigue pendiente de provisioning sin bloquear el cierre y `202` no garantiza entrega.
+
+#### Scenario: Forgot uniforme sin enumeración
+
+- **WHEN** se solicita `forgot` para una cuenta conocida activa, una cuenta inactiva o un email inexistente
+- **THEN** las tres respuestas son `202` con el mismo body fijo, sin token, usuario ni estado de entrega
+- **AND** no se genera token para cuenta inexistente o inactiva.
+
+#### Scenario: Cuotas de forgot independientes y ordenadas
+
+- **WHEN** se superan 3 intentos válidos en 3600 s para el mismo email canónico
+- **THEN** el siguiente intento responde `429` con `Retry-After >= 1`
+- **AND** ese intento ya consumió primero la cuota IP y no consultó la cuenta;
+- **AND** las cuotas y contadores de login/HU01 no cambian.
+
+#### Scenario: Cuota de reset antes del token y del KDF
+
+- **WHEN** se superan 20 intentos válidos en 900 s desde la misma IP de socket
+- **THEN** `reset` responde `429` con `Retry-After >= 1` antes del lookup del token y de bcrypt
+- **AND** un token inválido, expirado, usado, revocado o de usuario inactivo también consumió la cuota IP.
+
+#### Scenario: Fallo del store de cuotas
+
+- **WHEN** el store durable de cuotas no está disponible antes del lookup
+- **THEN** `forgot` o `reset` responde `503` genérico para cualquier cuenta
+- **AND** no se revela si el email o la cuenta existen.
+
+#### Scenario: Entrega deshabilitada por defecto
+
+- **WHEN** `forgot` se ejecuta sin sink de pruebas explícito
+- **THEN** responde `202` sin generar token, sin invalidar tokens anteriores y sin envío real
+- **AND** no se emite una credencial irrecuperable.
+
+#### Scenario: Sink habilitado con auditoría antes de entrega
+
+- **WHEN** `forgot` se ejecuta con sink de pruebas y la cuenta está activa
+- **THEN** el token de 32 bytes/43 caracteres, el hash SHA-256 en DB, la revocación de tokens anteriores y la auditoría se confirman antes de la entrega
+- **AND** si falla la auditoría, la creación se revierte y no se entrega;
+- **AND** si falla la entrega, se responde `202`, se registra el fallo sin email/token y solo se revoca condicionalmente ese token exacto, sin afectar a otros ni a uno posterior.
+
+#### Scenario: Dos forgot concurrentes
+
+- **WHEN** dos `forgot` exitosos del mismo usuario compiten por emitir token
+- **THEN** se serializan por usuario y la transacción que confirma en último lugar revoca el token anterior
+- **AND** solo el último token comprometido es válido, aunque los correos lleguen en otro orden.
+
+#### Scenario: Reset exitoso revoca credenciales y conserva lockout
+
+- **WHEN** `reset` recibe un token vigente y un `newPassword` válido
+- **THEN** responde `204` sin sesión/cookie nueva, con bcrypt cost 12 y un solo incremento de `tokenVersion`
+- **AND** consume el token usado y revoca los demás reset tokens, todas las sesiones y todos los refresh del usuario en la misma transacción auditada;
+- **AND** conserva `failedLoginCount`, `lockedUntil` y las cuotas de login, por lo que un lockout vigente sigue vigente.
+
+#### Scenario: Reset inválido o inactivo
+
+- **WHEN** `reset` recibe un token inválido, expirado, ya usado, revocado o de usuario inactivo
+- **THEN** responde `401` genérico idéntico
+- **AND** no cambia la contraseña, no consume otro token, no revoca sesiones y no reactiva la cuenta.
+
+#### Scenario: Fallo transaccional de reset
+
+- **WHEN** falla el store, la auditoría o el hash durante `reset`
+- **THEN** responde `503` con rollback
+- **AND** no cambia la contraseña, no consume el token ni revoca sesiones o refresh.
+
+#### Scenario: Transporte sin sesión ni secreto en URL
+
+- **WHEN** se invocan `forgot` o `reset`
+- **THEN** no se leen ni emiten cookies, `Authorization` no sustituye al token y una `Origin` presente pasa la misma política exacta que logout (ausente se permite)
+- **AND** todas las respuestas llevan `Cache-Control: no-store`, incluso los errores;
+- **AND** el token no aparece en logs, JSON, cabeceras ni enlaces con URL/query/fragmento.
 
 ### Requirement: Desactivación y preservación de autoría
 

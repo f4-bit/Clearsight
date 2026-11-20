@@ -34,6 +34,12 @@ import { createClinicalAccessService } from "./services/clinical-access.js";
 import { assertProductionExportHmacSecret } from "./services/export-policy.js";
 import { createAuthLoginProtection } from "./services/login-guard.js";
 import {
+  createPasswordResetService,
+  type PasswordResetService,
+} from "./services/password-reset.js";
+import type { PasswordResetDelivery } from "./services/password-reset-delivery.js";
+import type { PasswordRecoveryQuotaGuard } from "./services/password-recovery-quota.js";
+import {
   createAuthSessionService,
   DEFAULT_DATABASE_SCHEMA,
   type AuthSessionService,
@@ -63,6 +69,12 @@ export interface AppDeps {
   authService?: AuthSessionService;
   /** Trusted test seam for administrative provisioning; defaults from prisma. */
   adminUsersService?: AdminUsersService;
+  /** Trusted test seam for password recovery; defaults from the injected prisma. */
+  passwordResetService?: PasswordResetService;
+  /** Explicit port; the production default is DISABLED and never sends mail. */
+  passwordResetDelivery?: PasswordResetDelivery;
+  /** Trusted test seam; defaults to the R1 durable recovery quota guard. */
+  passwordRecoveryQuotaGuard?: PasswordRecoveryQuotaGuard;
 }
 
 /**
@@ -158,6 +170,25 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     now: deps?.now,
   });
   app.decorate("authWebSessionService", authWebSessionService);
+
+  // Password recovery uses the same injected client/schema/clock. The delivery
+  // port is DISABLED unless a caller explicitly injects the test memory sink.
+  const passwordResetService =
+    deps?.passwordResetService ??
+    createPasswordResetService(prisma, {
+      jwtSecret: cfg.JWT_SECRET,
+      databaseSchema,
+      now: deps?.now,
+      delivery: deps?.passwordResetDelivery,
+      quotaGuard: deps?.passwordRecoveryQuotaGuard,
+      onOperationalFailure: (code) => {
+        app.log.error(
+          { code, channel: "password-reset" },
+          "password reset operation failed",
+        );
+      },
+    });
+  app.decorate("passwordResetService", passwordResetService);
 
   // Public-origin policy for the credential endpoints. Missing config is
   // allowed at construction (cookie endpoints fail closed per request), while

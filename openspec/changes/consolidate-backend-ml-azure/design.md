@@ -204,7 +204,7 @@ El hash SHA-256 de bytes **sanitizados** verifica el contenido exacto de la imag
 - La desactivación de un usuario conserva autoría e historial, bloquea login y sesiones emitidas.
 - **HU01:** cinco fallos de login **consecutivos** bloquean la cuenta durante 15 minutos. Un éxito intermedio reinicia el contador de fallos; un éxito durante el bloqueo no desbloquea ni concede sesión. El bloqueo se complementa con rate limit por IP y mensajes genéricos. El hash de contraseña es robusto (bcrypt/Argon2 según estándar del proyecto).
 - El último administrador activo no puede desactivarse ni perder el rol, incluso con carreras: se verifica dentro de una transacción con bloqueo.
-- **Sesiones (decisión técnica propuesta por el arquitecto dentro de la delegación industry, no decisión exacta de producto; acceso durable y contrato web 5.8 implementados y validados por QA, reset 5.9 pendiente):** JWT de acceso breve con default 15 min, `sessionId` y `tokenVersion`; en cada request el servidor consulta la sesión activa, la versión y el usuario activo/rol vigente en un store durable y aplica **fail closed** si no puede verificar. Refresh opaco generado con CSPRNG, hash en reposo, rotación atómica de un solo uso y detección de reutilización que revoca la familia; expiración absoluta simple de 7 días, sin extensión por idle salvo configuración explícita. Logout revoca la sesión de inmediato. Desactivar revoca todas las sesiones e incrementa la versión. Cambios de rol invalidan tokens/permisos de inmediato. Reset de contraseña usa token de un solo uso, 30 min, hash, sin logs, y revoca todas las sesiones; `forgot` responde `202` uniforme con rate limit y proveedor de envío configurable.
+- **Sesiones (decisión técnica propuesta por el arquitecto dentro de la delegación industry, no decisión exacta de producto; acceso durable y contrato web 5.8 implementados/QA PASSED; reset implementado en R2 y 5.9 QA PASSED):** JWT de acceso breve con default 15 min, `sessionId` y `tokenVersion`; en cada request el servidor consulta la sesión activa, la versión y el usuario activo/rol vigente en un store durable y aplica **fail closed** si no puede verificar. Refresh opaco generado con CSPRNG, hash en reposo, rotación atómica de un solo uso y detección de reutilización que revoca la familia; expiración absoluta simple de 7 días, sin extensión por idle salvo configuración explícita. Logout revoca la sesión de inmediato. Desactivar revoca todas las sesiones e incrementa la versión. Cambios de rol invalidan tokens/permisos de inmediato. Reset de contraseña usa token de un solo uso, 30 min, hash, sin logs, y revoca todas las sesiones; `forgot` responde `202` uniforme con rate limit y proveedor de envío configurable. El contrato operativo detallado de `forgot`/`reset` (cuotas independientes, token solo en body, entrega deshabilitada por defecto y preservación de HU01) está en D20.
 - Para web (contrato 5.8, D19), el login conserva el JSON actual y el refresh se transporta únicamente en una cookie opaca `HttpOnly; Secure; SameSite=Lax`, host-only y `Path=/api/auth` (nombre fijo `clearsight_refresh`), nunca en JSON; login y refresh exigen un `Origin` exactamente igual al origen público configurado (`AUTH_PUBLIC_ORIGIN`, sin wildcard) y rechazan con `403` antes de KDF/store si falta o no coincide. El access bearer no se sugiere guardar en `localStorage`. El cliente backend no-browser queda fuera de alcance. La respuesta de refresh no expone el refresh token. **B8 (email):** el usuario autoriza usar sus correos reales cuando se llegue a esa etapa, pero aún no se fijan direcciones ni proveedor. Las pruebas MUST usar primero un adaptador de email con sink en memoria; el envío real solo se habilitará a destinatarios que el usuario indique y autorice explícitamente, para casos sin PHI y sin enlaces secretos no autorizados. No se versionan direcciones, datos personales ni credenciales; el flujo MUST aplicar rate limiting y no revelar existencia de cuentas (no user enumeration). El provisioning/configuración del sender/provider queda pendiente para la etapa no funcional de backend auth y no bloquea diseño, implementación ni pruebas con sink. No se introduce una dependencia bloqueante nueva para esta seguridad prioritaria: se usan primitivas criptográficas y almacenamiento durable existentes en el stack.
 
 **Razón:** `backend/src/routes/auth.ts:18-60` permite que cualquier cliente se registre como `ADMIN`; `backend/src/middleware/auth.ts:12-24` no valida `is_active`. El payload JWT actual (`sub` + `role`) y la firma HS256 sí son correctos (`backend/src/routes/auth.ts:58-60,114-117`) y se conservan; la brecha está en el alta pública, la comprobación de cuenta activa y la autorización por recurso, no en el formato del token.
@@ -212,6 +212,8 @@ El hash SHA-256 de bytes **sanitizados** verifica el contenido exacto de la imag
 ### D10. Auditoría append-only y borrado
 
 **Decisión (agreed):** Se auditan acciones sensibles con actor, target, acción, resultado y timestamp. El registro es append-only; no se actualiza ni se borra desde la aplicación. No contiene secretos, tokens, URLs firmadas ni PHI innecesaria. Si falla la auditoría de una operación sensible, la operación no se considera exitosa (transacción o compensación explícita).
+
+**Acuse `202` vs éxito sensible (D20):** en `forgot`, `202` es solo acuse de recepción; no prueba que se emitió un token ni que se entregó un correo. Si falla la auditoría, la creación del token se revierte y no se entrega, aunque la respuesta HTTP siga siendo `202`. En `reset`, el `204` solo se emite después del commit auditado; un fallo de almacenamiento, auditoría o hash responde `503` con rollback y sin consumir el token. La distinción evita tratar un acuse uniforme como éxito de una operación sensible.
 
 **B5 (delegación técnica del usuario):** la acción soportada es **desactivar + revocar sesiones**, sin cascada ni reasignación de historial. **No se implementa hard delete en este hito**, ni siquiera para cuentas sin actividad; queda como excepción futura sujeta a política aprobada. La supresión de identidad/legal es distinta de la desactivación; su política (B5) y la de retención/consentimiento (B3/B4) siguen pendientes **solo para producción real, purgas y reidentificación**, no para desarrollo ni pruebas con datos sintéticos o dataset autorizado (por ejemplo PAPILA) con acceso mínimo. Si se procesan datos clínicos reales sin governance, el sistema MUST fallar cerrado. No se fijan plazos legales ni se declara cumplimiento legal.
 
@@ -300,7 +302,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 - `User` añade `tokenVersion` (default 0), `failedLoginCount` (default 0) y `lockedUntil?`. Ambos contadores son no negativos y `tokenVersion` solo puede aumentar mediante trigger, preservando revocaciones. Los usuarios legacy conservan hash/rol/estado y reciben defaults; no se cambia middleware/roles.
 - `UserSession` fija usuario, `issuedTokenVersion`, creación y expiración desde el INSERT; la creación exige usuario activo y `issuedTokenVersion` igual al `tokenVersion` vigente. La revocación es append-only (`revokedAt`/`reasonCode` no se restauran ni repuntan) y `lastUsedAt` es monótono. No se almacenan tokens en claro.
 - `AuditEvent` es append-only: `UPDATE`/`DELETE` se rechazan. `actorKind=USER` exige `actorUserId`; `SYSTEM`/`ANONYMOUS` lo prohíben. `targetType=USER` usa `targetUserId` y prohíbe `targetId` redundante; el resto no usa `targetUserId`. `action`/`targetType` son códigos acotados, `outcome` es `SUCCESS|DENIED|FAILURE` y `metadata` es objeto con defensa URI/firma acotada. Las FKs restrict impiden borrar usuarios con historial; la desactivación sigue permitida. El servicio de auditoría/transacción es 5.5, no C.
-- `RefreshToken` y `PasswordResetToken` guardan solo hash SHA-256 lowercase, nunca el token opaco. Identidad, hash y expiración son inmutables; `consumedAt`/`revokedAt` son append-only. Refresh exige misma sesión/usuario, expiración acotada por la sesión y padre existente/misma sesión; el puntero de padre es insert-only y único (un sucesor), lo que evita ciclos. La detección de reutilización/familia y la rotación quedaron implementadas en 5.8 (QA PASSED); el logout con revocación y limpieza de cookie también; el reset de contraseña es 5.9 y sigue pendiente.
+- `RefreshToken` y `PasswordResetToken` guardan solo hash SHA-256 lowercase, nunca el token opaco. Identidad, hash y expiración son inmutables; `consumedAt`/`revokedAt` son append-only. Refresh exige misma sesión/usuario, expiración acotada por la sesión y padre existente/misma sesión; el puntero de padre es insert-only y único (un sucesor), lo que evita ciclos. La detección de reutilización/familia y la rotación quedaron implementadas en 5.8 (QA PASSED); el logout con revocación y limpieza de cookie también; el reset de contraseña quedó implementado en R2 y 5.9 QA PASSED.
 - `IdempotencyRecord` fija `(actorUserId, scope, key)`, hash del payload, ejecución (`inferenceId NOT NULL`) y `resolvedModelVersions`. El actor debe ser el doctor dueño de la consulta de la inferencia (fallback legacy por la imagen). `PENDING` no tiene respuesta; `ACCEPTED` exige 202, `acceptedAt` y un body objeto con `inferenceId/jobId/status=QUEUED` coincidentes con la ejecución. Aceptado es inmutable y no se borra mientras B3 no apruebe retención; no se implementa el servicio de idempotencia (4.4) ni se purga.
 - `TRUNCATE`/DDL de owner privilegiado siguen fuera de los triggers de fila y pertenecen a 1.4. No se declara detección universal de PII/secretos: las comprobaciones URI/firma son acotadas y el servicio futuro deberá usar campos tipados.
 - El outbox de 4.6 no se incluye en C; requerirá su propia migración incremental al ejecutar 4.6. `docker/init.sql` permanece inmutable.
@@ -330,7 +332,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 
 ### D19. Contrato de sesión web 5.8: origen público, cookie de refresh y logout
 
-**Decisión (implementada en 5.8 y validada por QA; reset de contraseña 5.9 sigue pendiente):**
+**Decisión (implementada en 5.8 y validada por QA; reset de contraseña R2 con 5.9 QA PASSED):**
 
 - **Rutas y proxy:** la entrada pública es un proxy HTTPS que quita el prefijo `/api`; el backend expone internamente `/auth/login`, `/auth/refresh`, `/auth/logout` y `/auth/me`. El contrato público es `/api/auth/*`.
 - **Login:** conserva la respuesta JSON actual y añade el refresh opaco (CSPRNG) **solo** como cookie `clearsight_refresh` con `HttpOnly; Secure; SameSite=Lax`, host-only (sin `Domain`) y `Path=/api/auth`. La expiración de la cookie no supera la sesión absoluta (≤ 7 d).
@@ -343,6 +345,112 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 - **Persistencia:** se usan `refresh_tokens` y `user_sessions` existentes sin editar schema ni migraciones. Sus triggers permiten la revocación append-only desde `NULL` y prohíben mutar identidad/hash/expiry; no hay conflicto crítico con el reuso.
 - **H2 (hardening futuro):** el reuso de un token ya consumido puede escribir auditoría/locks en cada intento; D19 no exige rate-limit adicional. Es un límite conocido de amplificación, no una regresión abierta, y no se promete resuelto.
 - **H3 (logging):** la redacción actual cubre `Cookie`, `Set-Cookie`, `Authorization` y campos de credenciales; serializers custom futuros requieren revisión contra esa lista. No hay fuga actual.
+
+### D20. Recuperación de contraseña 5.9: forgot/reset sin sesión, cuotas independientes y entrega deshabilitada por defecto
+
+**Decisión (aprobada por el usuario; R1+R2 implementados y 5.9 QA PASSED en HITO17):** `forgot` y `reset` son endpoints públicos sin sesión ni cookie, con token de recuperación transportado solo en el body de `reset`. Las cuotas de recuperación son durables y **independientes** del login/HU01; el envío real de email queda deshabilitado por defecto y limitado a un puerto inyectable con sink en memoria solo para pruebas. R1 implementa la migración incremental y el guard de cuotas; R2 implementa endpoints, token lifecycle, revocaciones y entrega disabled/memory sink. No se implementa frontend, proxy, Azure ni envío real.
+
+**Persistencia existente que se reutiliza**
+
+- `PasswordResetToken` (`backend/prisma/schema.prisma:386-399`; migración C `backend/prisma/migrations/20261118020000_identity_audit/migration.sql:344-405`) ya impone hash SHA-256 lowercase de 64 hex, `expires_at <= created_at + 30 minutes`, identidad/expiry inmutables y `consumed_at`/`revoked_at` append-only. 5.9 usa esa tabla sin editar la migración C, `docker/init.sql` ni `0_init`.
+- **No se reutiliza ni se altera** `auth_login_buckets` ni `login-guard.ts`: sus `kind` `IDENTIFIER`/`IP`, su dominio HMAC y sus cuotas 5/15 min y 100/60 s pertenecen a login. Cambiar su semántica o mezclar propósitos rompería HU01 y sus pruebas.
+- La migración incremental implementada es `20261119020000_password_recovery_quotas`. Es aditiva, idempotente y no reescribe migraciones publicadas ni el baseline. Añade el modelo Prisma `AuthRecoveryBucket` mapeado a `auth_recovery_buckets`, sin FK a `users` y con grants de mínimo privilegio a `clearsight_app` coherentes con la migración E: `SELECT/INSERT/UPDATE`; `DELETE/TRUNCATE/TRIGGER/REFERENCES` revocados; fallo cerrado si el rol falta, es inseguro, es owner o existe un grant efectivo prohibido (incluido PUBLIC).
+- **R1 implementado (HITO17):** migración `20261119020000_password_recovery_quotas`, modelo `AuthRecoveryBucket`, guard `backend/src/services/password-recovery-quota.ts`, tests unitarios/integración y evidencia en `tasks.md`/`contracts/testing-runbook.md`.
+- **R2 implementado y QA PASSED (HITO17):** `backend/src/services/password-reset.ts`, puerto `password-reset-delivery.ts` con `DISABLED` por defecto y memory sink explícito, rutas públicas `/auth/password/forgot|reset`, schemas estrictos, DI Fastify, redacción de `token/email/newPassword`, pruebas unitarias e integración. QA final: unit R2 **7/7**, focal unit R1+R2 **19/19**, unit total **27 files / 396 tests**, foco integración R2 **28 tests**, full integration **23 files / 444 tests** (401 baseline + 15 R1 + 22 R2 + 6 QA), `typecheck` 0 después de QA y `build` reutilizado del mismo source maker 0. El proxy público `/api/auth/password/*` no se implementa; el backend expone internamente `/auth/password/*`. B8 (proveedor/credenciales reales) sigue pendiente de provisioning y no bloquea el cierre de 5.9.
+- Tabla implementada:
+
+  ```sql
+  auth_recovery_buckets (
+    kind               VARCHAR(16) NOT NULL, -- FORGOT_EMAIL | FORGOT_IP | RESET_IP
+    key_hash           VARCHAR(64) NOT NULL, -- HMAC-SHA256 lowercase, 64 hex
+    attempt_count      INTEGER     NOT NULL DEFAULT 0,
+    window_started_at  TIMESTAMPTZ(6) NOT NULL,
+    updated_at         TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, key_hash),
+    CHECK (kind IN ('FORGOT_EMAIL','FORGOT_IP','RESET_IP')),
+    CHECK (key_hash ~ '^[0-9a-f]{64}$'),
+    CHECK (
+      (kind = 'FORGOT_EMAIL' AND attempt_count BETWEEN 0 AND 3)
+      OR (kind IN ('FORGOT_IP','RESET_IP') AND attempt_count BETWEEN 0 AND 20)
+    ),
+    CHECK (updated_at >= window_started_at)
+  )
+  ```
+
+  No hay `locked_until`: la cuota es una ventana fija calculada, no un lock persistido. No se guardan email, IP, token ni secretos en claro.
+
+**Dominio HMAC separado y normalización**
+
+- Subclave: `HMAC-SHA256(jwtSecret, "clearsight:auth-password-recovery:v1")`, distinta de `clearsight:auth-login-protection:v1`.
+- Clave de bucket: `HMAC-SHA256(subclave, kind || 0x00 || valorCanonico)` en hex lowercase, donde `kind` es `FORGOT_EMAIL`, `FORGOT_IP` o `RESET_IP`. El valor canónico es el email canónico (`trim`/lowercase, mismo `canonicalEmailSchema`) para `FORGOT_EMAIL`, y la IP literal del socket para los dos `kind` de IP.
+- La IP se toma de `request.socket.remoteAddress`; **no** se habilita `trustProxy` global ni se lee `X-Forwarded-For`/`Forwarded` controlado por el cliente. Si una llamada directa no expone IP, se usa un bucket sintético `INTERNAL`, nunca una ruta sin cuota. Limitación aceptada: detrás de un proxy todos los clientes pueden compartir la IP del proxy; no se corrige confiando en headers del cliente.
+
+**Cuotas durables y orden de consumo**
+
+| Operación | `kind` | Valor | Límite | Ventana fija |
+|---|---|---:|---:|---:|
+| `forgot` | `FORGOT_EMAIL` | email canónico | 3 | 3600 s |
+| `forgot` | `FORGOT_IP` | socket IP / `INTERNAL` | 20 | 3600 s |
+| `reset` | `RESET_IP` | socket IP / `INTERNAL` | 20 | 900 s |
+
+- Ventana fija desde el primer intento: `window_started_at` se fija con el primer consumo; al cumplirse la ventana se reinicia a `now`; el contador se incrementa bajo `SELECT ... FOR UPDATE` por fila. La decisión es atómica y durable.
+- `forgot`: con body válido se consume **primero `FORGOT_IP` y después `FORGOT_EMAIL`**, aunque el email ya esté agotado. Si la IP está bloqueada, no se consume el email. Después de ambas cuotas se hace el lookup.
+- `reset`: con body válido se consume **`RESET_IP` antes del lookup del token y de bcrypt**. Un token inválido/expirado/usado/revocado o un usuario inactivo también consume la cuota IP.
+- Body inválido (`400`) no consume cuota. El store de cuotas no disponible antes del lookup responde `503` genérico para conocido, desconocido e inactivo por igual.
+- `429` usa body genérico fijo y `Retry-After` entero en segundos, `ceil` del tiempo restante con mínimo 1. No revela email, estado de cuenta ni contador.
+- Estas cuotas **no** leen, escriben ni reinician las cuotas/contadores de login (HU01).
+
+**Contrato `POST /auth/password/forgot`**
+
+- Request estricto `{ email: string(email canónico, trim/lowercase, <=255) }`; campos desconocidos `400`.
+- Sin cookie, sin sesión y sin `preHandler` de autenticación. `Authorization`, si llega, no se usa como credencial. `Origin` es opcional como en logout: si el header está presente se aplica la misma política exacta (`403` mismatch/null, `503` si falta configuración); si está ausente se permite porque no hay cookie como credencial.
+- Respuesta uniforme para conocido, desconocido e inactivo: `202` con body fijo `{ "accepted": true }`, `Cache-Control: no-store`, sin token, usuario, rol ni estado de entrega. Es un **acuse de recepción**, no prueba de emisión ni de entrega.
+- Flujo implementado:
+  1. Validar body; consumir cuota IP y email.
+  2. Si el puerto está `DISABLED` (default): `202` inmediatamente después de las cuotas, **antes del lookup de usuario**, sin generar token y **sin invalidar tokens anteriores**. Es la ruta más uniforme y evita tocar la DB de usuario.
+  3. Buscar usuario por email canónico. Si no existe o `isActive=false`: `202`, sin token y sin cambios.
+  4. Si el sink de pruebas está habilitado explícitamente: transacción auditada con lock de la fila de usuario, generación del token, inserción, revocación de tokens anteriores no revocados y auditoría; commit **antes** de intentar la entrega.
+  5. Errores posteriores a las cuotas (lookup, creación de token, auditoría o entrega) responden `202` uniforme. Un fallo de auditoría revierte la creación y no se entrega; un fallo de entrega no promete entrega y se registra como fallo operativo sin email ni token crudos.
+- Concurrencia: dos `forgot` exitosos del mismo usuario se serializan por la fila de usuario. El token creado por la transacción que confirma en último lugar es el único válido; su transacción revoca los anteriores no revocados. La entrega puede llegar fuera de orden; un token anterior sigue siendo inválido aunque su correo llegue después.
+- Fallo de entrega: se intenta revocar **solo ese token exacto** de forma condicional (`revoked_at IS NULL` y `consumed_at IS NULL`) con auditoría; nunca se revoca en bloque ni se afecta a un token creado después o a otro usuario. Si la compensación/auditoría falla, se registra el fallo operativo sin secreto y se mantiene el `202`.
+
+**Token de recuperación y entrega**
+
+- Token crudo: 32 bytes de CSPRNG (`randomBytes`) codificados base64url, 43 caracteres; en DB solo SHA-256 lowercase; expiración `now + 30 min` usando el reloj inyectado; sin extensión ni reutilización. El boundary `expiresAt <= now` es inválido.
+- El puerto de entrega es inyectable (`PasswordResetDelivery`), con modo por defecto `DISABLED`. No hay proveedor real, dependencia de email nueva, endpoint que exponga el sink ni variable de entorno que habilite envío real en este hito.
+- El sink en memoria es **solo para pruebas explícitas** y recibe `recipient` + `rawToken` en una instancia local, no global. No se registra en logs/JSON/URLs ni se persiste; no se expone por HTTP. El correo de prueba no contiene el token en una URL, query ni fragmento: el token se entrega como texto para que el usuario lo introduzca en el formulario.
+- No hay outbox de correo en 5.9. Se declara explícitamente que `202` **no garantiza entrega**; un crash después del commit y antes de la entrega puede dejar un token persistido sin correo. El proveedor real y sus credenciales siguen en B8, pendiente de provisioning sin bloquear el cierre de 5.9.
+
+**Contrato `POST /auth/password/reset`**
+
+- Request estricto `{ token: string, newPassword: string }`; campos/claims desconocidos `400`. `newPassword` usa la misma política actual: al menos 12 code points Unicode y como máximo 72 bytes UTF-8; hash bcrypt con cost 12. Body inválido `400` sin consumir cuota.
+- Sin cookie, sin sesión y sin autenticación Bearer. `Authorization` no sustituye al token y el token solo se acepta en el body. `Origin` opcional con la misma política que logout.
+- Estados: token inválido, expirado (`expiresAt <= now`), ya consumido, revocado o usuario inactivo ⇒ `401` genérico idéntico; cuota IP agotada ⇒ `429` con `Retry-After`; store/auditoría/hash no disponible ⇒ `503` genérico con rollback. No se reactiva un usuario inactivo.
+- Éxito: transacción auditada con orden de locks `user -> password_reset_token` (y después actualizaciones de sesiones/refresh), revalidación del token bajo lock, `passwordHash` nuevo con cost 12, `tokenVersion + 1` exactamente una vez (invalida los access tokens previos), `consumedAt` del token usado y revocación de:
+  - todos los demás `PasswordResetToken` no revocados del usuario;
+  - todas las `UserSession` no revocadas, con `reasonCode = PASSWORD_RESET`;
+  - todos los `RefreshToken` no revocados del usuario;
+  - auditoría append-only en la misma transacción.
+- `204` sin body, sin `Set-Cookie`, sin access token y sin crear sesión nueva. El usuario debe autenticarse de nuevo.
+- **No** modifica `failedLoginCount`, `lockedUntil` ni `auth_login_buckets`; el lockout de login vigente se conserva. Un reset exitoso no desbloquea la cuenta. No toca grants clínicos, historial, inferencias ni PDFs.
+- Dos `reset` concurrentes del mismo token: como máximo uno confirma `204`; el otro ve el token consumido y responde `401`. Dos tokens distintos del mismo usuario: el que confirma primero revoca el otro y el segundo responde `401`.
+
+**Errores, caché y redacción**
+
+- Todas las respuestas de `forgot`/`reset`, incluidas las de error, llevan `Cache-Control: no-store`.
+- Bodies de error genéricos y constantes; sin email, token, usuario, rol ni estado de cuenta. `Retry-After` solo en `429`.
+- Extender la redacción de logs con `req.body.token` y `req.body.email` (`newPassword` ya está cubierto) y mantener `Authorization`/cookies. La entrega y la compensación registran solo resultado/acción segura, nunca recipient, email, token crudo ni hash.
+- No se construyen enlaces con el token en URL, query o fragmento; no se devuelve el token en JSON ni en cabeceras.
+
+**Relación con D10 y con el ciclo de vida existente**
+
+- `forgot` `202` y `reset` `204` no son equivalentes: el primero es un acuse que puede ocultar fallos post-cuota; el segundo es un éxito sensible que solo se declara tras commit auditado. Un fallo de auditoría en `forgot` revierte la creación y no entrega; en `reset` produce `503` con rollback.
+- El patrón de DI, schema explícito, reloj inyectado y `withAuditedTransaction` sigue a `auth-web-session.ts`; la revocación de sesiones/refresh/reset y el bump de `tokenVersion` sigue el lifecycle ya implementado en `admin-users.ts:624-656`, con la diferencia de que `reset` consume el token usado y **no** altera el lockout de login.
+
+**Fuera de alcance de 5.9**
+
+- Frontend, proxy, Azure, `.env.azure`, entornos reales, PDFs, PHI, proveedor real de correo, outbox y nuevas dependencias de email.
+- Cambiar `/auth/register` (`410`), el JSON de login, `/auth/me` o el contrato de access/sesión vigente. 5.9 quedó cerrada con QA PASSED; B8 (proveedor/credenciales reales) sigue pendiente de provisioning y no bloquea el cierre.
 
 ## ADR Registry
 
@@ -361,7 +469,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-011 | Roles y ownership con default deny | agreed | D9 |
 | ADR-012 | Bootstrap de admin controlado, sin registro público de rol | agreed | D9 |
 | ADR-013 | Bloqueo HU01: 5 fallos consecutivos/15 min, éxito intermedio reinicia contador | agreed | D9 |
-| ADR-014 | Sesiones: JWT 15 min + sessionId/tokenVersion, refresh opaco rotado, cookie web | implemented 5.8 (QA PASSED); reset 5.9 pending | D9, D19 |
+| ADR-014 | Sesiones: JWT 15 min + sessionId/tokenVersion, refresh opaco rotado, cookie web | implemented 5.8 + reset 5.9 (QA PASSED) | D9, D19 |
 | ADR-015 | Auditoría append-only; fallo bloquea operación sensible | agreed | D10 |
 | ADR-016 | Desactivación + revocación de sesiones; sin hard delete en el hito | agreed (B5 restriction) | D10 |
 | ADR-017 | Supresión/retención pendientes solo producción; sin plazos legales fijados | deferred (production only) | D10, B3, B4, B5 |
@@ -387,6 +495,7 @@ Los gates de MLflow son criterios de promoción, no métricas demostradas. La di
 | ADR-037 | Migración D: locks deterministas freeze/contexto, guard de reparentado de imagen y rol `clearsight_app` mínimo; LOGIN runtime queda 8.x | agreed (implemented 1.4) | D17, ADR-004, ADR-015 |
 | ADR-038 | Preferencia futura Azure: Container Apps con ingress público solo en web/proxy y backend/ML internos; B6 sigue bloqueando deploy y no se promete capa gratuita | future preference (deploy blocked) | D18, B6 |
 | ADR-039 | 5.8: cookie de refresh `clearsight_refresh` (host-only, `Path=/api/auth`, `Secure/Lax/HttpOnly`), `AUTH_PUBLIC_ORIGIN` exacto, refresh cookie-only, logout en 5.8 y reuso revoca la sesión | implemented 5.8 (QA PASSED) | D9, D19 |
+| ADR-040 | Forgot/reset: cuotas durables independientes de login, token single-use solo en body, revocación total en reset y entrega deshabilitada por defecto | implemented R1+R2 (HITO17); 5.9 QA PASSED; B8 provider pending (non-blocking) | D20 |
 
 ## Risks / Trade-offs
 
