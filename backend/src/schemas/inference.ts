@@ -199,6 +199,104 @@ export const ArtifactRefSchema = z
 
 export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 
+/** Postgres `integer` upper bound for an explicit artifact version. */
+export const ARTIFACT_VERSION_MAX = 2_147_483_647;
+
+export const ArtifactListItemSchema = z
+  .object({
+    artifactId: z.uuid(),
+    version: z.number().int().positive().max(ARTIFACT_VERSION_MAX),
+    reference: ArtifactRefSchema,
+  })
+  .strict();
+
+export type ArtifactListItem = z.infer<typeof ArtifactListItemSchema>;
+
+export const ArtifactListResponseSchema = z
+  .object({
+    items: z.array(ArtifactListItemSchema),
+    total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    limit: z.number().int().min(1).max(100),
+    offset: z.number().int().min(0).max(ARTIFACT_VERSION_MAX),
+  })
+  .strict();
+
+export type ArtifactListResponse = z.infer<typeof ArtifactListResponseSchema>;
+
+/** Strict query for the server-side list; unknown keys are rejected. */
+export const ArtifactListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    offset: z.coerce.number().int().min(0).max(ARTIFACT_VERSION_MAX).default(0),
+    type: ArtifactType.optional(),
+  })
+  .strict();
+
+export type ArtifactListQuery = z.infer<typeof ArtifactListQuerySchema>;
+
+/** An explicit, positive int32 version is mandatory; there is no `latest`. */
+export const ArtifactUrlQuerySchema = z
+  .object({
+    version: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(ARTIFACT_VERSION_MAX),
+  })
+  .strict();
+
+export type ArtifactUrlQuery = z.infer<typeof ArtifactUrlQuerySchema>;
+
+export const ArtifactUrlSchema = z
+  .object({
+    artifactType: ArtifactType,
+    status: ArtifactStatus,
+    url: z.string().url().nullable(),
+    expiresInSeconds: z.number().int().min(1).max(3600).nullable(),
+    contentType: nonBlankString(255).nullable(),
+    reportVersion: z
+      .number()
+      .int()
+      .positive()
+      .max(ARTIFACT_VERSION_MAX)
+      .nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.status === "AVAILABLE") {
+      if (value.url === null) {
+        ctx.addIssue({ code: "custom", path: ["url"], message: "Required for AVAILABLE" });
+      }
+      if (value.expiresInSeconds === null) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["expiresInSeconds"],
+          message: "Required for AVAILABLE",
+        });
+      }
+      if (value.contentType === null) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["contentType"],
+          message: "Required for AVAILABLE",
+        });
+      }
+      return;
+    }
+
+    for (const field of ["url", "expiresInSeconds", "contentType"] as const) {
+      if (value[field] !== null) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: "Must be null for non-AVAILABLE artifacts",
+        });
+      }
+    }
+  });
+
+export type ArtifactUrl = z.infer<typeof ArtifactUrlSchema>;
+
 export const jobAcceptedSchema = z.object({
   inferenceId: z.string().uuid(),
   jobId: z.string(),

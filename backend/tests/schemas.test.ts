@@ -5,7 +5,11 @@ import { CLINICAL_FEATURE_NAMES, ClinicalFeaturesSchema, ClinicalSnapshotCreateS
 import { FeedbackCreate } from "../src/schemas/feedback.js";
 import {
   ARTIFACT_CATALOG_TYPES,
+  ArtifactListQuerySchema,
+  ArtifactListResponseSchema,
   ArtifactRefSchema,
+  ArtifactUrlQuerySchema,
+  ArtifactUrlSchema,
   patientCreateSchema,
   registerRequestSchema,
 } from "../src/schemas/index.js";
@@ -176,6 +180,130 @@ describe("ArtifactRefSchema", () => {
     expect(
       ArtifactRefSchema.safeParse({ ...available(), extra: "nope" }).success,
     ).toBe(false);
+  });
+});
+
+describe("artifact list and URL DTOs", () => {
+  const availableRef = {
+    artifactType: "mask",
+    status: "AVAILABLE",
+    storageId: "minio-local",
+    bucketOrContainer: "raw-retinas",
+    key: "folder/mask.png",
+    contentType: "image/png",
+    sizeBytes: 42,
+    checksumSha256: "a".repeat(64),
+    failureCode: null,
+    retryable: false,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  } as const;
+
+  it("accepts a strict paginated envelope and keeps result out of ArtifactRef", () => {
+    const item = {
+      artifactId: randomUUID(),
+      version: 2,
+      reference: availableRef,
+    };
+    const envelope = {
+      items: [item],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    };
+    expect(ArtifactListResponseSchema.safeParse(envelope).success).toBe(true);
+    expect(
+      ArtifactListResponseSchema.safeParse({
+        ...envelope,
+        items: [
+          {
+            ...item,
+            reference: { ...availableRef, artifactType: "result" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      ArtifactListResponseSchema.safeParse({ ...envelope, limit: 101 }).success,
+    ).toBe(false);
+    expect(
+      ArtifactListResponseSchema.safeParse({ ...envelope, total: -1 }).success,
+    ).toBe(false);
+    expect(
+      ArtifactListResponseSchema.safeParse({ ...envelope, extra: true }).success,
+    ).toBe(false);
+  });
+
+  it("accepts nulls for non-AVAILABLE and requires URL fields only for AVAILABLE", () => {
+    const unavailable = {
+      artifactType: "mask" as const,
+      status: "PENDING" as const,
+      url: null,
+      expiresInSeconds: null,
+      contentType: null,
+      reportVersion: null,
+    };
+    expect(ArtifactUrlSchema.safeParse(unavailable).success).toBe(true);
+
+    const available = {
+      artifactType: "pdf" as const,
+      status: "AVAILABLE" as const,
+      url: "https://signed.example/object",
+      expiresInSeconds: 3600,
+      contentType: "application/pdf",
+      reportVersion: 3,
+    };
+    expect(ArtifactUrlSchema.safeParse(available).success).toBe(true);
+
+    for (const field of ["url", "expiresInSeconds", "contentType"] as const) {
+      expect(
+        ArtifactUrlSchema.safeParse({ ...available, [field]: null }).success,
+      ).toBe(false);
+    }
+    for (const field of ["url", "expiresInSeconds", "contentType"] as const) {
+      expect(
+        ArtifactUrlSchema.safeParse({
+          ...unavailable,
+          [field]: field === "url" ? "https://secret.example" : 1,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      ArtifactUrlSchema.safeParse({ ...available, reportVersion: 0 }).success,
+    ).toBe(false);
+    expect(
+      ArtifactUrlSchema.safeParse({ ...available, extra: true }).success,
+    ).toBe(false);
+  });
+
+  it("parses strict list/version queries with safe defaults and int32 bounds", () => {
+    expect(ArtifactListQuerySchema.parse({})).toEqual({ limit: 20, offset: 0 });
+    expect(
+      ArtifactListQuerySchema.parse({ limit: "100", offset: "2147483647", type: "mask" }),
+    ).toEqual({ limit: 100, offset: 2147483647, type: "mask" });
+    for (const query of [
+      { limit: 0 },
+      { limit: 101 },
+      { offset: -1 },
+      { offset: 2147483648 },
+      { type: "result" },
+      { type: "unknown" },
+      { extra: "1" },
+    ]) {
+      expect(ArtifactListQuerySchema.safeParse(query).success).toBe(false);
+    }
+
+    expect(ArtifactUrlQuerySchema.parse({ version: "3" })).toEqual({ version: 3 });
+    for (const query of [
+      {},
+      { version: 0 },
+      { version: -1 },
+      { version: 1.5 },
+      { version: 2147483648 },
+      { version: "abc" },
+      { version: 1, extra: "1" },
+    ]) {
+      expect(ArtifactUrlQuerySchema.safeParse(query).success).toBe(false);
+    }
   });
 });
 

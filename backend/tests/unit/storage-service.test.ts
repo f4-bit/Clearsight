@@ -85,6 +85,17 @@ describe("StorageService facade", () => {
     expect(mocks.createStorageProvider).not.toHaveBeenCalled();
   });
 
+  it("resolves a trusted row context and the configured TTL without network", () => {
+    mocks.createStorageProvider.mockClear();
+    expect(StorageService.getArtifactRecordContext("raw-retinas")).toMatchObject({
+      provider: "minio",
+      storageId: "minio-local",
+      defaultBucket: "raw-retinas",
+    });
+    expect(StorageService.getDownloadTtlSeconds()).toBe(3600);
+    expect(mocks.createStorageProvider).not.toHaveBeenCalled();
+  });
+
   it("validates bodies and explicit TTL overrides before provider work", async () => {
     provider.ensure.mockClear();
     provider.upload.mockClear();

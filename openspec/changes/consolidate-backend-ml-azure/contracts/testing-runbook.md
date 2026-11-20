@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED y 3.8 parcial FUTURO (§4.6); HITO21 3.3 QA PASSED (§4.7) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -418,7 +418,7 @@
 
 ## 1.23 Registro HITO20 - preparación documental 3.2 (sin ejecución)
 
-> **Naturaleza:** solo documentación. No se implementó código, no se instalaron dependencias, no se ejecutaron tests, no se usó Azure/MinIO real ni `.env` reales. 3.2 y 3.8 siguen `[ ]`; no se declara validación OpenSpec ni QA.
+> **Naturaleza:** solo documentación. No se implementó código, no se instalaron dependencias, no se ejecutaron tests, no se usó Azure/MinIO real ni `.env` reales. 3.2 y 3.8 seguían `[ ]` en este registro histórico; **actualización HITO22: 3.8 QA PASSED**. No se declara validación OpenSpec ni QA en este turno.
 
 | Elemento | Registro |
 |---|---|
@@ -427,14 +427,14 @@
 | Compatibilidad | `StorageService` conserva `getDownloadUrl`, `getMlDownloadUrl`, `upload`, `ensureBucket`, `getObjectStream` y `s3Client`; fachada con `StorageProvider` DI/lazy y construcción sin red. |
 | Azure | SDK oficial `@azure/storage-blob` + `SharedKeyCredential`; config explícita HTTPS accountURL/name/key sin fallback MinIO; SAS por objeto read-only (`sp=r` en el wire del SDK; `p=r` abreviatura de D22), `sr=b`, `spr=https` y expiración acotada; `ensure` solo comprueba contenedor; upload verifica `getProperties`; sign verifica existencia y no traga permisos/red como `404`. Managed Identity queda para 8.x. |
 | MinIO | Endpoints interno y `ML_PUBLIC_HOST` distintos; `HeadBucket` crea solo en `404`/not found, acepta `AlreadyOwnedByYou` y no absorbe `BucketAlreadyExists` ajeno; upload verifica `HeadObject`; streams `Readable` sin logs de credenciales. |
-| Keys/TTL | Keys exactas sin normalización ni `decodeURI`; `.`/`..` completos se rechazan de forma explícita. TTL 1..3600 default 3600; callers legacy conservan 3600; 300 queda para 3.4/4.8. `storageId` `minio-local`/`azure-blob-default` sin cambio de DB. |
+| Keys/TTL | Keys exactas sin normalización ni `decodeURI`; `.`/`..` completos se rechazan de forma explícita. TTL 1..3600 default 3600; callers legacy conservan 3600; 300 queda para 4.8 (3.4 usa el default configurado, D24). `storageId` `minio-local`/`azure-blob-default` sin cambio de DB. |
 | Código/tests | Ninguno. Sin `@azure/storage-blob` instalado, sin lockfile tocado, sin parser 3.3, ruta 3.4, logs 3.7, migración/DB ni `storagePath`. |
-| Límites | Sin QA, sin evidencia de verde y sin `openspec validate` afirmado. 3.8 es parcial y depende de 3.4. `.env.example`/README se actualizan en implementación posterior. |
+| Límites | Sin QA, sin evidencia de verde y sin `openspec validate` afirmado. En este registro histórico 3.8 seguía parcial; **actualización HITO22: 3.8 QA PASSED**. `.env.example`/README se actualizan en implementación posterior. |
 | Comandos | No ejecutados en este turno; §4.6 los deja como FUTURO. |
 
 ## 1.24 Evidencia HITO20 - 3.2 provider dual (QA PASSED)
 
-> **Naturaleza:** implementación local y QA final de 3.2. Sin Azure real, Azurite, `.env.azure`, credenciales reales ni recursos cloud creados/destruidos. 3.2 queda `[x]` con QA PASSED; 3.8 sigue `[ ]` parcial y depende de 3.4.
+> **Naturaleza:** implementación local y QA final de 3.2. Sin Azure real, Azurite, `.env.azure`, credenciales reales ni recursos cloud creados/destruidos. 3.2 queda `[x]` con QA PASSED; 3.8 seguía `[ ]` parcial en este registro histórico; **actualización HITO22: 3.8 QA PASSED**.
 
 | Elemento | Evidencia |
 |---|---|
@@ -449,7 +449,7 @@
 | Integración focal | `npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts` -> **3 files / 41 tests passed**, re-ejecutada final. Sin Azure/MinIO reales; storage mockeado. |
 | Estático | `npm --prefix backend run typecheck` -> **0**; `npm --prefix backend run build` -> **0** reutilizado del mismo source. |
 | Audit | `npm audit` **13** (8 moderate, 5 high), baseline **13** verificado en QA con temp HEAD; delta **0**, ningún advisory Azure; sin upgrades ni `audit fix`. |
-| Límites | QA PASSED, pero sin Azure real ni E2E cloud. La firma Azure fue solo offline con SDK real y clave sintética: no se creó, modificó ni destruyó ningún recurso Azure. 3.8 parcial por 3.4; 300 s no se adopta antes de 4.8. Un mismatch post-upload puede dejar el objeto sin reclamar como `AVAILABLE`; no se borra y la reconciliación pertenece a 3.5. No se tocaron rutas 3.4, parser 3.3, logs 3.7, DB/migraciones, `storagePath`, ML ni worker. |
+| Límites | QA PASSED, pero sin Azure real ni E2E cloud. La firma Azure fue solo offline con SDK real y clave sintética: no se creó, modificó ni destruyó ningún recurso Azure. En este registro histórico 3.8 seguía parcial; **actualización HITO22: 3.8 QA PASSED**. 300 s no se adopta antes de 4.8. Un mismatch post-upload puede dejar el objeto sin reclamar como `AVAILABLE`; no se borra y la reconciliación pertenece a 3.5. No se tocaron rutas 3.4, parser 3.3, logs 3.7, DB/migraciones, `storagePath`, ML ni worker. |
 
 ## 1.25 Registro HITO21 - QA focal 3.3 (PASSED)
 
@@ -461,7 +461,37 @@
 | Código | Nuevo `backend/src/services/artifact-reference.ts` (parser puro, contexto trusted, mapper) y `backend/src/lib/artifact-key.ts` (política de key compartida); `schemas/inference.ts` (`ArtifactRef` binario); `storage.ts` (contexto aditivo y seam DI); `routes/inferences.ts` (parseo antes de firmar); `config/env.ts`, `.env.example` y `README.md` (`STORAGE_ALLOWED_BUCKETS`). |
 | Tests | Nuevo `tests/unit/artifact-reference.test.ts`; ampliados `tests/schemas.test.ts`, `tests/unit/storage-service.test.ts`, `tests/unit/storage-provider.test.ts`, `tests/inference-creation.integration.test.ts` y `tests/clinical-access.integration.test.ts`; mocks de storage actualizados explícitamente. QA sólo endureció tests: errores must-throw/non-leak y fila postcommit `QUEUED`. |
 | Comandos | Focus unit **4 files / 84 tests** (83 + 1 QA de contexto con whitespace id); integración **2 files / 33 tests** re-ejecutada tras el fix de key; `typecheck` **0**; `build` **0** reutilizado del mismo source. Sin suite completa. |
-| Estado | 3.3 `[x]` QA PASSED; 3.8 sigue parcial por 3.4; publisher 3.5 pendiente. |
+| Estado | 3.3 `[x]` QA PASSED; en este registro histórico 3.8 seguía parcial por 3.4; **actualización HITO22: 3.8 QA PASSED**. Publisher 3.5 pendiente. |
+
+## 1.26 Registro HITO22 - preparación documental 3.4 (sin ejecución)
+
+> **Actualización posterior:** ver §1.27; 3.4 y 3.8 quedaron **QA PASSED**.
+>
+> **Naturaleza:** solo documentación. No se implementó código, no se ejecutaron tests, no se usó Azure/MinIO real, `.env` reales, SRS ni commit. 3.4 y 3.8 seguían `[ ]` en este registro histórico; ver actualización HITO22 arriba.
+
+| Elemento | Registro |
+|---|---|
+| Documentos | `design.md` D24/ADR-054..058 y riesgos; `specs/artifact-evidence/spec.md`; `specs/clinical-api-contract/spec.md`; `tasks.md` 3.4/3.8; `contracts/frontend-api-contract.md` §3.3/§4.2/§4.3/§7/§11; este runbook §1.26/§4.8/§10. |
+| Contrato | `GET /inferences/:id/artifacts` → `{ items: [{ artifactId, version, reference }], total, limit, offset }`; `limit` 20/100, `offset` 0, `type` binario opcional; orden `artifactType ASC`/`version DESC`/`id ASC`; filtro de tipos permitidos antes de paginar/contar. `GET /inferences/:id/artifacts/:type/url` exige `version` positiva `<= 2147483647`; sin `latest` ni fallback; `result` `400`. |
+| Autorización | Unión de todos los grants activos `readArtifacts` (mask/overlay/gradcam/shap) y `readPdf` (pdf); sin `ADMIN` implícito; dueño médico todo, no dueño sin grant nada; `readResult` solo no lista ni firma. `404` uniforme para ejecución inexistente/ajena/sin capability; `401` JWT inválido. |
+| Storage/TTL | Parser 3.3 con contexto trusted, allowlist ampliada explícitamente a mask/overlay/PDF; contexto no default exige bucket ya allowlisted; sin extender allowlist desde DB ni fallback cross-provider. TTL efectivo con default configurado 1..3600; 300 queda para 4.8; legacy 3600 intacto. |
+| Errores/auditoría | Auth antes de metadata/storage; revalidación fresca de sesión/capability tras firmar; URL solo tras commit `ARTIFACT_URL_ISSUED`; objeto ausente `409` + incidente, permisos/red `503`, PDF `AVAILABLE` sin reporte `409`; `Cache-Control: no-store`; `503` genérico. |
+| Código/tests | Ninguno. Sin ruta 3.4, sin lectores, sin migraciones, sin publisher 3.5, sin rutas `/reports`, sin cambios de gradcam legacy ni de TTL de callers. |
+| Límites | Sin QA, sin evidencia de verde y sin `openspec validate` afirmado. En este registro histórico 3.8 seguía parcial; **actualización HITO22: 3.8 QA PASSED**. 3.7/3.5 siguen unchecked. |
+| Comandos | No ejecutados en este turno; §4.8 los deja como FUTURO. |
+
+## 1.27 Evidencia HITO22 - 3.4/3.8 QA PASSED
+
+> **Naturaleza:** implementación local y QA final. Sin Azure/MinIO real, Azurite, `.env`/credenciales reales, SRS, PDF real, ML/worker ni commit. **3.4 y 3.8 quedan `[x]`.**
+
+| Elemento | Evidencia |
+|---|---|
+| Código | `routes/artifacts.ts`; `ArtifactReadScope` en `services/clinical-access.ts`; `repositories/artifact.repo.ts`; DTO/query en `schemas/inference.ts`; contexto trusted row en `services/artifact-reference.ts` y `services/storage.ts`; registro DI en `app.ts`. |
+| Contrato | Envelope, orden/filtro antes de count, `version` obligatoria, estados no-`AVAILABLE` sin storage, `reportVersion`/PDF, `409`/`503` y `Cache-Control: no-store` según D24. Partición confirmada: pertenencia inferencia/tipo/versión o acceso `404`; config storage/metadata corrupta `503` seguro antes del SDK. |
+| Unit | `npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/artifact-reference.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts tests/unit/runner-isolation.test.ts` → **5 files / 102 tests** (mismo estado del maker). Incluye los **36** tests de provider de 3.2. |
+| Integración | `npm --prefix backend run test:integration -- tests/artifact-downloads.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts tests/inference-creation.integration.test.ts` → **4 files / 60 tests** (nuevo archivo: **16 tests**, +4 QA). QA añadió `403` boundary, metadata `503` sin eco y cross-inference `404`. |
+| Estático | `npm --prefix backend run typecheck` → **0 post-QA**; `npm --prefix backend run build` → **0 reutilizado**. |
+| Límites | Sin full integration/unit, sin Azure/E2E, sin PDF real ni migraciones. 3.5 publicación/reconciliación sigue pendiente y depende de 6.2; no se declara generador PDF implementado. URLs ya emitidas siguen válidas hasta su TTL; la ventana entre el último recheck y la respuesta HTTP no es atomicidad absoluta. |
 
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
@@ -634,13 +664,13 @@ npm --prefix backend run test:integration -- tests/inference-worker.integration.
 
 **Criterio de salida:** A+B+C verdes con los comandos focalizados pre-H1 (A **30 passed** + relacionados 12 + 4; B unit **13 passed**, integración B **11 passed**; C unit **20 passed**, integración C **4 passed**; foco C+B+ACL+repos+rbac **65 passed**). **QA final global PASSED (baseline 31/437 y 25/469) y H1 PASSED**; post-H1 foco ML **45**, backend unit **15**, B+ACL **30**. Sin descarga de modelos, sin Redis real, sin secretos en salida ni recursos propios residuales. **2.2 cerrada**; no se declara un full post-H1 nuevo.
 
-### 4.6 Fase específica HITO20 — 3.2 provider dual (CURRENT; QA PASSED; 3.8 parcial)
+### 4.6 Fase específica HITO20 — 3.2 provider dual (CURRENT; QA PASSED; 3.8 QA PASSED en HITO22)
 
 **Objetivo:** verificar la selección MinIO/Azure, la fachada `StorageService`, validación previa de inputs y firma/verificación por provider sin Azure real ni red.
 
 **Precondiciones:**
 
-- D22, `specs/artifact-evidence/spec.md` y `tasks.md` 3.2/3.8 revisados; 3.2 con QA PASSED; 3.4 pendiente para cerrar 3.8.
+- D22, `specs/artifact-evidence/spec.md` y `tasks.md` 3.2/3.8 revisados; 3.2 QA PASSED; 3.4/3.8 QA PASSED en HITO22.
 - Tests con dobles de SDK y firma offline con cuenta/clave sintéticas; MinIO con comandos y reloj fake. Sin Azurite, Docker innecesario, credenciales Azure ni `.env` reales.
 - `@azure/storage-blob@12.32.0` instalado desde el registry permitido; lockfile acotado sin upgrades globales ni `audit fix`.
 
@@ -667,7 +697,7 @@ npm --prefix backend run test:integration -- tests/inference-creation.integratio
 
 **Stop:** si un caso exige Azurite, Docker, Azure real, credenciales, `.env` reales, red o un provider forzado fuera de la configuración. Si aparece un fallback Azure→MinIO, una URL para un objeto ausente o un borrado post-mismatch, se detiene la fase.
 
-**Criterio de salida:** QA final PASSED con focus **2/36**, unit completo **33/473**, integración focal **3/41**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0, sin advisory Azure). **3.2 `[x]`**; 3.8 permanece parcial y depende de 3.4; 300 s no se adopta antes de 4.8. La firma Azure fue solo offline: no se creó, modificó ni destruyó ningún recurso Azure. Este runbook no declara validación OpenSpec.
+**Criterio de salida:** QA final PASSED con focus **2/36**, unit completo **33/473**, integración focal **3/41**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0, sin advisory Azure). **3.2 `[x]`**; **actualización HITO22: 3.8 QA PASSED**. 300 s no se adopta antes de 4.8. La firma Azure fue solo offline: no se creó, modificó ni destruyó ningún recurso Azure. Este runbook no declara validación OpenSpec.
 
 ### 4.7 Fase específica HITO21 — 3.3 referencia/parser (CURRENT; QA PASSED)
 
@@ -695,7 +725,42 @@ npm --prefix backend run build
 
 **Stop:** si un caso exige SDK/red, Azure real, migraciones, `.env`/credenciales o una suite completa; si aparece un fallback cross-provider, una URL para referencia corrupta o un `ArtifactRef AVAILABLE` inventado.
 
-**Criterio de salida:** QA focal independiente PASSED; 3.3 `[x]`. 3.8 sigue parcial por 3.4 y 3.5 publisher permanece pendiente.
+**Criterio de salida:** QA focal independiente PASSED; 3.3 `[x]`. En este registro histórico 3.8 seguía parcial por 3.4; **actualización HITO22: 3.8 QA PASSED**. 3.5 publisher permanece pendiente.
+
+### 4.8 Fase específica HITO22 — 3.4 listado y URL versionada (CURRENT; QA PASSED)
+
+**Objetivo:** verificar el listado paginado/filtrado por capability y la URL firmada por versión explícita, con auth fresca, auditoría y manejo de objeto ausente/reporte PDF.
+
+**Precondiciones:**
+
+- D24, specs `artifact-evidence`/`clinical-api-contract`, `tasks.md` 3.4/3.8 y `contracts/frontend-api-contract.md` revisados; 3.4 y 3.8 QA PASSED.
+- Fixture SQL: snapshot → inference → `ArtifactRecord AVAILABLE` (`mask`/`overlay`/`pdf`) → `PdfReport` de la misma inferencia/versión, con `clearsight_app` y triggers vigentes.
+- Sin Azure real, Azurite, `.env.azure`, SRS, red real ni credenciales; storage con dobles/stub y PostgreSQL owned de Testcontainers.
+
+**Comandos ejecutados (QA final):**
+
+```powershell
+npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/artifact-reference.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts tests/unit/runner-isolation.test.ts
+npm --prefix backend run test:integration -- tests/artifact-downloads.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts tests/inference-creation.integration.test.ts
+npm --prefix backend run typecheck
+npm --prefix backend run build
+```
+
+**Resultados:** unit **5 files / 102 tests** (mismo estado del maker, incluye los 36 de provider); integración **4 files / 60 tests** (nuevo archivo: **16 tests**, +4 QA); `typecheck` **0 post-QA**; `build` **0 reutilizado**. QA añadió `403` boundary, metadata `503` sin eco y cross-inference `404`. Sin full suite.
+
+**Casos mínimos:**
+
+1. **Listado:** envelope/orden/filtro antes de contar; tipo no autorizado no aparece ni suma; `result`/desconocido `400`; sin filas `200`; ejecución ajena/inexistente/sin capability `404`; JWT inválido `401`.
+2. **Grants:** unión `readArtifacts`/`readPdf`; sin `ADMIN` implícito; `readResult` no lista ni firma; dueño médico todo; médico no dueño sin grant nada.
+3. **URL versionada:** `version` obligatoria; sin versión/`result` `400`; fila exacta inexistente (pertenencia inferencia/tipo/versión) o acceso `404`; config storage/metadata corrupta `503` seguro antes del SDK; no `latest` ni fallback a versión anterior.
+4. **Estados:** no-`AVAILABLE` `200` con `url`/`expiresInSeconds`/`contentType` nulos sin storage; `AVAILABLE` URL + TTL efectivo configurado; 300 no se adopta antes de 4.8.
+5. **PDF:** `reportVersion` solo con `PdfReport` válido; PDF `AVAILABLE` sin reporte `409` auditado; no-PDF `null`.
+6. **Auth/auditoría:** sesión revocada `401`, grant perdido `404` sin URL; auditoría caída `503` sin URL; URL solo tras commit `ARTIFACT_URL_ISSUED`.
+7. **Storage:** `storage_object_missing` `409` + incidente sin mutar `AVAILABLE`; permisos/red `503`; `Cache-Control: no-store` en listado/URL y `503` genérico.
+
+**Stop:** si un caso exige Azure/Azurite, migraciones, SDK/red real, credenciales o suite completa; si aparece un fallback cross-provider, una URL para objeto ausente, un `AVAILABLE` inventado o una URL devuelta antes del commit de auditoría.
+
+**Criterio de salida:** **QA final PASSED**; **3.4 y 3.8 quedan `[x]`**. 3.8 se cerró reutilizando 3.2 SDK real offline + 3.4 auth/missing/storage/version, sin Azure/Azurite. 3.7/3.5 siguen unchecked; 3.5 publicación depende de 6.2 y no se declara generador PDF. URLs ya emitidas siguen válidas hasta su TTL (ventana entre el último recheck y la respuesta HTTP documentada, sin garantía absoluta).
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
@@ -914,6 +979,9 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts` | CURRENT (2.2 C) | 4 passed; CAS/duplicate/race/frozen con Prisma real. |
 | `npm --prefix backend run test:unit -- tests/unit/artifact-reference.test.ts tests/schemas.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts` | CURRENT (3.3; QA PASSED) | **4 files / 84 tests** (83 + 1 QA whitespace id); parser/DTO/contexto sin SDK/red. |
 | `npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts` | CURRENT (3.3; QA PASSED, re-ejecutada) | **2 files / 33 tests** tras el fix de key; args raw/gradcam y corrupto/no autorizado sin storage. |
+| `npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/artifact-reference.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts tests/unit/runner-isolation.test.ts` | CURRENT (3.4/3.8, QA PASSED) | **5 files / 102 tests**; DTO/query/contexto row y 36 de provider. |
+| `npm --prefix backend run test:integration -- tests/artifact-downloads.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts tests/inference-creation.integration.test.ts` | CURRENT (3.4, QA PASSED) | **4 files / 60 tests**; nuevo archivo **16 tests** (+4 QA); PostgreSQL owned, sin Azure/Azurite. |
+| Cierre 3.8 | QA PASSED | 3.2 SDK real offline + 3.4 auth/missing/storage/version; sin Azure ni Azurite. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

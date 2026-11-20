@@ -154,6 +154,20 @@ El sistema SHALL conservar compatibilidad con los clientes actuales durante la m
 
 El contrato SHALL documentar cómo solicitar URLs de artefactos y reportes/PDF, que el TTL es corto y que el cliente debe pedir una URL nueva si expira. Las respuestas MUST incluir estado del artefacto y MUST NOT incluir URLs persistidas como identidad. Los reportes MUST exponerse con `reportId` y `version` explícitos e inmutables; el cliente MUST NOT asumir que “el PDF” es un archivo único sobrescribible. El contrato MUST indicar que un PDF de revisión no declara completitud. El contrato MUST NOT ofrecer un endpoint ejecutable de aprobación de revisión ni un auto-completado manual; el endpoint de revisión queda `deferred` y no es target del producto actual. La resolución es un reanálisis con PDF independiente.
 
+El listado `GET /inferences/:id/artifacts` MUST usar el envelope `{ items: [{ artifactId, version, reference }], total, limit, offset }` con `limit` default 20/máximo 100, `offset` default 0, filtro opcional `type` binario y orden estable; los campos del envelope MUST NOT formar parte de `ArtifactRef`. `GET /inferences/:id/artifacts/:type/url` MUST exigir `version` explícita (entero positivo `<= 2147483647`) y MUST NOT asumir la última versión ni una versión anterior `AVAILABLE`. Ambos endpoints están implementados en 3.4 (QA PASSED); no se ofrece compatibilidad con la forma plana previa porque no existe caller actual ni placeholder de frontend que la consuma.
+
+#### Scenario: Listado de artefactos
+
+- **WHEN** frontend consulta `GET /inferences/:id/artifacts`
+- **THEN** recibe `{ items, total, limit, offset }` con `artifactId`, `version` y `reference` por fila
+- **AND** el contrato indica `limit` 20/100, `offset` 0, `type` binario opcional, orden estable y `404` uniforme/`401`.
+
+#### Scenario: URL sin versión
+
+- **WHEN** frontend solicita `GET /inferences/:id/artifacts/pdf/url` sin `version`
+- **THEN** recibe `400` y no una URL de la última versión
+- **AND** el contrato exige `version` explícita y no promete compatibilidad con la forma plana anterior.
+
 #### Scenario: Descarga de reporte
 
 - **WHEN** frontend solicita una versión de reporte autorizada

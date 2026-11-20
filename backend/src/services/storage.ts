@@ -2,6 +2,7 @@ import type { Readable } from "node:stream";
 import { env } from "../config/env.js";
 import {
   resolveArtifactReferenceContext,
+  resolveArtifactReferenceContextForBucket,
   type ArtifactDefaultKind,
   type ArtifactReferenceContext,
 } from "./artifact-reference.js";
@@ -20,6 +21,10 @@ export { s3Client };
 
 export interface ArtifactStoragePort {
   getArtifactReferenceContext(kind: ArtifactDefaultKind): ArtifactReferenceContext;
+  /** Trusted context for an already-persisted row bucket; never extends the allowlist. */
+  getArtifactRecordContext(bucketOrContainer: string): ArtifactReferenceContext;
+  /** Effective configured download TTL (1..3600); the default is 3600 today. */
+  getDownloadTtlSeconds(): number;
   getDownloadUrl(bucket: string, key: string, expiresIn?: number): Promise<string>;
   getMlDownloadUrl(bucket: string, key: string, expiresIn?: number): Promise<string>;
 }
@@ -93,6 +98,18 @@ export class StorageService {
     kind: ArtifactDefaultKind,
   ): ArtifactReferenceContext {
     return resolveArtifactReferenceContext(env, kind);
+  }
+
+  /** Trusted row context: the bucket must already be allowlisted (no extension). */
+  static getArtifactRecordContext(
+    bucketOrContainer: string,
+  ): ArtifactReferenceContext {
+    return resolveArtifactReferenceContextForBucket(env, bucketOrContainer);
+  }
+
+  /** Effective configured TTL; 300 s remains a 4.8 change, not a 3.4 default. */
+  static getDownloadTtlSeconds(): number {
+    return resolveStorageTtlSeconds(undefined, env.STORAGE_DOWNLOAD_TTL_SECONDS);
   }
 
   static getStorageId(): string {

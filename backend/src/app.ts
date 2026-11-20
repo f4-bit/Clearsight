@@ -16,7 +16,9 @@ import { HttpError } from "./lib/http-error.js";
 import { AUTH_LOG_REDACT_PATHS } from "./lib/log-redaction.js";
 import { prisma as defaultPrisma, type PrismaClient } from "./lib/prisma.js";
 import { createRepositories } from "./repositories/index.js";
+import type { ArtifactReadRepository } from "./repositories/artifact.repo.js";
 import { adminRoutes } from "./routes/admin.js";
+import { artifactRoutes } from "./routes/artifacts.js";
 import { authRoutes } from "./routes/auth.js";
 import { consultationRoutes } from "./routes/consultations.js";
 import { feedbackRoutes } from "./routes/feedback.js";
@@ -89,6 +91,8 @@ export interface AppDeps {
    * instance so provider/storageId cannot silently diverge.
    */
   storage?: ArtifactStoragePort;
+  /** Trusted test seam; defaults to the same injected client + repository factory. */
+  artifactReadRepository?: ArtifactReadRepository;
 }
 
 /**
@@ -237,6 +241,7 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     databaseSchema,
     now: deps?.now,
   });
+  const repositories = createRepositories(prisma);
 
   // 3. Swagger / OpenAPI documentation
   await app.register(fastifySwagger, {
@@ -386,9 +391,18 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     databaseSchema,
     storage: deps?.storage,
   });
+  await app.register(artifactRoutes, {
+    prefix: "/inferences",
+    prisma,
+    access: clinicalAccess,
+    authService,
+    artifactReadRepository:
+      deps?.artifactReadRepository ?? repositories.artifacts,
+    storage: deps?.storage,
+  });
   // Clinical feedback + gold-standard export (paths: /feedback, /export/gold-standard)
   await app.register(feedbackRoutes, {
-    repos: createRepositories(prisma),
+    repos: repositories,
     access: clinicalAccess,
     exportHmacSecret: cfg.EXPORT_HMAC_SECRET,
   });

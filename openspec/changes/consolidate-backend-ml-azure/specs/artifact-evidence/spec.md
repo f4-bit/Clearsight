@@ -156,6 +156,58 @@ El sistema SHALL autorizar cada descarga de artefacto contra la política de acc
 - **THEN** el sistema marca una inconsistencia y un incidente
 - **AND** no devuelve una URL ficticia ni un éxito vacío.
 
+### Requirement: Listado de artefactos y URL versionada bajo demanda (3.4)
+
+El sistema SHALL exponer `GET /inferences/:id/artifacts` con el envelope `{ items: [{ artifactId, version, reference }], total, limit, offset }`, donde `reference` es el `ArtifactRef` de la forma única y `artifactId`/`version` no forman parte de él. `limit` MUST tener default 20 y máximo 100; `offset` MUST tener default 0 y ser entero seguro; `type` opcional MUST aceptar solo tipos binarios (`mask`, `overlay`, `gradcam`, `shap`, `pdf`), y un `type` desconocido o `result` MUST devolver `400`. Un `type` válido MUST filtrar además sobre la capability: si el actor tiene alguna capability de artefacto pero no sobre ese tipo, la intersección MUST ser vacía con `200`/`items=[]`/`total=0`, sin revelar filas de ese tipo; sin ninguna capability de artefacto (`readResult` solo incluido) MUST devolver `404` uniforme. El orden MUST ser `artifactType ASC`, `version DESC`, `id ASC`; el filtro de tipos permitidos MUST aplicarse en SQL antes de ordenar, paginar y contar, de modo que `items` y `total` MUST NOT incluir tipos no autorizados. Una lista vacía con capability vigente MUST ser `200`; ejecución inexistente, ajena o sin capability MUST devolver `404` uniforme y un JWT inválido MUST devolver `401`.
+
+La autorización MUST ser la unión de todos los grants activos del actor: `readArtifacts` sobre `mask`/`overlay`/`gradcam`/`shap` y `readPdf` sobre `pdf`; `ADMIN` MUST NOT implicar acceso clínico. El médico dueño MUST acceder a todo; un médico no dueño sin grant MUST no acceder (5.2); `readResult` por sí solo MUST NOT listar ni firmar artefactos. Los locators de tipos no autorizados MUST NOT devolverse ni exponerse desde metadata; los locators autorizados MUST ser el `ArtifactRef` binario y MUST NOT persistirse URLs ni SAS.
+
+`GET /inferences/:id/artifacts/:type/url` MUST exigir `version` positiva y `<= 2147483647`; ausente o inválida MUST devolver `400`, igual que `result`. MUST NOT existir `latest` implícito ni fallback a una versión `AVAILABLE` anterior. La fila exacta inexistente (pertenencia a la inferencia/tipo/versión) o la falta de acceso MUST devolver `404`. Una configuración de storage inválida (`storageId`/provider/bucket allowlist/location) o metadata de fila corrupta MUST devolver `503` seguro antes del SDK, no un `404` falso. La respuesta MUST ser `{ artifactType, status, url, expiresInSeconds, contentType, reportVersion }`; un `AVAILABLE` válido MUST devolver `url`, `contentType` y el TTL efectivo configurado (default 1..3600; 3.2 conserva 3600; 300 queda para 4.8), mientras un estado no `AVAILABLE` MUST devolver `200` con `url`/`expiresInSeconds`/`contentType` nulos y sin llamar al storage. `reportVersion` MUST ser solo la versión explícita de un `PdfReport` válido de la misma inferencia/versión; un PDF `AVAILABLE` sin reporte publicado MUST devolver `409` y registrar incidente, y un tipo no PDF MUST devolver `null`.
+
+La autorización MUST ejecutarse antes de leer metadata o storage. Tras la firma, el sistema MUST releer la sesión (`authService.verifySession(claims)`) y revalidar la capability del tipo antes de auditar y responder: sesión revocada/inactiva MUST devolver `401` y pérdida de grant MUST devolver `404` sin URL. La URL MUST devolverse solo después del commit de un `AuditEvent` con acción `ARTIFACT_URL_ISSUED`, `targetType=ARTIFACT`, `targetId=artifactId`, actor real y `metadata.reasonCode` fijo, sin locators raw, URL ni PHI; si la auditoría falla MUST devolver `503` sin URL. Un objeto ausente en una fila `AVAILABLE` MUST mapearse solo desde `StorageProviderError storage_object_missing` a `409` con auditoría de incidente (`ARTIFACT_OBJECT_MISSING`/`STORAGE_OBJECT_MISSING`), sin mutar `AVAILABLE` ni `PdfReport`; permisos o red MUST devolver `503` y no un `404` falso. Un PDF sin reporte publicado MUST devolver `409` con auditoría `REPORT_NOT_AVAILABLE`; una auditoría caída MUST devolver `503` genérico sin incidente inventado. Todo listado y toda respuesta de URL MUST llevar `Cache-Control: no-store`; los `503` MUST NOT exponer URL ni causa del servidor. 3.4 MUST NOT añadir tablas/migraciones, fabricar `ArtifactRecord` desde strings de `Inference.artifacts`, inventar hash, publicar PDF ni cambiar la API legacy de Grad-CAM; la reconciliación queda en 3.5.
+
+#### Scenario: Listado paginado filtrado por tipo
+
+- **WHEN** un actor con `readArtifacts` solicita `GET /inferences/:id/artifacts?type=mask&limit=20&offset=0`
+- **THEN** recibe `{ items, total, limit, offset }` con solo artefactos `mask`, en orden `artifactType ASC`/`version DESC`/`id ASC`
+- **AND** no se devuelven ni cuentan tipos no autorizados.
+
+#### Scenario: Sin filas pero con capability
+
+- **WHEN** el actor tiene capability sobre al menos un tipo y la ejecución no tiene filas
+- **THEN** recibe `200` con `items=[]`
+- **AND** no recibe `404` por ausencia de artefactos.
+
+#### Scenario: URL con versión explícita
+
+- **WHEN** el actor autorizado pide `/artifacts/mask/url?version=3`
+- **THEN** recibe una URL nueva y el TTL efectivo si la fila exacta está `AVAILABLE`
+- **AND** no se aplica `latest` ni fallback a otra versión `AVAILABLE`.
+
+#### Scenario: URL sin versión o tipo inline
+
+- **WHEN** falta `version`, la versión no es un entero positivo o el tipo es `result`
+- **THEN** el backend responde `400`
+- **AND** no firma ni consulta el storage.
+
+#### Scenario: Artefacto no disponible
+
+- **WHEN** la fila exacta existe pero está `PENDING`, `FAILED`, `NOT_REQUESTED` o `NOT_SUPPORTED`
+- **THEN** recibe `200` con `url`, `expiresInSeconds` y `contentType` nulos
+- **AND** no se llama al storage ni se inventa una URL.
+
+#### Scenario: PDF available sin reporte publicado
+
+- **WHEN** el artefacto `pdf` está `AVAILABLE` pero no existe un `PdfReport` válido de la misma versión
+- **THEN** recibe `409`
+- **AND** se registra un incidente seguro sin fabricar una publicación de PDF.
+
+#### Scenario: Objeto ausente o storage caído
+
+- **WHEN** el objeto referenciado por una fila `AVAILABLE` no existe en storage
+- **THEN** recibe `409` tras auditar el incidente, sin cambiar el estado `AVAILABLE`
+- **AND** un error de permisos o red devuelve `503`, nunca un `404` falso.
+
 ### Requirement: Compatibilidad de referencias legacy
 
 El sistema SHALL disponer de un parser central puro (`backend/src/services/artifact-reference.ts`) para ubicaciones de artefacto. El parser MUST aceptar un `string` legacy o una ubicación estructurada `{ storageId, bucketOrContainer, key }`, junto con un contexto confiable `{ provider, storageId, allowedBuckets, defaultBucket }`. El parser MUST NOT usar SDK, red, filesystem ni variables de entorno globales. El `storageId` estructurado MUST coincidir con el `storageId` y provider activos; un provider, `storageId` o contenedor desconocido MUST rechazarse fail closed antes de firmar. En producción MUST usarse solo el provider activo, sin registry cross-provider ni fallback de red; una referencia cross-provider legacy MUST rechazarse hasta una migración explícita de operador.

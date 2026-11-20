@@ -263,33 +263,38 @@ function dedupe(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-/**
- * Resolves trusted metadata without requiring Azure account credentials. The
- * actual signer still resolves the active provider lazily from its own config.
- */
-export function resolveArtifactReferenceContext(
+function resolveProviderIdentity(
   input: ArtifactReferenceEnv,
-  defaultKind: ArtifactDefaultKind,
-): ArtifactReferenceContext {
+): { provider: StorageProviderName; storageId: string } {
   const rawProvider = input.STORAGE_PROVIDER ?? "minio";
   if (!isStorageProviderName(rawProvider)) {
     fail("artifact_reference_invalid_config");
   }
   const provider = rawProvider;
-
   let storageId: string;
   try {
     storageId = resolveStorageLogicalId(provider, input.STORAGE_ID);
   } catch {
     return fail("artifact_reference_invalid_config");
   }
+  return { provider, storageId };
+}
 
+/**
+ * Resolves only the configured allowlist. It intentionally accepts an explicit
+ * list that contains artifact buckets (mask/overlay/pdf) without forcing the
+ * raw/Grad-CAM defaults into it. Row-context callers use this together with a
+ * check that the row bucket was already configured; they never extend the list.
+ */
+export function resolveAllowedBuckets(
+  input: ArtifactReferenceEnv,
+  provider: StorageProviderName,
+): string[] {
   const rawBucket = input.MINIO_BUCKET_RAW;
   const gradcamBucket = input.MINIO_BUCKET_GRADCAM;
   assertConfiguredBucket(provider, rawBucket);
   assertConfiguredBucket(provider, gradcamBucket);
 
-  const defaultBucket = defaultKind === "image" ? rawBucket : gradcamBucket;
   let allowedBuckets: string[];
   if (input.STORAGE_ALLOWED_BUCKETS === undefined) {
     allowedBuckets = dedupe([rawBucket, gradcamBucket]);
@@ -309,15 +314,53 @@ export function resolveArtifactReferenceContext(
   for (const bucket of allowedBuckets) {
     assertConfiguredBucket(provider, bucket);
   }
+  return allowedBuckets;
+}
+
+/**
+ * Resolves trusted metadata without requiring Azure account credentials. The
+ * actual signer still resolves the active provider lazily from its own config.
+ */
+export function resolveArtifactReferenceContext(
+  input: ArtifactReferenceEnv,
+  defaultKind: ArtifactDefaultKind,
+): ArtifactReferenceContext {
+  const { provider, storageId } = resolveProviderIdentity(input);
+  const defaultBucket =
+    defaultKind === "image" ? input.MINIO_BUCKET_RAW : input.MINIO_BUCKET_GRADCAM;
+  const allowedBuckets = resolveAllowedBuckets(input, provider);
   if (!allowedBuckets.includes(defaultBucket)) {
     fail("artifact_reference_invalid_config");
   }
-
   return {
     provider,
     storageId,
     allowedBuckets,
     defaultBucket,
+  };
+}
+
+/**
+ * Builds a trusted context for one already-persisted row bucket. The bucket
+ * must be in the configured allowlist; it is never added to it and no default
+ * is invented. This lets an explicit list such as mask/overlay/pdf work without
+ * requiring the image/Grad-CAM defaults to be present.
+ */
+export function resolveArtifactReferenceContextForBucket(
+  input: ArtifactReferenceEnv,
+  bucketOrContainer: string,
+): ArtifactReferenceContext {
+  const { provider, storageId } = resolveProviderIdentity(input);
+  const allowedBuckets = resolveAllowedBuckets(input, provider);
+  assertConfiguredBucket(provider, bucketOrContainer);
+  if (!allowedBuckets.includes(bucketOrContainer)) {
+    fail("artifact_reference_invalid_bucket");
+  }
+  return {
+    provider,
+    storageId,
+    allowedBuckets,
+    defaultBucket: bucketOrContainer,
   };
 }
 

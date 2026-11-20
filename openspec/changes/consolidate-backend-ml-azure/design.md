@@ -119,9 +119,9 @@ Reglas:
 - El backend autoriza cada descarga y firma una URL nueva bajo demanda.
 - Si la URL expira, el frontend solicita otra; no la infiere ni la reconstruye.
 - El parser central acepta referencias legacy `s3://bucket/key` y `azure://container/key` sin `split` ingenuo: separa esquema, primer contenedor y key completa; valida contra ubicaciones allowlisted.
-- SAS de Azure debe ser read-only, sobre el objeto, HTTPS y de TTL configurable acotado. D5 mantiene 300 s como objetivo de 3.4/4.8; 3.2 conserva 3600 s por compatibilidad con los callers actuales (ver D22). MinIO usa URL firmada equivalente. No se promete revocación inmediata: revocar una cuenta no revoca una URL ya emitida; un proxy revocable es una opción futura no implementada.
+- SAS de Azure debe ser read-only, sobre el objeto, HTTPS y de TTL configurable acotado. D5 mantiene 300 s como objetivo de 4.8; 3.4 no adopta ese cambio y usa el default configurado 1..3600 (ver D24); 3.2 conserva 3600 s por compatibilidad con los callers actuales (ver D22). MinIO usa URL firmada equivalente. No se promete revocación inmediata: revocar una cuenta no revoca una URL ya emitida; un proxy revocable es una opción futura no implementada.
 - La forma de referencia de artefacto es única en diseño, contrato y API: camelCase en el contrato clínico; los campos nulos son explícitos y solo `AVAILABLE` tiene `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y checksum.
-- La abstracción de storage **CURRENT** existe en backend y ML: Azure Blob con SAS read-only sobre objeto, HTTPS, existencia/verificación de upload y `ensure` de solo lectura; MinIO con presign equivalente y `ensure` de buckets. D22/3.2 tienen QA PASSED; 3.8 sigue parcial hasta 3.4. No se implementa un provider como caso especial del otro.
+- La abstracción de storage **CURRENT** existe en backend y ML: Azure Blob con SAS read-only sobre objeto, HTTPS, existencia/verificación de upload y `ensure` de solo lectura; MinIO con presign equivalente y `ensure` de buckets. D22/3.2 tienen QA PASSED; 3.8 quedó QA PASSED en HITO22. No se implementa un provider como caso especial del otro.
 
 **Razón:** Persistir URLs firmadas filtra credenciales temporales en DB, logs, backups y PDFs, y las vuelve obsoletas de forma inevitable.
 
@@ -530,7 +530,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 
 ### D22. Proveedor de storage dual backend: MinIO/S3 por defecto y Azure Blob por SDK oficial (HITO20, tarea 3.2)
 
-**Decisión (aprobada por el usuario; implementación completada; QA final PASSED):** 3.2 introduce en el backend una abstracción explícita de provider para MinIO/S3 y Azure Blob sin cambiar el comportamiento local ni el contrato público actual de `StorageService`. QA final: focus storage **2 files / 36 tests** (35 + 1 QA de precedencia de validación), unit completo **33 files / 473 tests**, integración focal **3 files / 41 tests**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0). 3.2 queda cerrada `[x]`; 3.8 sigue `[ ]` parcial hasta 3.4.
+**Decisión (aprobada por el usuario; implementación completada; QA final PASSED):** 3.2 introduce en el backend una abstracción explícita de provider para MinIO/S3 y Azure Blob sin cambiar el comportamiento local ni el contrato público actual de `StorageService`. QA final: focus storage **2 files / 36 tests** (35 + 1 QA de precedencia de validación), unit completo **33 files / 473 tests**, integración focal **3 files / 41 tests**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0). 3.2 queda cerrada `[x]`; 3.8 quedó `[x]` QA PASSED en HITO22.
 
 **Selección, fachada y compatibilidad**
 
@@ -561,7 +561,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 
 - `MINIO_SECURE` solo acepta booleanos reales o los strings exactos `true`/`false`; valores como `TRUE`, `yes`, `1`, vacío o con espacios fallan cerrado y nunca se convierten en `false` silenciosamente.
 - Los callers legacy conservan el default actual de 3600 s; no se modifica la cola de delivery antes de 4.8. Se añade configuración de TTL entero en el rango 1..3600 con default 3600; ese valor es **default, no cap**, y un override explícito del caller puede subir hasta 3600 aunque el default configurado sea menor.
-- La adopción de 300 s queda para 3.4/4.8 y **no** se promete en 3.2. D5 conserva 300 s como objetivo futuro; este apartado documenta la deuda sin cambiar defaults existentes.
+- La adopción de 300 s queda para 4.8; 3.4 no la adopta y usa el default configurado 1..3600 (D24), por lo que **no** se promete en 3.2. D5 conserva 300 s como objetivo futuro; este apartado documenta la deuda sin cambiar defaults existentes.
 
 **Keys de objeto**
 
@@ -573,9 +573,9 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 
 - Las excepciones crudas del SDK se envuelven en un error genérico con código seguro; la causa queda privada/omitida. Nunca se exponen cuentas, URLs, claves, SAS ni detalles internos.
 - 3.2 **no** implementa el parser de artefactos (3.3), la ruta nueva de artefactos (3.4), el endurecimiento de logs (3.7), migraciones/cambios de DB ni modifica `storagePath` actual. Tampoco toca la cola de delivery (4.8), el storage ML (3.1) ni Azure real.
-- Tests de 3.8, parciales y dependientes de 3.4: dobles de SDK y firma real del SDK con cuenta/clave sintéticas sin red. Azure se valida por parsing del SAS (`sp=r` en el wire oficial; `p=r` es la abreviatura de D22), `sr=b`, `spr=https`, TTL con reloj inyectado y key/path exactos; MinIO por comandos del SDK y reloj fake. Se prueban `no fallback`, trampa de red, que el cliente S3 solo recibe llamadas MinIO, que Azure no crea contenedores y que los errores se propagan. Todo hermético, sin Azurite, Docker innecesario ni credenciales Azure.
+- Tests de 3.8 (combinados con 3.4, QA PASSED): dobles de SDK y firma real del SDK con cuenta/clave sintéticas sin red. Azure se valida por parsing del SAS (`sp=r` en el wire oficial; `p=r` es la abreviatura de D22), `sr=b`, `spr=https`, TTL con reloj inyectado y key/path exactos; MinIO por comandos del SDK y reloj fake. Se prueban `no fallback`, trampa de red, que el cliente S3 solo recibe llamadas MinIO, que Azure no crea contenedores y que los errores se propagan. Todo hermético, sin Azurite, Docker innecesario ni credenciales Azure.
 - La dependencia `@azure/storage-blob` solo se instala desde el registry permitido, sin modelos ni Azure CLI, y el lockfile se actualiza de forma acotada sin upgrades globales ni `audit fix` masivo. Los `.env.example`/README se actualizan en la implementación posterior, no en este turno documental.
-- 3.2 queda `[x]` con QA PASSED; 3.8 permanece `[ ]` y parcial, con dependencia de 3.4. 3.2 no cierra 3.8.
+- 3.2 queda `[x]` con QA PASSED; 3.8 quedó `[x]` con QA PASSED en HITO22 (cobertura combinada con 3.4).
 
 ### D23. Referencia estructurada, allowlist y parser legacy central (HITO21, tarea 3.3)
 
@@ -636,6 +636,46 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - DTO binario en todos los estados, campos requeridos/null, `result` fuera de `ArtifactRef`, bigint fuera de rango rechazado y mapper `retryable=false`.
 - Integración: POST raw existente conserva los args de firma; gradcam con URI resuelve los args correctos; autorizado firma y no autorizado no llama al storage.
 
+### D24. Listado paginado y URL versionada de artefactos bajo demanda (HITO22, tarea 3.4; QA PASSED)
+
+**Decisión (implementada; QA PASSED):** 3.4 añade dos endpoints de lectura sobre `ArtifactRecord`/`PdfReport` sin tablas, migraciones, publisher ni rutas de reportes. El contrato vNext se corrigió porque no existe caller actual ni placeholder de frontend que consuma el `ArtifactRef[]` plano ni una URL sin `version`; no se ofrece compatibilidad con esa forma plana.
+
+**Listado `GET /inferences/:id/artifacts`**
+
+- Respuesta `{ items: [{ artifactId, version, reference: ArtifactRef }], total, limit, offset }`. `artifactId` y `version` son el envelope y no forman parte de `ArtifactRef` (forma única de 3.3); `reference` conserva exactamente sus campos y nulls.
+- Query estricta: `limit` entero con default 20 y máximo 100; `offset` entero seguro con default 0; `type` opcional limitado a tipos binarios (`mask`, `overlay`, `gradcam`, `shap`, `pdf`). Un `type` desconocido o `result` devuelve `400`.
+- El `type` válido filtra **además** sobre la capability: si el actor tiene alguna capability de artefacto pero no sobre ese tipo, la intersección es vacía y responde `200` con `items=[]`/`total=0`, sin revelar si existen filas de ese tipo. Sin ninguna capability de artefacto (incluido `readResult` solo), la ejecución es `404` uniforme.
+- Orden estable `artifactType ASC`, `version DESC`, `id ASC`. El filtro de tipos permitidos se aplica en SQL **antes** de ordenar, paginar y contar; `total` solo cuenta tipos autorizados y no se devuelven filas de tipos no permitidos.
+- Una lista vacía por falta de filas con capability vigente es `200`. Ejecución inexistente, ajena o sin capability devuelve `404` uniforme; JWT inválido devuelve `401`.
+- Autorización = unión de **todos** los grants activos del actor: `readArtifacts` sobre `mask`/`overlay`/`gradcam`/`shap` y `readPdf` sobre `pdf`; `ADMIN` no implica acceso clínico. El médico dueño accede a todo; un médico no dueño sin grant no accede (5.2); `readResult` solo no permite listar ni firmar artefactos. Los locators de tipos no autorizados no se exponen ni se filtran en la respuesta: simplemente no se devuelven. Los locators autorizados son el `ArtifactRef` binario; no se persisten URLs/SAS.
+
+**URL `GET /inferences/:id/artifacts/:type/url`**
+
+- `version` es obligatoria en query, entera positiva y `<= 2147483647`; ausente o inválida devuelve `400`. No hay `latest` implícito ni fallback a una versión `AVAILABLE` anterior. `result` devuelve `400` porque se sirve inline.
+- La fila exacta inexistente (pertenencia a la inferencia/tipo/versión) o la falta de acceso devuelven `404`. Una configuración de storage inválida (`storageId`/provider/bucket allowlist/location) o metadata de fila corrupta devuelve `503` seguro antes del SDK; no se convierte en `404` ni se finge un bugfix de fuente.
+- DTO binario `{ artifactType, status, url, expiresInSeconds, contentType, reportVersion }`. Un `AVAILABLE` válido devuelve `url`, `contentType` y el TTL efectivo configurado (default 1..3600; 3.2 conserva 3600; 300 queda para 4.8). Un estado no `AVAILABLE` devuelve `200` con `url`/`expiresInSeconds`/`contentType` nulos y sin llamar al storage.
+- `reportVersion` solo existe para PDF con un `PdfReport` válido de la misma inferencia/versión. Un PDF `AVAILABLE` sin reporte publicado devuelve `409` y registra incidente; no se fabrica publicación. Para tipos no PDF es `null`.
+- 3.4 no añade rutas `/reports` (6.2) ni cambia la API legacy `GET /inferences/:id/gradcam`. No extrae `ArtifactRecord` ficticios desde strings de `Inference.artifacts` ni inventa hash/checksum (publisher 3.5 pendiente).
+
+**Dependencias, storage y TTL**
+
+- DB: la lectura se apoya en la unicidad existente de `ArtifactRecord` por (`inferenceId`, `artifactType`, `version`) y en el vínculo de `PdfReport` de la misma inferencia/versión; `AVAILABLE` es inmutable. 3.4 no crea tablas, constraints ni migraciones.
+- Las rutas usan las mismas fuentes inyectadas de DB/access/authService/storage. Se añade un helper `ArtifactReadScope` que resuelve la unión de grants con `findMany`/flags, sin cache de grants, y filtra los tipos permitidos de la query.
+- La ubicación de la fila pasa por el parser 3.3 con contexto trusted para `row.bucket` y la allowlist activa; 3.4 amplía explícitamente la configuración para incluir `mask`/`overlay`/PDF. Un contexto no default debe comprobar que el bucket ya esté allowlisted; nunca se usa el bucket de DB para extender la allowlist ni se inventa un default. Se reutilizan el mismo resolver de objeto y signer; el resolver de metadata Azure debe poder operar sin credenciales y sin fallback cross-provider.
+- No se cambia el TTL de contrato a 300 antes de 4.8: se usa el default configurado 1..3600 y se devuelve el TTL efectivo; los callers legacy conservan 3600.
+
+**Auth fresca, auditoría y fallos**
+
+- Auth se ejecuta antes de leer metadata o storage. Después de la firma se relee la sesión con `authService.verifySession(claims)` y se revalida la capability del tipo antes de auditar y responder: sesión revocada/inactiva `401`; pérdida de grant `404` sin URL. No se mantienen locks de DB durante I/O de red y no se promete cancelar una firma en vuelo tras la última comprobación ni revocar un SAS ya emitido (limitación de TTL); no se promete atomicidad absoluta entre permiso y HTTP.
+- La URL solo se devuelve tras el commit de `AuditEvent` con acción `ARTIFACT_URL_ISSUED`, `targetType=ARTIFACT`, `targetId=artifactId`, actor `USER` real y `metadata.reasonCode` fijo, sin locators raw, URL ni PHI. Si la auditoría falla: `503` sin URL. No se crea un canal especial: se usa el metadata opcional `reasonCode`.
+- Objeto ausente con fila `AVAILABLE`: solo `StorageProviderError storage_object_missing` se traduce en auditoría de incidente `ARTIFACT_OBJECT_MISSING`/`STORAGE_OBJECT_MISSING` y `409`, sin URL ni mutación de `ArtifactRecord`/`PdfReport`. Permisos o red devuelven `503`, nunca un `404` falso. PDF sin reporte publicado: `409` con auditoría `REPORT_NOT_AVAILABLE`. Auditoría caída: `503` genérico, sin incidente inventado.
+- No hay tablas, migraciones, actores/labels falsos ni detalles inventados. La inconsistencia se marca como auditoría append-only, no cambiando `AVAILABLE` (inmutable); la reconciliación es 3.5. Todas las respuestas de URL (éxito o fallo) y de listado llevan `Cache-Control: no-store`; los `503` no exponen URL ni causa del servidor.
+
+**Alcance de implementación y cierre**
+
+- El encargo puede dividirse en A (repositorio/lectores, `ArtifactReadScope`, filtro/orden/paginación) y B (HTTP, auth fresca post-I/O, auditoría, guard PDF/reporte y errores de storage), pero se implementa como un encargo cohesivo. Los tests usan fixture snapshot → inference → `ArtifactRecord AVAILABLE` → `PdfReport` respetando el SQL real.
+- 3.4 y 3.8 quedan cerradas con QA PASSED. 3.8 combina el SDK real offline de 3.2 con los tests de 3.4 (auth, objeto ausente, fallo de storage y versiones), sin Azure ni Azurite. La publicación/reconciliación 3.5 y las rutas `/reports` de 6.2 siguen pendientes; no se declara generador PDF implementado.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -688,11 +728,16 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | ADR-046 | 2.2 no cierra 2.4/4.2/4.3 ni resuelve REG-002/003/004; solo mitiga/parcializa y el registro humano permanece intacto | agreed (scope restriction) | D21 |
 | ADR-047 | 3.2: `STORAGE_PROVIDER=minio` default retrocompatible y `azure` explícito; desconocido fail closed; fachada `StorageService` con provider DI/lazy sin red al construir y firmas actuales preservadas | implemented (QA PASSED) | D22 |
 | ADR-048 | 3.2: Azure Blob vía `@azure/storage-blob` + `SharedKeyCredential`, SAS por objeto read-only (`sp=r` en el wire del SDK; `p=r` abreviatura de D22), `sr=b`, `spr=https` y expiración acotada; `ensure` solo verifica contenedor, upload verifica `getProperties` y sign verifica existencia; sin SAS casero ni fallback MinIO | implemented (QA PASSED) | D22 |
-| ADR-049 | 3.2: TTL actual 3600 preservado y configurable 1..3600 (default, no cap); 300 s queda para 3.4/4.8 y no se promete en 3.2 | implemented (QA PASSED; deuda 3.4/4.8) | D22 |
+| ADR-049 | 3.2: TTL actual 3600 preservado y configurable 1..3600 (default, no cap); 300 s queda para 4.8 y no se promete en 3.2; 3.4 usa el default configurado (D24) | implemented (QA PASSED; deuda 4.8) | D22 |
 | ADR-050 | 3.2: keys de objeto exactas sin normalización; representaciones no soportadas por el SDK se rechazan de forma explícita; `storageId` local por configuración sin cambio de DB | implemented (QA PASSED) | D22 |
 | ADR-051 | 3.3: parser puro con contexto trusted, solo provider activo, URIs `s3://`/`azure://` estrictas, key exacta sin URL/decode/normalize, rechazo de comienzo URI genérica/credenciales/query SAS y `://` embebido permitido mediante política compartida parser/DTO | implemented (QA PASSED) | D23 |
 | ADR-052 | 3.3: bare legacy determinista (bucket allowlisted o key-only con default) y `STORAGE_ALLOWED_BUCKETS` fail-closed; sin reconstrucción universal ni fallback cross-provider | implemented (QA PASSED) | D23 |
 | ADR-053 | 3.3: `ArtifactRef` binario excluye `result` (inline aparte), mapper estricto de campos/null/bigint y `ArtifactLocation` separado; sin repo/publicación/DB en 3.3 | implemented (QA PASSED) | D23 |
+| ADR-054 | 3.4: `GET /artifacts` devuelve envelope paginado `{items:[{artifactId,version,reference}],total,limit,offset}` (limit 20/100, offset 0, `type` binario), orden `artifactType ASC/version DESC/id ASC` y filtro de tipos permitidos en SQL antes de count; contrato propuesto corregido sin caller actual | implemented (3.4 QA PASSED) | D24 |
+| ADR-055 | 3.4: autorización por unión de grants activos `readArtifacts`/`readPdf`, sin `ADMIN` implícito; dueño médico todo, no dueño sin grant nada, `readResult` no lista ni firma; locators autorizados son `ArtifactRef`, sin URLs/SAS persistidas | implemented (3.4 QA PASSED) | D24 |
+| ADR-056 | 3.4: URL exige `version` explícita positiva `<= int32 max`, sin `latest` ni fallback; `result`/sin versión `400`, pertenencia inferencia/tipo/versión o acceso `404`, config storage/metadata corrupta `503` antes del SDK; no-`AVAILABLE` `200` con nulos sin storage; PDF `AVAILABLE` sin `PdfReport` válido `409` | implemented (3.4 QA PASSED) | D24 |
+| ADR-057 | 3.4: auth antes de metadata/storage y revalidación fresca de sesión/capability tras firmar; URL solo tras commit `ARTIFACT_URL_ISSUED`; objeto ausente `409` + incidente vs permisos/red `503`; `Cache-Control: no-store` y `503` genérico | implemented (3.4 QA PASSED) | D24 |
+| ADR-058 | 3.4: TTL efectivo con default configurado 1..3600 (300 diferido a 4.8), sin migraciones/publisher/rutas `/reports`; 3.8 cierra con 3.4 + tests combinados sin Azure/Azurite | implemented (3.4/3.8 QA PASSED) | D24 |
 
 ## Risks / Trade-offs
 
@@ -731,7 +776,11 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | 2.2: fallo post-commit de storage/cola | Estado pendiente explícito y `503` seguro; 4.6 aporta outbox/reconciliación y 4.4 la idempotencia. No se promete atomicidad Redis. |
 | 3.2: Azure mal configurado cae silenciosamente a MinIO | Selección `STORAGE_PROVIDER` explícita, validación de URL/nombre HTTPS y fail closed; tests de `no fallback`. |
 | 3.2: SAS demasiado amplio u objeto ausente con URL ficticia | SAS por objeto read-only (`sp=r` en el wire del SDK), `sr=b`, `spr=https` con expiración acotada; `sign` verifica `exists` y no traga permisos/red como `404`; tests de parsing y ausencia. |
-| 3.2: TTL 3600 difiere del objetivo 300 | Deuda explícita de 3.4/4.8; no se promete 300 en 3.2 ni se modifican callers legacy. |
+| 3.2: TTL 3600 difiere del objetivo 300 | Deuda explícita de 4.8; 3.4 no adopta 300 y usa el default configurado (D24), sin modificar callers legacy. |
+| 3.4: listado expone o cuenta tipos no autorizados | Unión de grants por tipo, filtro en SQL antes de orden/paginación/count y ninguna fila de tipo no permitido en `items`/`total`. |
+| 3.4: URL emitida antes de auditar o tras perder permisos | Auth antes de metadata/storage, revalidación fresca después de firmar y respuesta solo tras commit de `ARTIFACT_URL_ISSUED`; fallo de auditoría `503` sin URL. |
+| 3.4: objeto ausente confundido con `404` de acceso | Solo `storage_object_missing` ⇒ `409` con incidente auditado; permisos/red ⇒ `503`; `AVAILABLE` no se muta. |
+| 3.4: PDF sin reporte publicado finge disponibilidad | `409` + auditoría `REPORT_NOT_AVAILABLE`; `reportVersion` solo con `PdfReport` válido de la misma versión. |
 
 ## Migration Plan
 
@@ -739,7 +788,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 2. **Registro de regresiones:** crear `defects/regressions.md` con entradas solo estáticas y verificadas, distinguiendo activas y resueltas.
 3. **Esquema y migración:** añadir tablas/columnas de ejecución, evidencia, PDF, auditoría e idempotencia mediante migraciones incrementales; cambiar la resolución de `0_init` a un chequeo de esquema verificado, sin enmascarar fallos.
 4. **Compatibilidad:** mantener lectura de referencias legacy `s3://`/`azure://` y aceptar payloads clínicos con alias canónico; no romper clientes actuales sin aviso.
-5. **Storage:** abstracción dual backend/ML (Azure Blob y MinIO) **CURRENT**; 3.2 backend QA PASSED (providers/factory, `ensure`, verificación de upload, SAS por objeto y fachada actual). Referencias estructuradas/parser 3.3 y ruta de descarga 3.4 siguen pendientes; conservar el comportamiento local actual.
+5. **Storage:** abstracción dual backend/ML (Azure Blob y MinIO) **CURRENT**; 3.2 backend QA PASSED (providers/factory, `ensure`, verificación de upload, SAS por objeto y fachada actual). Referencias estructuradas/parser 3.3 con QA PASSED; la ruta de listado/descarga 3.4 está implementada y QA PASSED (D24); 3.8 QA PASSED. Conservar el comportamiento local actual.
 6. **ML/worker:** fijar contrato JSON, recuperación, persistencia completa, estados terminales y revisión; reintentos solo transitorios.
 7. **Seguridad:** cerrar registro público de rol, validar `is_active`, implementar ownership, bloqueo HU01, sesiones con `sessionId`/`tokenVersion`, protecciones del último admin y auditoría.
 8. **PDF:** generar básico idempotente y versionado con original sanitizada + mask + overlay embebidas; bloquear completitud si falta un artefacto obligatorio.
@@ -777,7 +826,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | Clases canónicas | `backend/src/schemas/common.ts:42-48`; `ml/service/schemas.py:19-27`. |
 | Estado de artefactos actual | `ml/inference/pipeline.py:163-183`; `backend/src/schemas/inference.ts:28-39`. |
 | Suite de pruebas destructiva | `backend/tests/global-setup.ts:40-47` (`DROP SCHEMA public CASCADE`); es comportamiento destructivo actual, no una salvaguarda; requiere DB creada/adoptada con ownership marker, allowlist de target y deny producción. |
-| Storage backend actual | **CURRENT:** provider dual en `backend/src/services/storage.ts` + `storage-provider.ts`/`storage-minio.ts`/`storage-azure.ts`/`storage-factory.ts`; 3.2 QA PASSED, API `StorageService`/`s3Client` preservada. `storageId`/parser 3.3 y ruta 3.4 pendientes. |
+| Storage backend actual | **CURRENT:** provider dual en `backend/src/services/storage.ts` + `storage-provider.ts`/`storage-minio.ts`/`storage-azure.ts`/`storage-factory.ts`; 3.2 QA PASSED, API `StorageService`/`s3Client` preservada. Parser 3.3 QA PASSED; ruta 3.4 implementada y QA PASSED (D24). |
 | Fixes ML de la rama | `ded48db`, `92a6887`; `e5d184a` es solo de `master`, subconjunto, y no se cherry-pickea a ciegas. |
 | Test runner destructivo | `backend/vitest.config.ts:6` fuerza `globalSetup`; `backend/tests/global-setup.ts:24-47` exige que el nombre contenga `test` y hace `DROP SCHEMA public CASCADE`. Un test focalizado no evita ese setup. Runbook: `contracts/testing-runbook.md`. |
 | Comandos actuales | `backend/package.json` scripts `test`, `typecheck`; `ml/pyproject.toml` pytest `testpaths=["tests"]`; `scripts/e2e-backend.ps1`, `scripts/test_azure_e2e.py`, `scripts/benchmark_latency.py`. No existe un script `e2e` en `package.json`. |

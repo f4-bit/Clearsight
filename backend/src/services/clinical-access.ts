@@ -7,6 +7,7 @@ import {
   DEFAULT_DATABASE_SCHEMA,
 } from "../lib/postgres-schema.js";
 import type { PrismaClient } from "../lib/prisma.js";
+import { ARTIFACT_TYPES, type ArtifactType } from "../schemas/inference.js";
 
 /**
  * Clinical authorization service (Hito 5.2).
@@ -41,6 +42,15 @@ export interface ExportPair {
   readonly consultationId: string;
 }
 
+export interface ArtifactReadScope {
+  readonly inference: {
+    readonly id: string;
+    readonly snapshotId: string | null;
+  };
+  /** Union of every active grant; the doctor owner receives all binary types. */
+  readonly allowedTypes: readonly ArtifactType[];
+}
+
 export interface ClinicalAccessService {
   /** 403 unless the principal is an OFTALMOLOGO. */
   assertDoctor(subject: ClinicalSubject): void;
@@ -68,6 +78,17 @@ export interface ClinicalAccessService {
     inferenceId: string,
     capability: Extract<GrantCapability, "readResult" | "readArtifacts" | "readPdf">,
   ): Promise<{ inference: any; grant: ActiveGrantFlags | null; redactGradcamPath: boolean }>;
+
+  /**
+   * Artifact list/URL scope. It unions every active grant instead of trusting a
+   * single findFirst row, so split grants (readArtifacts + readPdf) work. A
+   * doctor only reads the executions they own; ADMIN/INVESTIGADOR need explicit
+   * flags. `readResult` alone has no artifact capability and resolves to 404.
+   */
+  getArtifactReadScope(
+    subject: ClinicalSubject,
+    inferenceId: string,
+  ): Promise<ArtifactReadScope>;
 
   /** 403 unless there is at least one active export grant for the principal. */
   assertExportGrant(subject: ClinicalSubject): Promise<void>;
@@ -236,6 +257,60 @@ export function createClinicalAccessService(
     };
   }
 
+  async function getArtifactReadScope(
+    subject: ClinicalSubject,
+    inferenceId: string,
+  ): Promise<ArtifactReadScope> {
+    if (subject.role === "OFTALMOLOGO") {
+      const inference = await db.inference.findFirst({
+        where: { id: inferenceId, image: { consultation: { doctorId: subject.id } } },
+        select: { id: true, snapshotId: true },
+      });
+      if (inference === null) {
+        throw notFound("Artifact");
+      }
+      return { inference, allowedTypes: [...ARTIFACT_TYPES] };
+    }
+
+    if (subject.role !== "ADMIN" && subject.role !== "INVESTIGADOR") {
+      throw forbidden("This clinical read is not authorized for the current role");
+    }
+
+    // Union every active grant: a single row must not shadow a second grant.
+    const grants = await db.inferenceAccessGrant.findMany({
+      where: {
+        inferenceId,
+        recipientUserId: subject.id,
+        revokedAt: null,
+        expiresAt: { gt: now() },
+        OR: [{ readArtifacts: true }, { readPdf: true }],
+      },
+      select: { readArtifacts: true, readPdf: true },
+    });
+    if (grants.length === 0) {
+      throw notFound("Artifact");
+    }
+
+    const readArtifacts = grants.some((grant) => grant.readArtifacts);
+    const readPdf = grants.some((grant) => grant.readPdf);
+    const allowedTypes = ARTIFACT_TYPES.filter((type) =>
+      type === "pdf" ? readPdf : readArtifacts,
+    );
+    if (allowedTypes.length === 0) {
+      throw notFound("Artifact");
+    }
+
+    const inference = await db.inference.findUnique({
+      where: { id: inferenceId },
+      select: { id: true, snapshotId: true },
+    });
+    if (inference === null) {
+      throw notFound("Artifact");
+    }
+
+    return { inference, allowedTypes };
+  }
+
   async function assertExportGrant(subject: ClinicalSubject): Promise<void> {
     assertDatasetRole(subject);
     const grant = await db.inferenceAccessGrant.findFirst({
@@ -278,6 +353,7 @@ export function createClinicalAccessService(
     getOwnedConsultation,
     getOwnedImageContext,
     getInferenceForRead,
+    getArtifactReadScope,
     assertExportGrant,
     listActiveExportPairs,
   };

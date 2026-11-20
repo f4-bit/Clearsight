@@ -4,6 +4,7 @@ import {
   mapArtifactRecordToRef,
   parseArtifactLocation,
   resolveArtifactReferenceContext,
+  resolveArtifactReferenceContextForBucket,
   type ArtifactReferenceContext,
 } from "../../src/services/artifact-reference.js";
 
@@ -406,6 +407,74 @@ describe("resolveArtifactReferenceContext", () => {
         resolveArtifactReferenceContext(
           { ...base, MINIO_BUCKET_RAW: "Raw_Retinas" },
           "image",
+        ),
+      ),
+    ).toBe("artifact_reference_invalid_config");
+  });
+});
+
+describe("resolveArtifactReferenceContextForBucket", () => {
+  const base = {
+    MINIO_BUCKET_RAW: "raw-retinas",
+    MINIO_BUCKET_GRADCAM: "gradcam-overlays",
+  };
+
+  it("uses an explicit mask/overlay/pdf list without forcing raw defaults", () => {
+    expect(
+      resolveArtifactReferenceContextForBucket(
+        {
+          ...base,
+          STORAGE_ALLOWED_BUCKETS: "mask-bucket, overlay-bucket, pdf-bucket",
+        },
+        "mask-bucket",
+      ),
+    ).toEqual({
+      provider: "minio",
+      storageId: "minio-local",
+      allowedBuckets: ["mask-bucket", "overlay-bucket", "pdf-bucket"],
+      defaultBucket: "mask-bucket",
+    });
+
+    // The old default-kind contexts remain strict: their default must be in the
+    // explicit list, so this same configuration cannot silently serve images.
+    expect(
+      errorCode(() =>
+        resolveArtifactReferenceContext(
+          { ...base, STORAGE_ALLOWED_BUCKETS: "mask-bucket,overlay-bucket,pdf-bucket" },
+          "image",
+        ),
+      ),
+    ).toBe("artifact_reference_invalid_config");
+  });
+
+  it("defaults row context to raw/Grad-CAM only and never extends the allowlist", () => {
+    expect(
+      resolveArtifactReferenceContextForBucket(base, "raw-retinas"),
+    ).toMatchObject({
+      allowedBuckets: ["raw-retinas", "gradcam-overlays"],
+      defaultBucket: "raw-retinas",
+    });
+    expect(
+      errorCode(() =>
+        resolveArtifactReferenceContextForBucket(base, "mask-bucket"),
+      ),
+    ).toBe("artifact_reference_invalid_bucket");
+    expect(
+      errorCode(() =>
+        resolveArtifactReferenceContextForBucket(
+          { ...base, STORAGE_ALLOWED_BUCKETS: "mask-bucket" },
+          "other-bucket",
+        ),
+      ),
+    ).toBe("artifact_reference_invalid_bucket");
+  });
+
+  it("fails closed for invalid row bucket names", () => {
+    expect(
+      errorCode(() =>
+        resolveArtifactReferenceContextForBucket(
+          { ...base, STORAGE_ALLOWED_BUCKETS: "mask-bucket" },
+          "Mask_Bucket",
         ),
       ),
     ).toBe("artifact_reference_invalid_config");
