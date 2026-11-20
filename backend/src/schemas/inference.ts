@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidArtifactKey } from "../lib/artifact-key.js";
 import { ClinicalFeaturesSchema } from "./clinical.js";
 import { DiagnosticClass, JobStatus, Probabilities, Uuid } from "./common.js";
 import { eyeSideEnum } from "./image.js";
@@ -73,6 +74,130 @@ export const inferenceResultSchema = z.object({
 });
 
 export type InferenceResult = z.infer<typeof inferenceResultSchema>;
+
+/** Binary artifact types. `result` is intentionally not one of them. */
+export const ARTIFACT_TYPES = ["mask", "overlay", "pdf", "gradcam", "shap"] as const;
+export const ArtifactType = z.enum(ARTIFACT_TYPES);
+export type ArtifactType = z.infer<typeof ArtifactType>;
+
+/** Logical catalog includes `result`, which stays inline in `ExecutionResult`. */
+export const ARTIFACT_CATALOG_TYPES = ["result", ...ARTIFACT_TYPES] as const;
+export const ArtifactCatalogType = z.enum(ARTIFACT_CATALOG_TYPES);
+export type ArtifactCatalogType = z.infer<typeof ArtifactCatalogType>;
+
+export const ARTIFACT_STATUSES = [
+  "NOT_SUPPORTED",
+  "NOT_REQUESTED",
+  "PENDING",
+  "AVAILABLE",
+  "FAILED",
+] as const;
+export const ArtifactStatus = z.enum(ARTIFACT_STATUSES);
+export type ArtifactStatus = z.infer<typeof ArtifactStatus>;
+
+const ARTIFACT_STORAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ARTIFACT_BUCKET = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const ARTIFACT_FAILURE_CODE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+const nonBlankString = (max?: number) =>
+  z
+    .string()
+    .min(1)
+    .refine((value) => value.trim().length > 0, "Must not be blank")
+    .refine((value) => max === undefined || value.length <= max, "Value is too long");
+
+const artifactStorageId = z.string().regex(ARTIFACT_STORAGE_ID).nullable();
+const artifactBucketOrContainer = nonBlankString(255)
+  .refine((value) => ARTIFACT_BUCKET.test(value), "Invalid bucket or container")
+  .nullable();
+const artifactKey = nonBlankString()
+  .refine(isValidArtifactKey, "Invalid artifact key")
+  .nullable();
+const artifactContentType = nonBlankString(255)
+  .refine((value) => !value.includes("://"), "Invalid content type")
+  .nullable();
+const artifactSizeBytes = z
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER)
+  .nullable();
+const artifactChecksum = z.string().regex(/^[0-9a-f]{64}$/).nullable();
+const artifactFailureCode = z.string().regex(ARTIFACT_FAILURE_CODE).nullable();
+
+const ARTIFACT_LOCATION_FIELDS = [
+  "storageId",
+  "bucketOrContainer",
+  "key",
+  "contentType",
+  "sizeBytes",
+  "checksumSha256",
+] as const;
+
+/** Strict binary `ArtifactRef` DTO. `result` is excluded by `ArtifactType`. */
+export const ArtifactRefSchema = z
+  .object({
+    artifactType: ArtifactType,
+    status: ArtifactStatus,
+    storageId: artifactStorageId,
+    bucketOrContainer: artifactBucketOrContainer,
+    key: artifactKey,
+    contentType: artifactContentType,
+    sizeBytes: artifactSizeBytes,
+    checksumSha256: artifactChecksum,
+    failureCode: artifactFailureCode,
+    retryable: z.boolean(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((ref, ctx) => {
+    const available = ref.status === "AVAILABLE";
+    for (const field of ARTIFACT_LOCATION_FIELDS) {
+      const value = ref[field];
+      if (available ? value === null : value !== null) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: available
+            ? "Required for AVAILABLE artifacts"
+            : "Must be null for non-AVAILABLE artifacts",
+        });
+      }
+    }
+
+    if (
+      ref.artifactType === "pdf" &&
+      ref.status === "AVAILABLE" &&
+      ref.contentType !== "application/pdf"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["contentType"],
+        message: "AVAILABLE PDF artifacts require application/pdf",
+      });
+    }
+
+    if (ref.status === "FAILED") {
+      if (ref.failureCode === null) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["failureCode"],
+          message: "FAILED artifacts require a failure code",
+        });
+      }
+      return;
+    }
+
+    if (ref.failureCode !== null || ref.retryable) {
+      ctx.addIssue({
+        code: "custom",
+        path: ref.failureCode === null ? ["retryable"] : ["failureCode"],
+        message: "Only FAILED artifacts carry failure metadata",
+      });
+    }
+  });
+
+export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 
 export const jobAcceptedSchema = z.object({
   inferenceId: z.string().uuid(),

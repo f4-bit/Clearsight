@@ -7,6 +7,14 @@ vi.mock("../src/services/storage.js", () => ({
     upload: vi.fn().mockResolvedValue("raw-retinas/key.jpg"),
     getDownloadUrl: vi.fn().mockResolvedValue("http://localhost:9000/gradcam.png"),
     getMlDownloadUrl: vi.fn().mockResolvedValue("http://minio:9000/retina.jpg"),
+    getArtifactReferenceContext: vi.fn(
+      (kind: "image" | "gradcam") => ({
+        provider: "minio",
+        storageId: "minio-local",
+        allowedBuckets: ["raw-retinas", "gradcam-overlays"],
+        defaultBucket: kind === "image" ? "raw-retinas" : "gradcam-overlays",
+      }),
+    ),
     getObjectStream: vi.fn(),
   },
   s3Client: {},
@@ -458,6 +466,7 @@ describe("clinical ownership and grants", () => {
     expect(result.statusCode).toBe(200);
     expect(result.json().gradcamPath).toBeNull();
     expect((await get(headersResearcher, `/inferences/${study.inference.id}/gradcam`)).statusCode).toBe(404);
+    expect(StorageService.getDownloadUrl).not.toHaveBeenCalled();
 
     // Artifact-only grant cannot read the result, but can sign the artifact URL.
     const artifactUser = await makeUser(prisma, "INVESTIGADOR");
@@ -467,6 +476,42 @@ describe("clinical ownership and grants", () => {
     expect(
       (await get(artifactHeaders, `/inferences/${study.inference.id}/gradcam`)).statusCode,
     ).toBe(200);
+    expect(StorageService.getDownloadUrl).toHaveBeenLastCalledWith(
+      "gradcam-overlays",
+      "gradcam/x.png",
+      3600,
+    );
+  });
+
+  it("parses a provider URI before gradcam signing and rejects corrupt refs safely", async () => {
+    const study = await makeConsultationWithImage(doctorA.id);
+    const get = (headers: { authorization: string }) =>
+      app.inject({
+        method: "GET",
+        url: `/inferences/${study.inference.id}/gradcam`,
+        headers,
+      });
+
+    await prisma.inference.update({
+      where: { id: study.inference.id },
+      data: { gradcamPath: "s3://gradcam-overlays/gradcam/a b%20c.png" },
+    });
+    expect((await get(headersA)).statusCode).toBe(200);
+    expect(StorageService.getDownloadUrl).toHaveBeenLastCalledWith(
+      "gradcam-overlays",
+      "gradcam/a b%20c.png",
+      3600,
+    );
+
+    vi.mocked(StorageService.getDownloadUrl).mockClear();
+    await prisma.inference.update({
+      where: { id: study.inference.id },
+      data: { gradcamPath: "https://secret.example/gradcam.png" },
+    });
+    const corrupt = await get(headersA);
+    expect(corrupt.statusCode).toBe(503);
+    expect(corrupt.body).not.toContain("secret.example");
+    expect(StorageService.getDownloadUrl).not.toHaveBeenCalled();
   });
 
   it("treats expiresAt == now as inactive and a later instant as active", async () => {

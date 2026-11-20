@@ -48,6 +48,7 @@ import {
   DEFAULT_DATABASE_SCHEMA,
   type AuthSessionService,
 } from "./services/session.js";
+import type { ArtifactStoragePort } from "./services/storage.js";
 import { createWebAuthPolicy, type WebAuthPolicy } from "./services/web-auth-policy.js";
 
 export interface AppDeps {
@@ -83,6 +84,11 @@ export interface AppDeps {
   passwordResetDelivery?: PasswordResetDelivery;
   /** Trusted test seam; defaults to the R1 durable recovery quota guard. */
   passwordRecoveryQuotaGuard?: PasswordRecoveryQuotaGuard;
+  /**
+   * Trusted storage seam. Reference metadata and signing must use the same
+   * instance so provider/storageId cannot silently diverge.
+   */
+  storage?: ArtifactStoragePort;
 }
 
 /**
@@ -378,6 +384,7 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     authService,
     mlClient,
     databaseSchema,
+    storage: deps?.storage,
   });
   // Clinical feedback + gold-standard export (paths: /feedback, /export/gold-standard)
   await app.register(feedbackRoutes, {

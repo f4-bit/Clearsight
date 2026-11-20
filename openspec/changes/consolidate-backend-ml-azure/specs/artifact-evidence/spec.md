@@ -42,7 +42,7 @@ El sistema SHALL exponer, para cada artefacto, uno de estos estados: `NOT_SUPPOR
 
 ### Requirement: Referencia de artefacto estructurada y estable
 
-El sistema SHALL persistir cada artefacto disponible mediante una referencia estructurada única con los campos `artifactType`, `status`, `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes`, `checksumSha256`, `failureCode` y `retryable`. El identificador de almacenamiento lógico MUST resolver provider, cuenta y endpoints desde configuración confiable del backend. La key MUST conservarse exactamente como fue producida, sin normalización que cambie el objeto. La forma de referencia MUST ser la misma en el contrato de frontend y en el diseño; los campos no aplicables MUST ser `null` explícitos y solo `AVAILABLE` MUST tener `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y checksum.
+El sistema SHALL persistir cada artefacto binario disponible (`mask`, `overlay`, `pdf`, `gradcam`, `shap`) mediante una referencia estructurada única `ArtifactRef` con los campos `artifactType`, `status`, `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes`, `checksumSha256`, `failureCode`, `retryable` y `updatedAt`. El catálogo lógico de tipos incluye `result` por separado para el `ExecutionResult` inline existente; `result` MUST NOT tener objeto de storage ni un `ArtifactRef` con ubicación. El identificador de almacenamiento lógico MUST resolver provider, cuenta y endpoints desde configuración confiable del backend. La key MUST conservarse exactamente como fue producida, sin normalización que cambie el objeto. La forma de referencia MUST ser la misma en el contrato de frontend y en el diseño; todos los campos MUST ser explícitos, los no aplicables `null` salvo `retryable`, que MUST ser booleano (`false` si no aplica). Solo `AVAILABLE` MUST tener `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y `checksumSha256` válidos; `updatedAt` MUST ser ISO válido en todos los estados y `sizeBytes` MUST ser un entero seguro `>= 0` (un bigint mayor que `Number.MAX_SAFE_INTEGER` se rechaza, no se redondea), el checksum MUST ser hex de 64 caracteres y un PDF `AVAILABLE` MUST usar `application/pdf`. En estados no `AVAILABLE`, los campos de storage/key/contentType/size/checksum MUST ser `NULL`; `FAILED` MUST tener `failureCode` válido de hasta 64 caracteres y `retryable` booleano, mientras que cualquier otro estado MUST tener `failureCode=null` y `retryable=false`. El mapper canónico MUST emitir `false` (no `null`) para `retryable`, MUST NOT inventar hash/tamaño ni un `AVAILABLE` sin metadata, y una `ArtifactLocation` resuelta MUST distinguirse de un `ArtifactRef` completo: el parser no fabrica una referencia `AVAILABLE` legacy sin checksum ni tipo.
 
 #### Scenario: Artefacto disponible con referencia completa
 
@@ -61,6 +61,12 @@ El sistema SHALL persistir cada artefacto disponible mediante una referencia est
 - **WHEN** la key contiene barras, espacios o caracteres codificados
 - **THEN** el sistema conserva la key exacta y la usa de forma segura al firmar o recuperar el objeto
 - **AND** no la divide de forma ingenua ni la reescribe.
+
+#### Scenario: Resultado inline no es artefacto de storage
+
+- **WHEN** se representa el `result` de una ejecución
+- **THEN** se usa el `ExecutionResult` inline existente y no se crea un `ArtifactRef` con `storageId`/`key`
+- **AND** el catálogo de tipos sigue incluyendo `result` solo de forma lógica, sin objeto de storage.
 
 ### Requirement: Abstracción de almacenamiento dual y firma por provider
 
@@ -152,7 +158,13 @@ El sistema SHALL autorizar cada descarga de artefacto contra la política de acc
 
 ### Requirement: Compatibilidad de referencias legacy
 
-El sistema SHALL disponer de un parser central para referencias legacy `s3://bucket/key` y `azure://container/key`. El parser MUST validar el esquema, separar el primer segmento como bucket o container y conservar la key completa. El sistema MUST aceptar solo ubicaciones allowlisted y MUST NOT interpretar una referencia como URL externa arbitraria. La compatibilidad y migración de datos antiguos MUST preservar la legibilidad de los clientes actuales.
+El sistema SHALL disponer de un parser central puro (`backend/src/services/artifact-reference.ts`) para ubicaciones de artefacto. El parser MUST aceptar un `string` legacy o una ubicación estructurada `{ storageId, bucketOrContainer, key }`, junto con un contexto confiable `{ provider, storageId, allowedBuckets, defaultBucket }`. El parser MUST NOT usar SDK, red, filesystem ni variables de entorno globales. El `storageId` estructurado MUST coincidir con el `storageId` y provider activos; un provider, `storageId` o contenedor desconocido MUST rechazarse fail closed antes de firmar. En producción MUST usarse solo el provider activo, sin registry cross-provider ni fallback de red; una referencia cross-provider legacy MUST rechazarse hasta una migración explícita de operador.
+
+El parser MUST validar exactamente los esquemas `s3://bucket/key` y `azure://container/key`; el esquema es case-insensitive solo para `s3`/`azure`. El primer `/` tras `://` MUST separar bucket/container del resto, que es la key exacta. MUST NOT usar `new URL()`, `path.normalize`, `trim` de la key ni `decodeURI`/percent-decoding. Esquemas/URLs externos (`file://`, `http://`, `https://`, `blob:` u otro desconocido), credenciales, autoridad, host/puerto y query SAS MUST rechazarse. La key MUST conservar literalmente espacios, Unicode, `%`, `?`, `#` y `&`, y MUST rechazar blank/whitespace-only, NUL/controles, segmentos completos `.`/`..` que el SDK no pueda representar, un comienzo de URI genérica `^[A-Za-z][A-Za-z0-9+.-]*:` (incluidos `blob:`/`file:`/`data:` sin `//`) y el patrón de firma `(^|[?&])(sig|x-amz-signature|x-amz-credential|x-amz-security-token)=` case-insensitive. El `://` no inicial MUST preservarse como texto de key (`folder/http://literal.bin`). El parser y el DTO MUST compartir esta política pura (`backend/src/lib/artifact-key.ts`). Una referencia rechazada MUST NOT ecoarse completa en errores ni logs.
+
+Una cadena sin esquema MUST interpretarse de forma determinista sin consultar la red: si el primer segmento es un bucket/contenedor allowlisted, se usa como bucket/container y el resto como key exacta; en caso contrario, la cadena entera es key y MUST requerir un `defaultBucket` trusted y allowlisted. La precedencia `bucket/key` MUST ser fija, por lo que un caller con una key que empiece por un nombre de bucket MUST usar la ubicación estructurada con la key entera; no se promete reconstrucción universal de bare legacy.
+
+`STORAGE_ALLOWED_BUCKETS` MUST ser un CSV opcional del provider activo, leído solo de configuración confiable. Ausente ⇒ defaults `MINIO_BUCKET_RAW` y `MINIO_BUCKET_GRADCAM`. Explícito no vacío ⇒ validado y deduplicado, con el default incluido cuando ese contexto se use. Explícito vacío o lista vacía ⇒ fail closed; MUST NOT existir “allow all”. No se añaden buckets/contenedores ajenos automáticamente. Los defaults de imagen y Grad-CAM son `MINIO_BUCKET_RAW` y `MINIO_BUCKET_GRADCAM`, también en Azure como contenedores lógicos legacy de la configuración actual.
 
 #### Scenario: Referencia legacy de Azure
 
@@ -160,11 +172,23 @@ El sistema SHALL disponer de un parser central para referencias legacy `s3://buc
 - **THEN** el parser resuelve container `mask-bucket` y key `inference-id/mask.png`
 - **AND** valida que la ubicación esté allowlisted antes de firmar.
 
+#### Scenario: Referencia bare legacy con default
+
+- **WHEN** el sistema recibe una bare string cuyo primer segmento no es un bucket allowlisted
+- **THEN** interpreta la cadena entera como key y exige un `defaultBucket` trusted allowlisted
+- **AND** no consulta la red ni recorta la key.
+
 #### Scenario: Esquema desconocido
 
-- **WHEN** el sistema recibe una referencia con esquema distinto de los soportados
+- **WHEN** el sistema recibe una referencia con esquema distinto de los soportados, con autoridad/credenciales o con query SAS
 - **THEN** la rechaza con un error seguro
-- **AND** no intenta descargarla como URL libre.
+- **AND** no intenta descargarla como URL libre ni llama al SDK o a la red.
+
+#### Scenario: Allowlist vacía o contenedor no permitido
+
+- **WHEN** `STORAGE_ALLOWED_BUCKETS` está explícitamente vacío o el bucket/contenedor no pertenece a la allowlist
+- **THEN** el parser falla cerrado sin “allow all”
+- **AND** no firma, no lee y no usa un default fuera de la lista.
 
 ### Requirement: Reintento de publicación sin reinferir y consistencia con almacenamiento
 

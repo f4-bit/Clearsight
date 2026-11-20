@@ -51,6 +51,9 @@ const envSchema = z
   STORAGE_PROVIDER: z.enum(["minio", "azure"]).default("minio"),
   // Optional logical id; defaults to `minio-local` or `azure-blob-default`.
   STORAGE_ID: z.string().max(128).optional(),
+  // Optional CSV allowlist for the active provider. Absent defaults to the raw
+  // and Grad-CAM buckets below; an explicit empty value fails closed.
+  STORAGE_ALLOWED_BUCKETS: z.string().optional(),
   // Signed URL lifetime. Integer seconds, 1..3600; legacy callers keep 3600.
   STORAGE_DOWNLOAD_TTL_SECONDS: z.coerce
     .number()

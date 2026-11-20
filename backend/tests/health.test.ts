@@ -7,6 +7,7 @@ vi.mock("../src/services/storage.js", () => ({
     upload: vi.fn().mockResolvedValue("test-bucket/test-key.jpg"),
     getDownloadUrl: vi.fn().mockResolvedValue("http://localhost:9000/test.jpg"),
     getObjectStream: vi.fn(),
+    getArtifactReferenceContext: vi.fn(),
   },
   s3Client: {},
 }));

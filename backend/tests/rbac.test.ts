@@ -8,6 +8,7 @@ vi.mock("../src/services/storage.js", () => ({
     getDownloadUrl: vi.fn().mockResolvedValue("http://localhost:9000/test.jpg"),
     getMlDownloadUrl: vi.fn().mockResolvedValue("http://minio:9000/test.jpg"),
     getObjectStream: vi.fn(),
+    getArtifactReferenceContext: vi.fn(),
   },
   s3Client: {},
 }));

@@ -7,6 +7,7 @@ vi.mock("../src/services/storage.js", () => ({
     getDownloadUrl: vi.fn(),
     getMlDownloadUrl: vi.fn(),
     getObjectStream: vi.fn(),
+    getArtifactReferenceContext: vi.fn(),
   },
   s3Client: {},
 }));

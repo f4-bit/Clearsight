@@ -577,6 +577,65 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - La dependencia `@azure/storage-blob` solo se instala desde el registry permitido, sin modelos ni Azure CLI, y el lockfile se actualiza de forma acotada sin upgrades globales ni `audit fix` masivo. Los `.env.example`/README se actualizan en la implementación posterior, no en este turno documental.
 - 3.2 queda `[x]` con QA PASSED; 3.8 permanece `[ ]` y parcial, con dependencia de 3.4. 3.2 no cierra 3.8.
 
+### D23. Referencia estructurada, allowlist y parser legacy central (HITO21, tarea 3.3)
+
+**Decisión (implementada; QA focal 3.3 PASSED; `[x]`):** 3.3 fija una única interpretación de las referencias de artefacto: parser puro, contexto de storage confiable, allowlist explícita, compatibilidad legacy determinista y DTO seguro. No se añaden repositorios nuevos, no se toca la DB y no se implementa la ruta 3.4 ni la publicación 3.5.
+
+**Parser y contexto confiable**
+
+- El parser (`backend/src/services/artifact-reference.ts`) es puro: recibe un `string` (URI o bare legacy) o una ubicación estructurada `{ storageId, bucketOrContainer, key }`, más un contexto confiable `{ provider, storageId, allowedBuckets, defaultBucket }`. No usa SDK, red, filesystem ni variables de entorno globales.
+- Parser y DTO comparten la política pura de `backend/src/lib/artifact-key.ts`, para que un `ArtifactRef AVAILABLE` no exponga una key que el firmante rechazaría.
+- `provider`, `storageId`, `allowedBuckets` y `defaultBucket` provienen solo de configuración interna del backend. Nunca se aceptan bucket, contenedor, endpoint, provider ni `storageId` desde HTTP.
+- La identidad de una ubicación estructurada MUST coincidir con el `storageId` y provider activos. Si `storageId` no coincide, o el provider/contenedor es desconocido, se rechaza fail closed antes de cualquier firma o SDK. En producción solo existe el provider activo: no hay registry cross-provider ni fallback de red para adivinar.
+- Una migración multi-cuenta no se implementa en 3.3. Cualquier referencia cross-provider legacy se rechaza de forma segura hasta que un operador configure una migración explícita.
+
+**URIs, esquemas y keys**
+
+- Se aceptan exactamente `s3://bucket/key` y `azure://container/key`. El esquema es case-insensitive solo para `s3`/`azure`; el resto del valor no se reinterpreta. El primer `/` tras `://` separa bucket/container del resto, que es la key exacta. No se usa `new URL()`, `path.normalize`, `trim` de la key ni `decodeURI`/percent-decoding.
+- Esquemas/URLs externos (`file://`, `http://`, `https://`, `blob:` u otro desconocido), credenciales, autoridad, host/puerto y query SAS se rechazan. La forma soportada no tiene usuario, autoridad ni query de firma.
+- La key conserva literalmente espacios, Unicode, `%`, `?`, `#` y `&`, que son caracteres válidos de object key. Se rechazan solo: blank o whitespace-only, NUL/controles, segmentos completos `.`/`..` que el SDK no puede representar (regla 3.2), un comienzo de URI genérica `^[A-Za-z][A-Za-z0-9+.-]*:` (incluidos `blob:`/`file:`/`data:` sin `//`) y keys que contienen un patrón de firma. El `://` no inicial se preserva: `folder/http://literal.bin` es una key válida.
+- El patrón de firma es el mismo de la migración B, case-insensitive: `(^|[?&])(sig|x-amz-signature|x-amz-credential|x-amz-security-token)=`. Una referencia rechazada nunca se ecoa completa en errores ni logs; solo se reporta un error seguro.
+- El nombre de bucket/container se valida con la regla del provider activo. Un bucket/contenedor no allowlisted se rechaza; no se consulta el provider para decidir si “podría” existir.
+
+**Bare legacy determinista**
+
+- Sin esquema, si el primer segmento es un bucket/contenedor allowlisted, la referencia se interpreta como `bucket/container` + key exacta del resto.
+- Si el primer segmento no es allowlisted, la cadena entera se interpreta como key y exige un `defaultBucket` confiable y allowlisted; la key se preserva completa, sin recortes.
+- La precedencia es determinista y no consulta la red: `raw-retinas/foo` se trata por convención como bucket `raw-retinas` y key `foo`. Un caller que realmente tenga una key que empiece por el nombre de un bucket debe usar la ubicación estructurada con la key entera; no se promete reconstrucción universal de bare legacy ni se adivina entre ambas interpretaciones.
+- El default de imagen es `MINIO_BUCKET_RAW` y el de Grad-CAM es `MINIO_BUCKET_GRADCAM`. En Azure se usan esos mismos valores como contenedores lógicos legacy de la configuración actual, sin inventar cuentas ni endpoints.
+
+**Allowlist**
+
+- `STORAGE_ALLOWED_BUCKETS` es un CSV opcional del provider activo, leído solo de configuración confiable. Ausente ⇒ defaults `MINIO_BUCKET_RAW` + `MINIO_BUCKET_GRADCAM`. Explícito no vacío ⇒ se valida, se normaliza y se deduplica; el default debe pertenecer a la lista cuando ese contexto se use. Explícito vacío o lista vacía ⇒ fail closed: no existe “allow all”.
+- No se añaden automáticamente buckets/contenedores ajenos. En el futuro la configuración podrá extender la allowlist a `mask`/`overlay`/`pdf`; 3.3 no lo activa.
+- Un `defaultBucket` que no pertenezca a una lista explícita es error de configuración/contexto, no un fallback silencioso.
+
+**DTO y mapper**
+
+- El `ArtifactRef` binario target excluye `result` y contiene explícitamente `artifactType`, `status`, `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes`, `checksumSha256`, `failureCode`, `retryable` y `updatedAt`. El catálogo de `ArtifactType` incluye `result` por separado para el `ExecutionResult` inline existente; `result` no tiene objeto storage ni `ArtifactRef` con ubicación.
+- Todos los campos se emiten explícitamente; los no aplicables son `null`, salvo `retryable`, que siempre es booleano (`false` si no aplica). Solo `AVAILABLE` tiene `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y `checksumSha256` válidos; `updatedAt` es ISO válido en todos los estados. `sizeBytes` es entero seguro `>= 0`: un bigint de DB mayor que `Number.MAX_SAFE_INTEGER` se rechaza, no se redondea. El checksum es hex de 64 caracteres; el PDF `AVAILABLE` usa `application/pdf`.
+- En estados no `AVAILABLE`, los campos de storage/key/contentType/size/checksum son `NULL`. `FAILED` exige `failureCode` válido de hasta 64 caracteres y `retryable` booleano; cualquier otro estado exige `failureCode=null` y `retryable=false`. El mapper canónico emite `false` (no `null`) para `retryable` y no inventa metadata `null` donde la DB ya define `false`.
+- El mapper de fila DB a `ArtifactRef` no fabrica hash, tamaño ni un `AVAILABLE` sin metadata. El parser de ubicación no fabrica un `ArtifactRef AVAILABLE` legacy (una referencia legacy no tiene checksum/tipo): `ArtifactLocation` es un tipo separado de la referencia completa.
+- 3.3 no necesita un repositorio nuevo de `ArtifactRecord`; la publicación/versionado pertenece a 3.5. No hay backfill de filas legacy.
+
+**Integración actual y errores**
+
+- POST `/inferences`: el parser se ejecuta en el punto actual de firma de la imagen, después de auth, preparación clínica y la transacción de creación, inmediatamente antes de `signMlDownloadUrl`/storage. No se mueve la firma antes de la DB ni se añade un assert “sin DB antes del parser”: 4.6 ya persiste el contexto.
+- GET `/inferences/:id/gradcam`: el parser se ejecuta después de `access.getInferenceForRead(..., "readArtifacts")` y antes de cualquier sign/read. El parser no enumera buckets ni se ejecuta antes de auth/ownership.
+- Los uploads y el seed actuales no se reescriben: uploads siguen guardando `bucket/key` en `storagePath`, el seed conserva su key raw-only (`2026/10`) y Grad-CAM conserva su key-only. El parser solo interpreta/valida al leer o firmar; no migra ni normaliza esos datos existentes.
+- La fachada `StorageService` gana solo métodos aditivos para resolver el contexto/allowlist desde configuración confiable; sus exports/firmas legacy (`getDownloadUrl`, `getMlDownloadUrl`, `upload`, `ensureBucket`, `getObjectStream`, `s3Client`) no cambian. El seam DI usa el mismo provider activo que firma; resolver una referencia no exige credenciales Azure reales.
+- La configuración/DI de app debe ser consistente y no caer a un fallback global de entorno para auth/schema/DB. El diseño mínimo elegido por el maker debe mantener esa consistencia.
+- Una referencia corrupta o no resoluble es dato server-owned inválido: se responde `503` seguro por el path de artefacto existente, sin datos raw, sin log de la referencia y sin llamar al storage; no se convierte en `400` de cliente. Objeto ausente/artefacto faltante conserva `404`; no autorizado conserva `403`/`404` actuales.
+- No cambian las respuestas `{ url, expiresIn }`, ni el TTL actual de 3600. No se implementa la ruta nueva 3.4, el publisher 3.5, el trabajo de logs 3.7, criptografía Azure, cambios de modelo ni cambios de DB.
+
+**Casos de test (implementados localmente; QA focalizada pendiente)**
+
+- URI `s3://`/`azure://` válidas, equivalentes estructurados, mismatch de `storageId`/provider/container, allowlist vacía/forbidden, esquema desconocido y autoridad/credenciales/query SAS rechazados sin SDK ni red.
+- Key exacta con Unicode/`%`/`?`/`#`/`&` preservada, `%` literal sin decode, key con `/` inicial doble preservada, key con esquema o patrón de firma rechazada, y `.`/`..` completos rechazados.
+- Bare legacy con defaults correctos, precedencia `raw-retinas/foo` como bucket/key, key-only preservada y default fuera de allowlist fail closed.
+- DTO binario en todos los estados, campos requeridos/null, `result` fuera de `ArtifactRef`, bigint fuera de rango rechazado y mapper `retryable=false`.
+- Integración: POST raw existente conserva los args de firma; gradcam con URI resuelve los args correctos; autorizado firma y no autorizado no llama al storage.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -631,6 +690,9 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | ADR-048 | 3.2: Azure Blob vía `@azure/storage-blob` + `SharedKeyCredential`, SAS por objeto read-only (`sp=r` en el wire del SDK; `p=r` abreviatura de D22), `sr=b`, `spr=https` y expiración acotada; `ensure` solo verifica contenedor, upload verifica `getProperties` y sign verifica existencia; sin SAS casero ni fallback MinIO | implemented (QA PASSED) | D22 |
 | ADR-049 | 3.2: TTL actual 3600 preservado y configurable 1..3600 (default, no cap); 300 s queda para 3.4/4.8 y no se promete en 3.2 | implemented (QA PASSED; deuda 3.4/4.8) | D22 |
 | ADR-050 | 3.2: keys de objeto exactas sin normalización; representaciones no soportadas por el SDK se rechazan de forma explícita; `storageId` local por configuración sin cambio de DB | implemented (QA PASSED) | D22 |
+| ADR-051 | 3.3: parser puro con contexto trusted, solo provider activo, URIs `s3://`/`azure://` estrictas, key exacta sin URL/decode/normalize, rechazo de comienzo URI genérica/credenciales/query SAS y `://` embebido permitido mediante política compartida parser/DTO | implemented (QA PASSED) | D23 |
+| ADR-052 | 3.3: bare legacy determinista (bucket allowlisted o key-only con default) y `STORAGE_ALLOWED_BUCKETS` fail-closed; sin reconstrucción universal ni fallback cross-provider | implemented (QA PASSED) | D23 |
+| ADR-053 | 3.3: `ArtifactRef` binario excluye `result` (inline aparte), mapper estricto de campos/null/bigint y `ArtifactLocation` separado; sin repo/publicación/DB en 3.3 | implemented (QA PASSED) | D23 |
 
 ## Risks / Trade-offs
 
@@ -641,6 +703,8 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | Cambio del conjunto de ojos tras cierre | B2 resuelto como restricción: no reapertura, no promoción y frozen set; reanálisis históricos solo en historial. |
 | Reanálisis legítimo bloqueado por fingerprint | El fingerprint solo detecta duplicados técnicos; nunca deniega ni revela a otros usuarios. |
 | URLs o tokens en logs/PDF/DB | Referencias estructuradas, prohibición de SAS persistido, redacción de logs y pruebas de fuga. |
+| Referencia legacy ambigua (`bucket/key` vs key con prefijo de bucket) | Precedencia determinista por allowlist sin red; el caller con esa key usa ubicación estructurada. No se promete reconstrucción universal ni se adivina. |
+| Allowlist vacía o bucket ajeno | `STORAGE_ALLOWED_BUCKETS` explícito vacío falla cerrado; sin “allow all”, sin extensión automática y sin fallback cross-provider. |
 | Pérdida del `202` y reintento | `Idempotency-Key` obligatoria y replay del mismo `202` con el mismo ID de servidor; no exigir un ID nunca recibido. |
 | Store de sesiones no verificable | Fail closed; no emitir/validar acceso si no se puede comprobar sesión, versión y usuario activo/rol. |
 | Precedencia de estados ambigua | `requiredExecutionIds` explícitos y precedencia FAILED > REVIEW_REQUIRED > IN_PROGRESS > PARTIAL > OPEN; COMPLETED solo con todo satisfecho. |

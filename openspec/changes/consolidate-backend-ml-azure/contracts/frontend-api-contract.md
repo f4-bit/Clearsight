@@ -154,7 +154,7 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 | POST | `/inferences` | implemented (2.2 QA PASSED; CURRENT creation) | OFTALMOLOGO dueño | `{ imageId, eyeSide, clinicalFeatures, modelVersion?, reanalysisOf? }` + **`Idempotency-Key` obligatoria (D7/4.4 futuro; NO implementada en 2.2)** | `202 { inferenceId, jobId, status: "QUEUED" }`; cuerpo/estado sin cambios | `400`, `401`, `403`, `404`, `422`, `503` (`409` reservado a 4.4; 2.2 no lo emite) |
 | GET | `/inferences/:id` | proposed | Owner/grant | — | `ExecutionStatus` completo | `401`, `403`, `404` |
 | GET | `/inferences/:id/artifacts` | proposed | Owner/grant | — | `ArtifactRef[]` | `401`, `403`, `404` |
-| GET | `/inferences/:id/artifacts/:type/url` | proposed | Owner/grant | — | `ArtifactUrl`; solo `AVAILABLE` devuelve URL | `401`, `403`, `404`, `409` |
+| GET | `/inferences/:id/artifacts/:type/url` | proposed | Owner/grant | — | `ArtifactUrl` solo para tipos binarios (`result` se sirve inline); solo `AVAILABLE` devuelve URL | `401`, `403`, `404`, `409` |
 | GET | `/inferences/:id/reports` | proposed | Owner/grant | — | `ReportVersion[]` inmutables, con `reportId` y `version` | `401`, `403`, `404` |
 | GET | `/inferences/:id/reports/:version/url` | proposed | Owner/grant | — | `ArtifactUrl` con `reportVersion` | `401`, `403`, `404`, `409` |
 | POST | `/inferences/:id/review` | deferred (B1 restricción) | — | No es target actual; no approve-review ejecutable ni auto-complete manual | — | — |
@@ -211,27 +211,33 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 
 **JobStatus:** `QUEUED`, `DOWNLOADING`, `LOCALIZING`, `SEGMENTING`, `CLASSIFYING`, `COMPLETED`, `REVIEW_REQUIRED`, `FAILED`. No se añade `PROCESSING`.
 
-### 4.2 ArtifactRef (forma única, camelCase)
+### 4.2 ArtifactRef (forma única, camelCase; solo artefactos binarios)
+
+`ArtifactRef` representa únicamente artefactos binarios. `result` NO es un `ArtifactRef`: sigue siendo el `ExecutionResult` inline existente y no tiene objeto de storage. El catálogo lógico de `ArtifactType` incluye `result` por separado solo para ese resultado inline.
 
 | Campo | Tipo | Nulabilidad |
 |---|---|---|
-| `artifactType` | `"result"\|"mask"\|"overlay"\|"pdf"\|"gradcam"\|"shap"` | no |
+| `artifactType` | `"mask"\|"overlay"\|"pdf"\|"gradcam"\|"shap"` | no |
 | `status` | `ArtifactStatus` | no |
 | `storageId` | string | sí (solo `AVAILABLE`) |
 | `bucketOrContainer` | string | sí (solo `AVAILABLE`) |
 | `key` | string | sí (solo `AVAILABLE`) |
 | `contentType` | string | sí (solo `AVAILABLE`) |
-| `sizeBytes` | number | sí (solo `AVAILABLE`) |
-| `checksumSha256` | string | sí (solo `AVAILABLE`; target; no confundir con `hashMd5` actual) |
-| `failureCode` | string | sí |
-| `retryable` | boolean | sí |
+| `sizeBytes` | number (entero seguro `>= 0`) | sí (solo `AVAILABLE`) |
+| `checksumSha256` | string hex64 | sí (solo `AVAILABLE`; target; no confundir con `hashMd5` actual) |
+| `failureCode` | string \| null (≤64, patrón de código seguro) | sí |
+| `retryable` | boolean | no (`false` si no aplica; el mapper canónico no emite `null`) |
 | `updatedAt` | ISO string | no |
+
+**Reglas de estado:** solo `AVAILABLE` tiene `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y `checksumSha256` válidos; un PDF `AVAILABLE` usa `application/pdf`. En cualquier otro estado esos campos son `null`; `FAILED` lleva `failureCode` válido y `retryable` booleano; un estado no `FAILED` lleva `failureCode=null` y `retryable=false`. Un bigint de DB mayor que `Number.MAX_SAFE_INTEGER` se rechaza, no se redondea; no se inventan hash, tamaño ni un `AVAILABLE` sin metadata.
 
 **ArtifactStatus:** `NOT_SUPPORTED`, `NOT_REQUESTED`, `PENDING`, `AVAILABLE`, `FAILED`.
 
+**Estado de implementación 3.3:** existen el parser de referencias y el schema binario `ArtifactRef`; los endpoints `/inferences/:id/artifacts` y `/:type/url` siguen `proposed` y pertenecen a 3.4. 3.3 no añade una ruta nueva.
+
 ### 4.3 ArtifactUrl
 
-`{ artifactType: ArtifactType, status: ArtifactStatus, url: string|null, expiresInSeconds: number|null, contentType: string|null, reportVersion: number|null }`. Solo `AVAILABLE` devuelve `url` y `expiresInSeconds`; el resto los devuelve `null`.
+`{ artifactType: "mask"|"overlay"|"pdf"|"gradcam"|"shap", status: ArtifactStatus, url: string|null, expiresInSeconds: number|null, contentType: string|null, reportVersion: number|null }`. Solo `AVAILABLE` devuelve `url` y `expiresInSeconds`; el resto los devuelve `null`. `result` no tiene URL de storage: se sirve inline como `ExecutionResult`.
 
 ### 4.4 ReportVersion
 
@@ -318,7 +324,7 @@ El job interno lleva `expectedContext: { schemaVersion, fingerprintSha256 }` y `
 
 ## 7. Artefactos, polling y entrega
 
-- Catálogo: `result`, `mask`, `overlay`, `pdf`, `gradcam`, `shap`.
+- Catálogo lógico: `result`, `mask`, `overlay`, `pdf`, `gradcam`, `shap`. Solo `mask`, `overlay`, `pdf`, `gradcam` y `shap` son `ArtifactRef` binarios; `result` es el `ExecutionResult` inline y no tiene objeto de storage.
 - La **imagen original sanitizada** no es un artefacto opcional: es la fotografía almacenada sin EXIF del upload original y es obligatoria para el PDF de una ruta exitosa normal.
 - Obligatorios en ruta exitosa normal: `mask`, `overlay`, `result` y PDF básico; el PDF embebe **original sanitizada + mask + overlay**.
 - `gradcam`/`shap`: `NOT_SUPPORTED` hasta entrega diferida; nunca URL simulada.

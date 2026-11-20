@@ -36,6 +36,7 @@ import {
   normalizeContentType,
   parseMinioSecure,
   parseMlPublicHost,
+  resolveStorageLogicalId,
   resolveStorageProviderConfig,
   resolveStorageTtlSeconds,
   StorageProviderError,
@@ -288,6 +289,15 @@ describe("storage config and validation", () => {
     });
     expect(config.storageId).toBe("local-lab");
     expect(config.downloadTtlSeconds).toBe(120);
+  });
+
+  it("resolves logical ids without requiring provider credentials", () => {
+    expect(resolveStorageLogicalId("minio", undefined)).toBe("minio-local");
+    expect(resolveStorageLogicalId("azure", undefined)).toBe("azure-blob-default");
+    expect(resolveStorageLogicalId("minio", " local-lab ")).toBe("local-lab");
+    expect(errorCode(() => resolveStorageLogicalId("minio", "bad id!"))).toBe(
+      "storage_invalid_config",
+    );
   });
 
   it("rejects unknown providers and invalid Azure config without MinIO fallback", () => {

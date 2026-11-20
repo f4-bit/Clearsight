@@ -1,5 +1,10 @@
 import type { Readable } from "node:stream";
 import { env } from "../config/env.js";
+import {
+  resolveArtifactReferenceContext,
+  type ArtifactDefaultKind,
+  type ArtifactReferenceContext,
+} from "./artifact-reference.js";
 import { createStorageProvider } from "./storage-factory.js";
 import { mlS3Client, s3Client } from "./storage-minio.js";
 import {
@@ -12,6 +17,12 @@ import {
 } from "./storage-provider.js";
 
 export { s3Client };
+
+export interface ArtifactStoragePort {
+  getArtifactReferenceContext(kind: ArtifactDefaultKind): ArtifactReferenceContext;
+  getDownloadUrl(bucket: string, key: string, expiresIn?: number): Promise<string>;
+  getMlDownloadUrl(bucket: string, key: string, expiresIn?: number): Promise<string>;
+}
 
 let defaultProvider: StorageProvider | null = null;
 
@@ -72,6 +83,16 @@ export class StorageService {
 
   static async getObjectStream(bucket: string, key: string): Promise<Readable> {
     return getDefaultProvider().read(bucket, key);
+  }
+
+  /**
+   * Additive trusted metadata for artifact references. It deliberately avoids
+   * provider construction, credentials and network I/O.
+   */
+  static getArtifactReferenceContext(
+    kind: ArtifactDefaultKind,
+  ): ArtifactReferenceContext {
+    return resolveArtifactReferenceContext(env, kind);
   }
 
   static getStorageId(): string {

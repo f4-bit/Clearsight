@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED y 3.8 parcial FUTURO (§4.6) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED y 3.8 parcial FUTURO (§4.6); HITO21 3.3 QA PASSED (§4.7) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -451,6 +451,18 @@
 | Audit | `npm audit` **13** (8 moderate, 5 high), baseline **13** verificado en QA con temp HEAD; delta **0**, ningún advisory Azure; sin upgrades ni `audit fix`. |
 | Límites | QA PASSED, pero sin Azure real ni E2E cloud. La firma Azure fue solo offline con SDK real y clave sintética: no se creó, modificó ni destruyó ningún recurso Azure. 3.8 parcial por 3.4; 300 s no se adopta antes de 4.8. Un mismatch post-upload puede dejar el objeto sin reclamar como `AVAILABLE`; no se borra y la reconciliación pertenece a 3.5. No se tocaron rutas 3.4, parser 3.3, logs 3.7, DB/migraciones, `storagePath`, ML ni worker. |
 
+## 1.25 Registro HITO21 - QA focal 3.3 (PASSED)
+
+> **Naturaleza:** implementación local y QA focal independiente. Sin Azure real, `.env` reales, SRS, commit ni suite completa. 3.3 queda `[x]`.
+
+| Elemento | Evidencia |
+|---|---|
+| Documentos | `design.md` D23/ADR-051..053 y riesgos; `specs/artifact-evidence/spec.md`; `tasks.md` 3.3; `contracts/frontend-api-contract.md` §4.2/§7; este runbook §1.25/§4.7/§10. |
+| Código | Nuevo `backend/src/services/artifact-reference.ts` (parser puro, contexto trusted, mapper) y `backend/src/lib/artifact-key.ts` (política de key compartida); `schemas/inference.ts` (`ArtifactRef` binario); `storage.ts` (contexto aditivo y seam DI); `routes/inferences.ts` (parseo antes de firmar); `config/env.ts`, `.env.example` y `README.md` (`STORAGE_ALLOWED_BUCKETS`). |
+| Tests | Nuevo `tests/unit/artifact-reference.test.ts`; ampliados `tests/schemas.test.ts`, `tests/unit/storage-service.test.ts`, `tests/unit/storage-provider.test.ts`, `tests/inference-creation.integration.test.ts` y `tests/clinical-access.integration.test.ts`; mocks de storage actualizados explícitamente. QA sólo endureció tests: errores must-throw/non-leak y fila postcommit `QUEUED`. |
+| Comandos | Focus unit **4 files / 84 tests** (83 + 1 QA de contexto con whitespace id); integración **2 files / 33 tests** re-ejecutada tras el fix de key; `typecheck` **0**; `build` **0** reutilizado del mismo source. Sin suite completa. |
+| Estado | 3.3 `[x]` QA PASSED; 3.8 sigue parcial por 3.4; publisher 3.5 pendiente. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -656,6 +668,34 @@ npm --prefix backend run test:integration -- tests/inference-creation.integratio
 **Stop:** si un caso exige Azurite, Docker, Azure real, credenciales, `.env` reales, red o un provider forzado fuera de la configuración. Si aparece un fallback Azure→MinIO, una URL para un objeto ausente o un borrado post-mismatch, se detiene la fase.
 
 **Criterio de salida:** QA final PASSED con focus **2/36**, unit completo **33/473**, integración focal **3/41**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0, sin advisory Azure). **3.2 `[x]`**; 3.8 permanece parcial y depende de 3.4; 300 s no se adopta antes de 4.8. La firma Azure fue solo offline: no se creó, modificó ni destruyó ningún recurso Azure. Este runbook no declara validación OpenSpec.
+
+### 4.7 Fase específica HITO21 — 3.3 referencia/parser (CURRENT; QA PASSED)
+
+**Objetivo:** verificar el parser puro, la allowlist, la compatibilidad legacy y el mapper `ArtifactRef` sin SDK/red, Azure real ni suite completa.
+
+**Precondiciones verificadas:**
+
+- D23, `specs/artifact-evidence/spec.md`, `tasks.md` 3.3 y `contracts/frontend-api-contract.md` §4.2 revisados.
+- `backend/src/services/artifact-reference.ts` y los tests nuevos existen; `StorageService` mantiene exports/firmas legacy y el seam DI usa el provider activo.
+- Sin `STORAGE_ALLOWED_BUCKETS` real, sin `.env.azure`, sin credenciales Azure; integración con PostgreSQL owned de Testcontainers.
+
+**Comandos ejecutados (QA focal independiente):**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/artifact-reference.test.ts tests/schemas.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts
+npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts
+npm --prefix backend run typecheck
+npm --prefix backend run build
+# Sin suite completa
+```
+
+**Resultados:** unit **4 files / 84 tests** (83 + 1 QA de contexto con whitespace id); integración **2 files / 33 tests** re-ejecutada tras el fix de key; `typecheck` **0**; `build` **0** reutilizado del mismo source. QA sólo endureció tests: errores must-throw/non-leak y fila postcommit `QUEUED`.
+
+**Casos cubiertos:** URIs Azure/MinIO y structured equivalentes; mismatch de `storageId`/provider/contenedor; allowlist vacía/forbidden; esquema desconocido/autoridad/credenciales/query SAS sin SDK ni red; key Unicode/`%`/`?`/`#`/`&` exacta, `%` literal sin decode, `/` inicial doble preservado, `folder/http://literal.bin` preservada y comienzo `blob:`/`file:`/`data:` rechazado; patrón de firma y `.`/`..` rechazados; bare legacy con defaults y precedencia; DTO binario en todos los estados, `result` fuera de `ArtifactRef` y bigint fuera de rango; integración POST raw conserva args de firma y gradcam URI resuelve args correctos, con no autorizado/corrupto sin llamada al storage.
+
+**Stop:** si un caso exige SDK/red, Azure real, migraciones, `.env`/credenciales o una suite completa; si aparece un fallback cross-provider, una URL para referencia corrupta o un `ArtifactRef AVAILABLE` inventado.
+
+**Criterio de salida:** QA focal independiente PASSED; 3.3 `[x]`. 3.8 sigue parcial por 3.4 y 3.5 publisher permanece pendiente.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
@@ -872,6 +912,8 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/repositories.test.ts tests/rbac.test.ts` | CURRENT (2.2 B foco) | 4 files / 61 tests passed; B 11 tests; PostgreSQL owned. |
 | `npm --prefix backend run test:unit -- tests/unit/inference.processor.test.ts tests/unit/inference.worker.test.ts tests/unit/ml-client.test.ts` | CURRENT (2.2 C) | 20 passed; processor/wiring/wire estricto sin Redis real. |
 | `npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts` | CURRENT (2.2 C) | 4 passed; CAS/duplicate/race/frozen con Prisma real. |
+| `npm --prefix backend run test:unit -- tests/unit/artifact-reference.test.ts tests/schemas.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts` | CURRENT (3.3; QA PASSED) | **4 files / 84 tests** (83 + 1 QA whitespace id); parser/DTO/contexto sin SDK/red. |
+| `npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts` | CURRENT (3.3; QA PASSED, re-ejecutada) | **2 files / 33 tests** tras el fix de key; args raw/gradcam y corrupto/no autorizado sin storage. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

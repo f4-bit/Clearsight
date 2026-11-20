@@ -69,6 +69,22 @@ describe("StorageService facade", () => {
     expect(StorageService.getStorageId()).toBe("minio-local");
   });
 
+  it("resolves artifact reference context without constructing a provider", () => {
+    mocks.createStorageProvider.mockClear();
+    expect(StorageService.getArtifactReferenceContext("image")).toMatchObject({
+      provider: "minio",
+      storageId: "minio-local",
+      defaultBucket: "raw-retinas",
+    });
+    expect(
+      StorageService.getArtifactReferenceContext("gradcam"),
+    ).toMatchObject({
+      provider: "minio",
+      defaultBucket: "gradcam-overlays",
+    });
+    expect(mocks.createStorageProvider).not.toHaveBeenCalled();
+  });
+
   it("validates bodies and explicit TTL overrides before provider work", async () => {
     provider.ensure.mockClear();
     provider.upload.mockClear();

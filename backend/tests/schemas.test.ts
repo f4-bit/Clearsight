@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { CLASS_LABELS } from "../src/schemas/common.js";
 import { CLINICAL_FEATURE_NAMES, ClinicalFeaturesSchema, ClinicalSnapshotCreateSchema, extractClinicalFeatures } from "../src/schemas/clinical.js";
 import { FeedbackCreate } from "../src/schemas/feedback.js";
-import { patientCreateSchema, registerRequestSchema } from "../src/schemas/index.js";
+import {
+  ARTIFACT_CATALOG_TYPES,
+  ArtifactRefSchema,
+  patientCreateSchema,
+  registerRequestSchema,
+} from "../src/schemas/index.js";
 import { FEATURES } from "./fixtures/clinical.js";
 
 const base = () => ({ consultation_id: randomUUID(), inference_id: randomUUID(), validated_class: 1 });
@@ -11,6 +16,166 @@ const base = () => ({ consultation_id: randomUUID(), inference_id: randomUUID(),
 describe("class vocabulary", () => {
   it("follows the ML manifest order (0 = Glaucoma, not Normal)", () => {
     expect([...CLASS_LABELS]).toEqual(["Glaucoma", "Non_Glaucoma", "Suspicious_Glaucoma"]);
+  });
+});
+
+describe("ArtifactRefSchema", () => {
+  const available = () => ({
+    artifactType: "mask",
+    status: "AVAILABLE",
+    storageId: "minio-local",
+    bucketOrContainer: "raw-retinas",
+    key: "folder/mask.png",
+    contentType: "image/png",
+    sizeBytes: 42,
+    checksumSha256: "a".repeat(64),
+    failureCode: null,
+    retryable: false,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  it("accepts all-null location states and explicit failure metadata", () => {
+    for (const status of ["NOT_SUPPORTED", "NOT_REQUESTED", "PENDING"]) {
+      expect(
+        ArtifactRefSchema.safeParse({
+          ...available(),
+          status,
+          storageId: null,
+          bucketOrContainer: null,
+          key: null,
+          contentType: null,
+          sizeBytes: null,
+          checksumSha256: null,
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        status: "FAILED",
+        storageId: null,
+        bucketOrContainer: null,
+        key: null,
+        contentType: null,
+        sizeBytes: null,
+        checksumSha256: null,
+        failureCode: "UPLOAD_FAILED",
+        retryable: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires complete AVAILABLE metadata and a PDF content type", () => {
+    expect(ArtifactRefSchema.safeParse(available()).success).toBe(true);
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        artifactType: "pdf",
+        contentType: "application/pdf",
+      }).success,
+    ).toBe(true);
+    for (const field of [
+      "storageId",
+      "bucketOrContainer",
+      "key",
+      "contentType",
+      "sizeBytes",
+      "checksumSha256",
+    ]) {
+      expect(
+        ArtifactRefSchema.safeParse({ ...available(), [field]: null }).success,
+      ).toBe(false);
+    }
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        artifactType: "pdf",
+        contentType: "image/png",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps result outside ArtifactRef and rejects invalid states/metadata", () => {
+    expect(
+      ArtifactRefSchema.safeParse({ ...available(), artifactType: "result" }).success,
+    ).toBe(false);
+    expect([...ARTIFACT_CATALOG_TYPES]).toContain("result");
+
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        status: "PENDING",
+      }).success,
+    ).toBe(false);
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        status: "FAILED",
+        failureCode: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        failureCode: "UPLOAD_FAILED",
+      }).success,
+    ).toBe(false);
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        status: "PENDING",
+        storageId: null,
+        bucketOrContainer: null,
+        key: null,
+        contentType: null,
+        sizeBytes: null,
+        checksumSha256: null,
+        retryable: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unsafe sizes, bad checksums/dates and extra fields", () => {
+    for (const sizeBytes of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(ArtifactRefSchema.safeParse({ ...available(), sizeBytes }).success).toBe(
+        false,
+      );
+    }
+    for (const key of [
+      "folder/http://literal.bin",
+      "folder/blob:secret",
+    ]) {
+      expect(ArtifactRefSchema.safeParse({ ...available(), key }).success).toBe(
+        true,
+      );
+    }
+    for (const key of [
+      "blob:secret",
+      "file:secret",
+      "data:text/plain;base64,AA",
+      "folder/../mask.png",
+      "folder/mask\u0000.png",
+      "folder/mask.png?sv=1&sig=secret",
+    ]) {
+      expect(ArtifactRefSchema.safeParse({ ...available(), key }).success).toBe(
+        false,
+      );
+    }
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        checksumSha256: "A".repeat(64),
+      }).success,
+    ).toBe(false);
+    expect(
+      ArtifactRefSchema.safeParse({
+        ...available(),
+        updatedAt: "not-a-date",
+      }).success,
+    ).toBe(false);
+    expect(
+      ArtifactRefSchema.safeParse({ ...available(), extra: "nope" }).success,
+    ).toBe(false);
   });
 });
 

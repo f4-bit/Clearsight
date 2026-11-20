@@ -8,6 +8,14 @@ vi.mock("../src/services/storage.js", () => ({
     getDownloadUrl: vi.fn(),
     getMlDownloadUrl: vi.fn().mockResolvedValue("http://minio:9000/retina.jpg"),
     getObjectStream: vi.fn(),
+    getArtifactReferenceContext: vi.fn(
+      (kind: "image" | "gradcam") => ({
+        provider: "minio",
+        storageId: "minio-local",
+        allowedBuckets: ["raw-retinas", "gradcam-overlays"],
+        defaultBucket: kind === "image" ? "raw-retinas" : "gradcam-overlays",
+      }),
+    ),
   },
   s3Client: {},
 }));
@@ -179,6 +187,10 @@ describe("POST /inferences creation (2.2 B)", () => {
     expect(consultation.requiredSetVersion).toBeNull();
     expect(consultation.requiredSetFrozenAt).toBeNull();
 
+    expect(StorageService.getMlDownloadUrl).toHaveBeenCalledWith(
+      "raw-retinas",
+      study.image.storagePath,
+    );
     expect(enqueueInference).toHaveBeenCalledTimes(1);
     expect(vi.mocked(enqueueInference).mock.calls[0]![0]).toMatchObject({
       inferenceId: body.inferenceId,
@@ -191,6 +203,42 @@ describe("POST /inferences creation (2.2 B)", () => {
         fingerprintSha256: makePreparedSnapshot(FEATURES).contextFingerprintSha256,
       },
     });
+  });
+
+  it("parses a legacy URI before signing and preserves the exact key", async () => {
+    const study = await makeCase(doctor.id);
+    const exactPath = "s3://raw-retinas/folder/a b%20c#d?e|f.png";
+    await prisma.image.update({
+      where: { id: study.image.id },
+      data: { storagePath: exactPath },
+    });
+
+    const response = await post(app, { imageId: study.image.id, eyeSide: "OD" });
+    expect(response.statusCode).toBe(202);
+    expect(StorageService.getMlDownloadUrl).toHaveBeenCalledWith(
+      "raw-retinas",
+      "folder/a b%20c#d?e|f.png",
+    );
+  });
+
+  it("returns safe 503 without signing on a corrupt server reference", async () => {
+    const study = await makeCase(doctor.id);
+    await prisma.image.update({
+      where: { id: study.image.id },
+      data: { storagePath: "https://secret.example/retina.jpg" },
+    });
+
+    const response = await post(app, { imageId: study.image.id, eyeSide: "OD" });
+    expect(response.statusCode).toBe(503);
+    expect(response.body).not.toContain("secret.example");
+    expect(StorageService.getMlDownloadUrl).not.toHaveBeenCalled();
+    expect(enqueueInference).not.toHaveBeenCalled();
+    // 4.6 owns post-commit dispatch recovery; 3.3 does not claim rollback.
+    expect(
+      await prisma.inference.count({
+        where: { imageId: study.image.id, status: "QUEUED" },
+      }),
+    ).toBe(1);
   });
 
   it("uses request clinicalFeatures, never mutable consultation clinicalData", async () => {

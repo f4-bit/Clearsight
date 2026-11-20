@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { notFound } from "../lib/http-error.js";
+import { notFound, serviceUnavailable } from "../lib/http-error.js";
 import type { PrismaClient } from "../lib/prisma.js";
 import { authenticate } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
@@ -10,12 +10,13 @@ import {
   inferenceCreateSchema,
   jobAcceptedSchema,
 } from "../schemas/inference.js";
+import { parseArtifactLocation } from "../services/artifact-reference.js";
 import type { ClinicalAccessService } from "../services/clinical-access.js";
 import { subjectFromRequest } from "../services/clinical-access.js";
 import { createInferenceCreationService } from "../services/inference-creation.js";
 import type { ClinicalContextPreparer } from "../services/ml-client.js";
 import type { AuthSessionService } from "../services/session.js";
-import { StorageService } from "../services/storage.js";
+import { StorageService, type ArtifactStoragePort } from "../services/storage.js";
 import { enqueueInference } from "../workers/inference.queue.js";
 
 export interface InferenceRoutesOptions {
@@ -24,6 +25,8 @@ export interface InferenceRoutesOptions {
   authService: Pick<AuthSessionService, "verifySession">;
   mlClient: ClinicalContextPreparer;
   databaseSchema?: string;
+  /** Trusted storage seam; defaults to the backward-compatible facade. */
+  storage?: ArtifactStoragePort;
 }
 
 export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async (
@@ -31,7 +34,23 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
   opts,
 ) => {
   const { prisma, access } = opts;
+  const storage = opts.storage ?? StorageService;
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
+
+  const resolveLocation = (
+    reference: string,
+    kind: "image" | "gradcam",
+  ) => {
+    try {
+      return parseArtifactLocation(
+        reference,
+        storage.getArtifactReferenceContext(kind),
+      );
+    } catch {
+      throw serviceUnavailable("Artifact reference is unavailable");
+    }
+  };
+
   const creation = createInferenceCreationService({
     prisma,
     access,
@@ -39,8 +58,11 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
     mlClient: opts.mlClient,
     databaseSchema: opts.databaseSchema,
     signMlDownloadUrl: async (storagePath) => {
-      const [bucket = "", ...rest] = storagePath.split("/");
-      return StorageService.getMlDownloadUrl(bucket, rest.join("/"));
+      const location = resolveLocation(storagePath, "image");
+      return storage.getMlDownloadUrl(
+        location.bucketOrContainer,
+        location.key,
+      );
     },
     enqueue: enqueueInference,
   });
@@ -156,9 +178,12 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         throw notFound("Grad-CAM visualization");
       }
 
-      const [bucket = "", ...rest] = inference.gradcamPath.split("/");
-      const key = rest.join("/");
-      const url = await StorageService.getDownloadUrl(bucket, key, 3600);
+      const location = resolveLocation(inference.gradcamPath, "gradcam");
+      const url = await storage.getDownloadUrl(
+        location.bucketOrContainer,
+        location.key,
+        3600,
+      );
 
       return reply.send({
         url,

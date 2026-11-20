@@ -87,6 +87,7 @@ export interface StorageProviderConfig {
 export interface StorageEnvInput {
   STORAGE_PROVIDER?: string | undefined;
   STORAGE_ID?: string | undefined;
+  STORAGE_ALLOWED_BUCKETS?: string | undefined;
   STORAGE_DOWNLOAD_TTL_SECONDS?: number | undefined;
   MINIO_ENDPOINT: string;
   MINIO_PORT: number;
@@ -106,6 +107,25 @@ const AZURE_ACCOUNT_KEY_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export function isStorageProviderName(value: unknown): value is StorageProviderName {
   return value === "minio" || value === "azure";
+}
+
+/**
+ * Resolves the logical storage id from trusted configuration without loading any
+ * SDK or credentials. Reference parsing uses this before signing so an Azure
+ * deployment can describe its identity even when account secrets are not
+ * needed yet.
+ */
+export function resolveStorageLogicalId(
+  provider: StorageProviderName,
+  storageId: string | undefined,
+): string {
+  const defaultStorageId =
+    provider === "azure" ? DEFAULT_AZURE_STORAGE_ID : DEFAULT_MINIO_STORAGE_ID;
+  const resolved = storageId?.trim() || defaultStorageId;
+  if (!STORAGE_ID_PATTERN.test(resolved)) {
+    throw new StorageProviderError("storage_invalid_config");
+  }
+  return resolved;
 }
 
 export function resolveStorageTtlSeconds(
@@ -332,12 +352,7 @@ export function resolveStorageProviderConfig(
   const provider = rawProvider;
   const configuredTtl = input.STORAGE_DOWNLOAD_TTL_SECONDS ?? DEFAULT_STORAGE_TTL_SECONDS;
   const downloadTtlSeconds = resolveStorageTtlSeconds(undefined, configuredTtl);
-  const defaultStorageId =
-    provider === "azure" ? DEFAULT_AZURE_STORAGE_ID : DEFAULT_MINIO_STORAGE_ID;
-  const storageId = (input.STORAGE_ID?.trim() || defaultStorageId);
-  if (!STORAGE_ID_PATTERN.test(storageId)) {
-    throw new StorageProviderError("storage_invalid_config");
-  }
+  const storageId = resolveStorageLogicalId(provider, input.STORAGE_ID);
 
   const minio: MinioStorageConfig = {
     endpoint: assertMinioHost(input.MINIO_ENDPOINT),
