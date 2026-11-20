@@ -40,6 +40,18 @@ npx prisma db seed                   # datos sintéticos (nunca en production)
 npm run dev
 ```
 
+## Storage provider (3.2)
+
+- `STORAGE_PROVIDER=minio` es el default retrocompatible y `azure` es explícito; cualquier otro valor falla cerrado. `STORAGE_ID` es lógico y por defecto es `minio-local` o `azure-blob-default` según el provider.
+- `STORAGE_DOWNLOAD_TTL_SECONDS` acepta enteros de 1 a 3600 con default 3600; es **default, no cap**: un caller explícito puede pedir hasta 3600 aunque el default sea menor. Los callers legacy conservan 3600; la adopción de 300 s queda para 3.4/4.8.
+- MinIO mantiene el endpoint interno y el endpoint distinto de `ML_PUBLIC_HOST` con sus puertos. `ensure` crea solo en `404`/not found, acepta `AlreadyOwnedByYou` en carrera y no absorbe `BucketAlreadyExists` ajeno. Upload valida `contentType` antes de I/O y verifica `HeadObject` (longitud/tipo); un mismatch no borra el objeto. Un fallo genérico de upload se normaliza a `storage_upload_failed`; `401`/`403` conservan `storage_permission_denied`. `MINIO_SECURE` solo acepta booleanos o los strings exactos `true`/`false`; `TRUE`/`yes`/`1` fallan cerrado.
+- Azure Blob usa el SDK oficial `@azure/storage-blob@12.32.0` con `SharedKeyCredential`. La configuración es explícita: URL HTTPS, nombre de cuenta y clave; la URL debe ser exactamente `https://<account>.blob.core.windows.net` (sin path, query, userinfo ni wildcard) y la cuenta debe ser `AzureCloud`. Si falta o es inválida, falla cerrado y no cae a MinIO.
+- Azure `ensure` solo comprueba la existencia del contenedor y **no** lo crea. Upload usa `uploadData` y verifica `getProperties` (longitud y tipo). `sign` comprueba el objeto antes de emitir el SAS por objeto, HTTPS y con expiración acotada; el SDK oficial emite `sp=r`, `sr=b`, `spr=https` (D22 usa `p=r` como abreviatura de permisos de lectura). No se usan APIs privadas ni criptografía SAS casera.
+- Managed Identity no está soportada en 3.2; queda para 8.x. No se leen `.env.azure`, no se versionan claves reales y no se crean recursos en runtime.
+- `StorageService` conserva la misma API pública (`ensureBucket`, `upload`, `getDownloadUrl`, `getMlDownloadUrl`, `getObjectStream`, export `s3Client`); `getStorageId()` es aditivo. Azure `sign` usa `generateBlobSASQueryParameters` con `StorageSharedKeyCredential`.
+- Tests herméticos: dobles de SDK, firma real offline con cuentas/claves sintéticas y MinIO con comandos/reloj fake; no requieren Azure real, Azurite ni Docker. La firma Azure no crea/modifica/destruye recursos.
+- **QA final 3.2 PASSED:** focus storage **2 files / 36 tests** (35 + 1 QA), unit completo **33 files / 473 tests** (472 + 1 QA), integración focal **3 files / 41 tests** re-ejecutada final, `typecheck` **0**, `build` **0** reutilizado del mismo source, audit **13** baseline **13** (8 moderate, 5 high; delta 0, sin advisory Azure). `3.2` queda `[x]`; `3.8` sigue `[ ]` parcial y depende de `3.4`.
+
 ## Bootstrap del primer administrador
 
 El alta pública `POST /auth/register` está **retirada** y responde `410 Gone`: no acepta

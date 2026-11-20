@@ -36,15 +36,33 @@ const envSchema = z
 
   // MinIO / S3
   MINIO_ENDPOINT: z.string().default("localhost"),
-  MINIO_PORT: z.coerce.number().default(9000),
+  MINIO_PORT: z.coerce.number().int().min(1).max(65_535).default(9000),
   MINIO_ACCESS_KEY: z.string().default("minioadmin"),
   MINIO_SECRET_KEY: z.string().default("minioadmin"),
   MINIO_SECURE: z
-    .string()
-    .transform((val) => val === "true")
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .transform((value) => (typeof value === "boolean" ? value : value === "true"))
     .default(false),
   MINIO_BUCKET_RAW: z.string().default("raw-retinas"),
   MINIO_BUCKET_GRADCAM: z.string().default("gradcam-overlays"),
+
+  // Storage provider selection. `minio` is the backward-compatible default;
+  // `azure` is explicit and validated lazily by the provider factory.
+  STORAGE_PROVIDER: z.enum(["minio", "azure"]).default("minio"),
+  // Optional logical id; defaults to `minio-local` or `azure-blob-default`.
+  STORAGE_ID: z.string().max(128).optional(),
+  // Signed URL lifetime. Integer seconds, 1..3600; legacy callers keep 3600.
+  STORAGE_DOWNLOAD_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3600)
+    .default(3600),
+  // Azure Blob account configuration. Empty/absent is valid for MinIO and is
+  // validated fail-closed only when STORAGE_PROVIDER=azure.
+  AZURE_STORAGE_ACCOUNT_URL: z.string().optional(),
+  AZURE_STORAGE_ACCOUNT_NAME: z.string().optional(),
+  AZURE_STORAGE_ACCOUNT_KEY: z.string().optional(),
 
   // Auth / JWT
   JWT_SECRET: z.string().default(KNOWN_DEV_JWT_SECRET),

@@ -113,15 +113,15 @@ Reglas:
 }
 ```
 
-- `storageId` resuelve provider, cuenta y endpoint desde configuración confiable del backend. El backend actual solo implementa S3/MinIO (`backend/src/services/storage.ts:1-98`); Azure Blob requiere la abstracción dual descrita en D13.
+- `storageId` resuelve provider, cuenta y endpoint desde configuración confiable del backend. El backend **CURRENT** implementa provider dual S3/MinIO y Azure Blob (`backend/src/services/storage.ts`, providers y factory); 3.2 tiene QA PASSED y conserva la API pública de `StorageService`.
 - La `key` se conserva **exactamente** como fue producida; no se normaliza de forma que cambie el objeto.
 - Prohibido persistir SAS, presigned URLs, claves personales o URLs externas arbitrarias.
 - El backend autoriza cada descarga y firma una URL nueva bajo demanda.
 - Si la URL expira, el frontend solicita otra; no la infiere ni la reconstruye.
 - El parser central acepta referencias legacy `s3://bucket/key` y `azure://container/key` sin `split` ingenuo: separa esquema, primer contenedor y key completa; valida contra ubicaciones allowlisted.
-- SAS de Azure debe ser read-only, sobre el objeto, HTTPS y de TTL corto configurable (propuesta técnica: 300 s por defecto). MinIO usa URL firmada equivalente. No se promete revocación inmediata: revocar una cuenta no revoca una URL ya emitida; un proxy revocable es una opción futura no implementada.
+- SAS de Azure debe ser read-only, sobre el objeto, HTTPS y de TTL configurable acotado. D5 mantiene 300 s como objetivo de 3.4/4.8; 3.2 conserva 3600 s por compatibilidad con los callers actuales (ver D22). MinIO usa URL firmada equivalente. No se promete revocación inmediata: revocar una cuenta no revoca una URL ya emitida; un proxy revocable es una opción futura no implementada.
 - La forma de referencia de artefacto es única en diseño, contrato y API: camelCase en el contrato clínico; los campos nulos son explícitos y solo `AVAILABLE` tiene `storageId`, `bucketOrContainer`, `key`, `contentType`, `sizeBytes` y checksum.
-- La abstracción de storage debe existir en backend y ML: Azure Blob con SAS read-only sobre objeto, HTTPS y existencia/verificación de upload; MinIO con presign equivalente y `ensure` de buckets. No se implementa un provider como caso especial del otro.
+- La abstracción de storage **CURRENT** existe en backend y ML: Azure Blob con SAS read-only sobre objeto, HTTPS, existencia/verificación de upload y `ensure` de solo lectura; MinIO con presign equivalente y `ensure` de buckets. D22/3.2 tienen QA PASSED; 3.8 sigue parcial hasta 3.4. No se implementa un provider como caso especial del otro.
 
 **Razón:** Persistir URLs firmadas filtra credenciales temporales en DB, logs, backups y PDFs, y las vuelve obsoletas de forma inevitable.
 
@@ -254,7 +254,7 @@ No incluye secretos ni URLs temporales. En una ruta exitosa normal no se usan re
 
 Las pruebas E2E cubren autenticación, paciente, consulta, upload sanitizado, request, polling, persistencia completa, artefactos firmados, feedback, export y completitud con PDF. Las pruebas que destruyen datos se ejecutan solo en una base creada o adoptada explícitamente para el run, con marcador de ownership, allowlist de target y denegación de producción; **el nombre que contiene `test` no es garantía suficiente**. El `global-setup` actual hace `DROP SCHEMA public CASCADE` (`backend/tests/global-setup.ts:40-47`): es un comportamiento destructivo del test actual, no una protección; no se ejecuta contra una base ajena o de desarrollo. En este change no se ejecuta ninguna. Los datos de prueba deben ser sintéticos o de un dataset de uso autorizado (por ejemplo PAPILA); no se usa PHI real sin base legal.
 
-La cobertura de storage dual incluye Azure fake/Azurite sin Azure real y un E2E posterior contra Azure real autenticado: imagen → backend Blob → descarga ML → mask/overlay → DB → PDF → URLs, incluyendo almacenes ausentes. Los tests de PDF parsean el PDF real, extraen texto, cuentan imágenes renderizadas y verifican encabezado/numeración de HU08; no se limitan a un mock de snapshot. Las unidades clínicas solo se muestran si su mapeo/codebook está verificado; un mapeo no demostrado bloquea la interpretación clínica de esa etiqueta, no la totalidad del contrato.
+La cobertura de storage dual incluye dobles de SDK y firma real offline con cuenta/clave sintéticas, sin Azure real, y un E2E posterior contra Azure real autenticado: imagen → backend Blob → descarga ML → mask/overlay → DB → PDF → URLs, incluyendo almacenes ausentes. Los tests de PDF parsean el PDF real, extraen texto, cuentan imágenes renderizadas y verifican encabezado/numeración de HU08; no se limitan a un mock de snapshot. Las unidades clínicas solo se muestran si su mapeo/codebook está verificado; un mapeo no demostrado bloquea la interpretación clínica de esa etiqueta, no la totalidad del contrato.
 
 **Metas RNF del SRS (no afirmaciones de cumplimiento):**
 
@@ -528,6 +528,55 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - Persistencia terminal condicional: si la ejecución ya está `COMPLETED`/`REVIEW_REQUIRED`/`FAILED`, no se sobrescribe con una entrega duplicada; el segundo intento es no-op idempotente. No se pierden `cdrVertical`, `quality`, `artifacts`, `elapsedSeconds` ni `modelVersions` ya disponibles. `modelVersion` se deriva de `modelVersions.manifest` ya fijado (o de las versiones reales del resultado); **nunca** `"v1"`. La persistencia completa y su exposición siguen en 4.2.
 - **NO** se actualiza `consultation.status` ni se auto-completa la consulta para ningún job, incluido legacy. REG-002/003/004 quedan mitigados/parcialmente cubiertos, **no** declarados resueltos.
 
+### D22. Proveedor de storage dual backend: MinIO/S3 por defecto y Azure Blob por SDK oficial (HITO20, tarea 3.2)
+
+**Decisión (aprobada por el usuario; implementación completada; QA final PASSED):** 3.2 introduce en el backend una abstracción explícita de provider para MinIO/S3 y Azure Blob sin cambiar el comportamiento local ni el contrato público actual de `StorageService`. QA final: focus storage **2 files / 36 tests** (35 + 1 QA de precedencia de validación), unit completo **33 files / 473 tests**, integración focal **3 files / 41 tests**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0). 3.2 queda cerrada `[x]`; 3.8 sigue `[ ]` parcial hasta 3.4.
+
+**Selección, fachada y compatibilidad**
+
+- `STORAGE_PROVIDER` acepta exactamente `minio` o `azure`. Ausente ⇒ `minio` (default retrocompatible). Cualquier otro valor ⇒ **fail closed** con error seguro, sin elegir un provider por defecto ni intentar firmar/leer.
+- Se conservan las firmas públicas y el export actual de `backend/src/services/storage.ts`: `getDownloadUrl`, `getMlDownloadUrl`, `upload`, `ensureBucket`, `getObjectStream` y `s3Client`. `s3Client` sigue siendo el cliente MinIO/S3; no se reutiliza como Azure.
+- `StorageService` actúa como fachada y delega en un `StorageProvider` resuelto por configuración confiable e inyección de dependencias. La construcción no abre red ni valida credenciales contra el proveedor; el provider se resuelve de forma perezosa y el default de unit tests sigue siendo MinIO, sin exigir configuración Azure.
+- La interfaz interna `StorageProvider` expone como mínimo `ensure`, `upload`, `sign`, `read` y `exists`. Un provider no debe simular una capacidad que no soporta; si una operación no aplica, falla de forma explícita y segura.
+- `storageId` es lógico y local a configuración: `minio-local` para MinIO y `azure-blob-default` para Azure. No se persiste ni se cambia el esquema de DB; 3.3 definirá el parser y la referencia estructurada que consumirá este `storageId`.
+
+**Azure Blob**
+
+- Se usa el SDK oficial `@azure/storage-blob` (hoy ausente). La autenticación usa `SharedKeyCredential` con la clave de cuenta; no se implementa firma SAS casera ni criptografía propia.
+- La configuración Azure es explícita: URL HTTPS de cuenta, nombre de cuenta y clave. No se leen `.env.azure`, cadenas de conexión existentes ni se asume una conexión ya creada. La `accountURL` debe ser HTTPS y coherente con el nombre de cuenta; si falta, es inválida o no es `AzureCloud`, falla de forma segura y **no** cae a MinIO.
+- `ensure` de Azure solo comprueba la existencia del contenedor; **nunca** lo crea. Contenedor ausente o error del SDK ⇒ fallo seguro, sin provisioning en runtime.
+- `upload` acepta `Buffer`/`Uint8Array` y un `contentType` no vacío y bien formado (rechaza controles/CRLF/whitespace-only), validado antes de cualquier I/O. Sube el objeto y verifica con `getProperties` que `contentLength` y `contentType` coinciden. Si el objeto no existe o los metadatos no coinciden, falla de forma segura y no devuelve una URL ficticia. **No** borra el objeto tras un mismatch post-upload: la reconciliación/limpieza de huérfanos pertenece a 3.5 y un borrado ciego podría destruir evidencia previa.
+- `sign` verifica primero que el objeto existe. Un objeto ausente se reporta como ausente; un error de permisos o de red **no** se confunde con un `404` ni se traga. El SAS es por objeto, con permisos read-only (`p=r` como abreviatura; el SDK oficial emite `sp=r`), `sr=b`, `spr=https` y expiración acotada; no concede otros permisos ni se emite a nivel de contenedor.
+- La expiración usa un reloj inyectable (`now`) para poder probar TTL de forma determinista. La clave y la configuración sensible no se exponen en logs, errores, URLs ni respuestas.
+- Managed Identity no se soporta en 3.2; queda anotado para 8.x. No se declara ni se asume permiso de provisioning en runtime. La QA de firma Azure es **solo offline con SDK real y clave sintética**: no se creó, modificó ni destruyó ningún recurso Azure.
+
+**MinIO/S3**
+
+- Se preservan el endpoint interno y el endpoint distinto de `ML_PUBLIC_HOST` con sus puertos: `sign` usa el cliente correspondiente y no mezcla ambos.
+- `ensure` usa `HeadBucket`: crea el bucket **solo** ante `404`/not found. Otros errores de permisos o de red se propagan de forma segura; no se declaran “inexistentes”. En creación concurrente se acepta `AlreadyOwnedByYou`; un `BucketAlreadyExists` de un bucket ajeno **no** se absorbe.
+- `upload` usa `PutObject` con `contentType` validado antes de I/O y verifica con `HeadObject` longitud y tipo. Si la verificación falla, no se declara éxito ni se borra el objeto; 3.5 decide la reconciliación. Un fallo genérico de `PutObject` se normaliza a `storage_upload_failed`; `401`/`403` conservan `storage_permission_denied`.
+- `read` devuelve un `Readable`. No se registran signed URLs, credenciales ni parámetros de firma.
+
+**TTL y deuda vigente**
+
+- `MINIO_SECURE` solo acepta booleanos reales o los strings exactos `true`/`false`; valores como `TRUE`, `yes`, `1`, vacío o con espacios fallan cerrado y nunca se convierten en `false` silenciosamente.
+- Los callers legacy conservan el default actual de 3600 s; no se modifica la cola de delivery antes de 4.8. Se añade configuración de TTL entero en el rango 1..3600 con default 3600; ese valor es **default, no cap**, y un override explícito del caller puede subir hasta 3600 aunque el default configurado sea menor.
+- La adopción de 300 s queda para 3.4/4.8 y **no** se promete en 3.2. D5 conserva 300 s como objetivo futuro; este apartado documenta la deuda sin cambiar defaults existentes.
+
+**Keys de objeto**
+
+- La key se preserva exactamente: espacios, `%`, Unicode y barras no se normalizan, no se decodifican con `decodeURI`, no se convierten a rutas de filesystem y no se parten de forma ingenua.
+- Si una representación de key no puede enviarse exactamente por el SDK (por ejemplo, segmentos completos `.` o `..`), se rechaza explícitamente con error seguro en vez de normalizarla en silencio. No se inventan reglas adicionales para keys codificadas o Unicode fuera de lo que el SDK no soporte.
+- No se aceptan bucket, contenedor, host ni endpoint desde input HTTP. La resolución es interna y confiable. La allowlist obligatoria de referencias no forma parte de 3.2; llega con 3.3.
+
+**Errores y fuera de alcance**
+
+- Las excepciones crudas del SDK se envuelven en un error genérico con código seguro; la causa queda privada/omitida. Nunca se exponen cuentas, URLs, claves, SAS ni detalles internos.
+- 3.2 **no** implementa el parser de artefactos (3.3), la ruta nueva de artefactos (3.4), el endurecimiento de logs (3.7), migraciones/cambios de DB ni modifica `storagePath` actual. Tampoco toca la cola de delivery (4.8), el storage ML (3.1) ni Azure real.
+- Tests de 3.8, parciales y dependientes de 3.4: dobles de SDK y firma real del SDK con cuenta/clave sintéticas sin red. Azure se valida por parsing del SAS (`sp=r` en el wire oficial; `p=r` es la abreviatura de D22), `sr=b`, `spr=https`, TTL con reloj inyectado y key/path exactos; MinIO por comandos del SDK y reloj fake. Se prueban `no fallback`, trampa de red, que el cliente S3 solo recibe llamadas MinIO, que Azure no crea contenedores y que los errores se propagan. Todo hermético, sin Azurite, Docker innecesario ni credenciales Azure.
+- La dependencia `@azure/storage-blob` solo se instala desde el registry permitido, sin modelos ni Azure CLI, y el lockfile se actualiza de forma acotada sin upgrades globales ni `audit fix` masivo. Los `.env.example`/README se actualizan en la implementación posterior, no en este turno documental.
+- 3.2 queda `[x]` con QA PASSED; 3.8 permanece `[ ]` y parcial, con dependencia de 3.4. 3.2 no cierra 3.8.
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |
@@ -558,7 +607,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | ADR-024 | Métricas RNF solo tras medición reproducible | agreed | D13, Risks |
 | ADR-025 | `requiredExecutionIds` explícitos y precedencia determinista de consulta | agreed | D3, D8 |
 | ADR-026 | `Idempotency-Key` obligatoria, replay del mismo `202` y modelo fijado | agreed | D7 |
-| ADR-027 | Abstracción dual de storage backend/ML (Azure Blob y MinIO) | agreed (implementación pendiente) | D5, D13 |
+| ADR-027 | Abstracción dual de storage backend/ML (Azure Blob y MinIO) | implemented (3.1 ML; 3.2 backend QA PASSED; 3.8 partial until 3.4) | D5, D13, D22 |
 | ADR-028 | B1: médico no convierte ejecución sin resultado válido en `COMPLETED`; revisión se resuelve por reanálisis con PDF independiente | agreed (restriction) | D8, B1 |
 | ADR-029 | B5: no hard delete en el hito; desactivación + revocación es la acción soportada | agreed (restriction) | D10, B5 |
 | ADR-030 | B3/B4/B5 solo aplican a producción real/purgas; desarrollo con datos sintéticos/PAPILA no se bloquea; fail closed con datos reales sin governance | agreed (scope) | D10, Open Questions |
@@ -578,6 +627,10 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | ADR-044 | 2.2: snapshot + inference `QUEUED` en una TX con relectura bajo locks; sin mutar `consultation.status`; fracaso post-commit queda pendiente de 4.6 y no se finge `202` | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
 | ADR-045 | 2.2: worker con processor DI sin Redis import side effect; `COMPLETED`/`REVIEW_REQUIRED`/`FAILED` terminales, revisión sin retry, persistencia condicional y validación de IDs/ojo/etiqueta | implemented (HITO19 QA PASSED; H1 PASSED) | D21 |
 | ADR-046 | 2.2 no cierra 2.4/4.2/4.3 ni resuelve REG-002/003/004; solo mitiga/parcializa y el registro humano permanece intacto | agreed (scope restriction) | D21 |
+| ADR-047 | 3.2: `STORAGE_PROVIDER=minio` default retrocompatible y `azure` explícito; desconocido fail closed; fachada `StorageService` con provider DI/lazy sin red al construir y firmas actuales preservadas | implemented (QA PASSED) | D22 |
+| ADR-048 | 3.2: Azure Blob vía `@azure/storage-blob` + `SharedKeyCredential`, SAS por objeto read-only (`sp=r` en el wire del SDK; `p=r` abreviatura de D22), `sr=b`, `spr=https` y expiración acotada; `ensure` solo verifica contenedor, upload verifica `getProperties` y sign verifica existencia; sin SAS casero ni fallback MinIO | implemented (QA PASSED) | D22 |
+| ADR-049 | 3.2: TTL actual 3600 preservado y configurable 1..3600 (default, no cap); 300 s queda para 3.4/4.8 y no se promete en 3.2 | implemented (QA PASSED; deuda 3.4/4.8) | D22 |
+| ADR-050 | 3.2: keys de objeto exactas sin normalización; representaciones no soportadas por el SDK se rechazan de forma explícita; `storageId` local por configuración sin cambio de DB | implemented (QA PASSED) | D22 |
 
 ## Risks / Trade-offs
 
@@ -612,6 +665,9 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | 2.2: entrega duplicada sobrescribe una ejecución terminal | Persistencia terminal condicional; si ya es `COMPLETED`/`REVIEW_REQUIRED`/`FAILED`, la segunda entrega es no-op. |
 | 2.2: reapertura o autocompletado de consulta cerrada | Se elimina toda mutación de `consultation.status` en creación/worker; la agregación y el PDF quedan en 2.3/6.x. |
 | 2.2: fallo post-commit de storage/cola | Estado pendiente explícito y `503` seguro; 4.6 aporta outbox/reconciliación y 4.4 la idempotencia. No se promete atomicidad Redis. |
+| 3.2: Azure mal configurado cae silenciosamente a MinIO | Selección `STORAGE_PROVIDER` explícita, validación de URL/nombre HTTPS y fail closed; tests de `no fallback`. |
+| 3.2: SAS demasiado amplio u objeto ausente con URL ficticia | SAS por objeto read-only (`sp=r` en el wire del SDK), `sr=b`, `spr=https` con expiración acotada; `sign` verifica `exists` y no traga permisos/red como `404`; tests de parsing y ausencia. |
+| 3.2: TTL 3600 difiere del objetivo 300 | Deuda explícita de 3.4/4.8; no se promete 300 en 3.2 ni se modifican callers legacy. |
 
 ## Migration Plan
 
@@ -619,7 +675,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 2. **Registro de regresiones:** crear `defects/regressions.md` con entradas solo estáticas y verificadas, distinguiendo activas y resueltas.
 3. **Esquema y migración:** añadir tablas/columnas de ejecución, evidencia, PDF, auditoría e idempotencia mediante migraciones incrementales; cambiar la resolución de `0_init` a un chequeo de esquema verificado, sin enmascarar fallos.
 4. **Compatibilidad:** mantener lectura de referencias legacy `s3://`/`azure://` y aceptar payloads clínicos con alias canónico; no romper clientes actuales sin aviso.
-5. **Storage:** implementar la abstracción dual backend/ML (Azure Blob y MinIO), `ensure` por provider, referencias estructuradas, verificación de existencia/upload y firma de descargas bajo demanda; conservar el comportamiento local actual.
+5. **Storage:** abstracción dual backend/ML (Azure Blob y MinIO) **CURRENT**; 3.2 backend QA PASSED (providers/factory, `ensure`, verificación de upload, SAS por objeto y fachada actual). Referencias estructuradas/parser 3.3 y ruta de descarga 3.4 siguen pendientes; conservar el comportamiento local actual.
 6. **ML/worker:** fijar contrato JSON, recuperación, persistencia completa, estados terminales y revisión; reintentos solo transitorios.
 7. **Seguridad:** cerrar registro público de rol, validar `is_active`, implementar ownership, bloqueo HU01, sesiones con `sessionId`/`tokenVersion`, protecciones del último admin y auditoría.
 8. **PDF:** generar básico idempotente y versionado con original sanitizada + mask + overlay embebidas; bloquear completitud si falta un artefacto obligatorio.
@@ -657,7 +713,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | Clases canónicas | `backend/src/schemas/common.ts:42-48`; `ml/service/schemas.py:19-27`. |
 | Estado de artefactos actual | `ml/inference/pipeline.py:163-183`; `backend/src/schemas/inference.ts:28-39`. |
 | Suite de pruebas destructiva | `backend/tests/global-setup.ts:40-47` (`DROP SCHEMA public CASCADE`); es comportamiento destructivo actual, no una salvaguarda; requiere DB creada/adoptada con ownership marker, allowlist de target y deny producción. |
-| Storage backend actual | `backend/src/services/storage.ts:1-98` solo S3/MinIO; Azure Blob no está implementado en backend y requiere abstracción dual. |
+| Storage backend actual | **CURRENT:** provider dual en `backend/src/services/storage.ts` + `storage-provider.ts`/`storage-minio.ts`/`storage-azure.ts`/`storage-factory.ts`; 3.2 QA PASSED, API `StorageService`/`s3Client` preservada. `storageId`/parser 3.3 y ruta 3.4 pendientes. |
 | Fixes ML de la rama | `ded48db`, `92a6887`; `e5d184a` es solo de `master`, subconjunto, y no se cherry-pickea a ciegas. |
 | Test runner destructivo | `backend/vitest.config.ts:6` fuerza `globalSetup`; `backend/tests/global-setup.ts:24-47` exige que el nombre contenga `test` y hace `DROP SCHEMA public CASCADE`. Un test focalizado no evita ese setup. Runbook: `contracts/testing-runbook.md`. |
 | Comandos actuales | `backend/package.json` scripts `test`, `typecheck`; `ml/pyproject.toml` pytest `testpaths=["tests"]`; `scripts/e2e-backend.ps1`, `scripts/test_azure_e2e.py`, `scripts/benchmark_latency.py`. No existe un script `e2e` en `package.json`. |

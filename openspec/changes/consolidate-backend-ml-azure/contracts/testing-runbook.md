@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED y 3.8 parcial FUTURO (§4.6) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -416,6 +416,41 @@
 
 **Riesgos residuales con dueño:** L1 retry transitorio agotado (BullMQ attempts 3) puede dejar `QUEUED` ⇒ **4.7**; L6 fallo de polling puede reenviar/resubmit ⇒ **4.4/4.6**; fallo storage/queue post-commit deja fila durable y `503` ⇒ **4.6**; agregados completos + PDF faltan ⇒ **2.3/6.x**; la huella identifica bytes, no certifica publisher ONNX; mutación de archivo de arranque entre load/hash queda fuera y no se promete universal; resultado `REVIEW_REQUIRED` desconocido/ajeno se descarta como review vacío sin datos ajenos, no se declara `FAILED` para todo parcial malo; L2 `P0001` no es alcanzable por los prechecks bajo locks y no se corrige. Guards/state machine fuera de 2.2; `defects/regressions.md` no se edita.
 
+## 1.23 Registro HITO20 - preparación documental 3.2 (sin ejecución)
+
+> **Naturaleza:** solo documentación. No se implementó código, no se instalaron dependencias, no se ejecutaron tests, no se usó Azure/MinIO real ni `.env` reales. 3.2 y 3.8 siguen `[ ]`; no se declara validación OpenSpec ni QA.
+
+| Elemento | Registro |
+|---|---|
+| Documentos | `design.md` D22/ADR-047..050 y riesgos; `specs/artifact-evidence/spec.md`; `tasks.md` 3.2/3.8; este runbook §4.6. |
+| Selección | `STORAGE_PROVIDER=minio` default retrocompatible; `azure` explícito; desconocido fail closed con error seguro. |
+| Compatibilidad | `StorageService` conserva `getDownloadUrl`, `getMlDownloadUrl`, `upload`, `ensureBucket`, `getObjectStream` y `s3Client`; fachada con `StorageProvider` DI/lazy y construcción sin red. |
+| Azure | SDK oficial `@azure/storage-blob` + `SharedKeyCredential`; config explícita HTTPS accountURL/name/key sin fallback MinIO; SAS por objeto read-only (`sp=r` en el wire del SDK; `p=r` abreviatura de D22), `sr=b`, `spr=https` y expiración acotada; `ensure` solo comprueba contenedor; upload verifica `getProperties`; sign verifica existencia y no traga permisos/red como `404`. Managed Identity queda para 8.x. |
+| MinIO | Endpoints interno y `ML_PUBLIC_HOST` distintos; `HeadBucket` crea solo en `404`/not found, acepta `AlreadyOwnedByYou` y no absorbe `BucketAlreadyExists` ajeno; upload verifica `HeadObject`; streams `Readable` sin logs de credenciales. |
+| Keys/TTL | Keys exactas sin normalización ni `decodeURI`; `.`/`..` completos se rechazan de forma explícita. TTL 1..3600 default 3600; callers legacy conservan 3600; 300 queda para 3.4/4.8. `storageId` `minio-local`/`azure-blob-default` sin cambio de DB. |
+| Código/tests | Ninguno. Sin `@azure/storage-blob` instalado, sin lockfile tocado, sin parser 3.3, ruta 3.4, logs 3.7, migración/DB ni `storagePath`. |
+| Límites | Sin QA, sin evidencia de verde y sin `openspec validate` afirmado. 3.8 es parcial y depende de 3.4. `.env.example`/README se actualizan en implementación posterior. |
+| Comandos | No ejecutados en este turno; §4.6 los deja como FUTURO. |
+
+## 1.24 Evidencia HITO20 - 3.2 provider dual (QA PASSED)
+
+> **Naturaleza:** implementación local y QA final de 3.2. Sin Azure real, Azurite, `.env.azure`, credenciales reales ni recursos cloud creados/destruidos. 3.2 queda `[x]` con QA PASSED; 3.8 sigue `[ ]` parcial y depende de 3.4.
+
+| Elemento | Evidencia |
+|---|---|
+| SDK | `@azure/storage-blob@12.32.0` (engines `>=20.0.0`), instalado desde el registry permitido y fijado exacto. Lockfile acotado; sin upgrades globales ni `audit fix`. |
+| API | `StorageProvider` con `ensure/upload/sign/read/exists`; `StorageService` conserva `ensureBucket/upload/getDownloadUrl/getMlDownloadUrl/getObjectStream` y export `s3Client`; factory DI/lazy sin red. Misma API pública existente. |
+| Config | `STORAGE_PROVIDER=minio` default/`azure` explícito; `STORAGE_ID` `minio-local`/`azure-blob-default`; `STORAGE_DOWNLOAD_TTL_SECONDS` 1..3600 default 3600 (default, no cap); Azure URL HTTPS/name/key explícitos y validados sin fallback. `MINIO_SECURE` solo booleanos o `true`/`false` exactos. |
+| Findings QA | F1 parseo estricto de `MINIO_SECURE`; F2 MinIO upload genérico -> `storage_upload_failed` (403 sigue `storage_permission_denied`); F3 `contentType` validado antes de I/O y sin borrado post-mismatch (3.5); V4 TTL default≠cap documentado. |
+| Azure | `ensure` solo `exists`; `uploadData` + `getProperties`; `sign` verifica `getProperties` antes del SAS. SAS real del SDK: `sp=r` (wire oficial; `p=r` es abreviatura de D22), `sr=b`, `spr=https`, `st`/`se` con reloj inyectado. Managed Identity para 8.x. |
+| MinIO | `HeadBucket` crea solo en 404, acepta `AlreadyOwnedByYou` y no absorbe `BucketAlreadyExists` ajeno; upload `HeadObject`; presign real offline con key exacta (incluye `a b%20c#d?e|f` decodificada una vez); `read` devuelve `Readable`. |
+| Tests focales | `npm --prefix backend run test:unit -- tests/unit/storage-provider.test.ts tests/unit/storage-service.test.ts` -> **2 files / 36 tests passed** (35 + 1 QA de precedencia de validación). |
+| Unit completo | `npm --prefix backend run test:unit` -> **33 files / 473 tests passed** (472 + 1 QA). |
+| Integración focal | `npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts` -> **3 files / 41 tests passed**, re-ejecutada final. Sin Azure/MinIO reales; storage mockeado. |
+| Estático | `npm --prefix backend run typecheck` -> **0**; `npm --prefix backend run build` -> **0** reutilizado del mismo source. |
+| Audit | `npm audit` **13** (8 moderate, 5 high), baseline **13** verificado en QA con temp HEAD; delta **0**, ningún advisory Azure; sin upgrades ni `audit fix`. |
+| Límites | QA PASSED, pero sin Azure real ni E2E cloud. La firma Azure fue solo offline con SDK real y clave sintética: no se creó, modificó ni destruyó ningún recurso Azure. 3.8 parcial por 3.4; 300 s no se adopta antes de 4.8. Un mismatch post-upload puede dejar el objeto sin reclamar como `AVAILABLE`; no se borra y la reconciliación pertenece a 3.5. No se tocaron rutas 3.4, parser 3.3, logs 3.7, DB/migraciones, `storagePath`, ML ni worker. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -586,6 +621,41 @@ npm --prefix backend run test:integration -- tests/inference-worker.integration.
 **Stop:** si un test necesita descargar/cargar pesos reales, Azure/`.env.azure`, PHI, DB compartida/producción, Redis real o un `MlClient` no inyectado. Si aparece un `context_mismatch`, no se “arregla” quitando el pin; se investiga el descriptor.
 
 **Criterio de salida:** A+B+C verdes con los comandos focalizados pre-H1 (A **30 passed** + relacionados 12 + 4; B unit **13 passed**, integración B **11 passed**; C unit **20 passed**, integración C **4 passed**; foco C+B+ACL+repos+rbac **65 passed**). **QA final global PASSED (baseline 31/437 y 25/469) y H1 PASSED**; post-H1 foco ML **45**, backend unit **15**, B+ACL **30**. Sin descarga de modelos, sin Redis real, sin secretos en salida ni recursos propios residuales. **2.2 cerrada**; no se declara un full post-H1 nuevo.
+
+### 4.6 Fase específica HITO20 — 3.2 provider dual (CURRENT; QA PASSED; 3.8 parcial)
+
+**Objetivo:** verificar la selección MinIO/Azure, la fachada `StorageService`, validación previa de inputs y firma/verificación por provider sin Azure real ni red.
+
+**Precondiciones:**
+
+- D22, `specs/artifact-evidence/spec.md` y `tasks.md` 3.2/3.8 revisados; 3.2 con QA PASSED; 3.4 pendiente para cerrar 3.8.
+- Tests con dobles de SDK y firma offline con cuenta/clave sintéticas; MinIO con comandos y reloj fake. Sin Azurite, Docker innecesario, credenciales Azure ni `.env` reales.
+- `@azure/storage-blob@12.32.0` instalado desde el registry permitido; lockfile acotado sin upgrades globales ni `audit fix`.
+
+**Comandos CURRENT (QA PASSED):**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/storage-provider.test.ts tests/unit/storage-service.test.ts
+npm --prefix backend run test:unit
+npm --prefix backend run typecheck
+# build: 0 reutilizado del mismo source en la QA final
+npm --prefix backend run build
+npm --prefix backend run test:integration -- tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts
+```
+
+**Casos mínimos verificados:**
+
+1. **Selección/fachada:** sin `STORAGE_PROVIDER` o `minio` ⇒ MinIO y firmas/`s3Client`/API actuales; `azure` ⇒ SDK oficial; desconocido ⇒ fail closed sin red. Construir `StorageService` no abre red ni exige credenciales Azure.
+2. **Config estricta:** `MINIO_SECURE` solo booleanos o `true`/`false` exactos; `TRUE`/`yes`/`1` fallan cerrado. TTL 1..3600 default 3600 (no cap); override explícito hasta 3600.
+3. **Azure upload/ensure:** `ensure` solo `exists` y nunca crea; validación de `contentType` antes de I/O; `upload` verifica `getProperties` (longitud/contentType) y falla sin URL si no coincide.
+4. **Azure SAS:** parsing de `sp=r` (wire oficial; `p=r` abreviatura), `sr=b`, `spr=https`, expiración acotada según reloj inyectado y key/path exactos, incluida `a b%20c#d?e|f`; sin permisos extra ni container-wide.
+5. **Azure sign/read:** objeto ausente ⇒ ausencia segura sin URL; permisos/red ⇒ error seguro, no `404` falso; `download` devuelve `Readable`.
+6. **MinIO:** `HeadBucket` crea solo en `404`, acepta `AlreadyOwnedByYou` y no absorbe `BucketAlreadyExists` ajeno; upload `Buffer`/`Uint8Array` + `contentType` valida y verifica `HeadObject`; fallo genérico de upload ⇒ `storage_upload_failed`, `403` ⇒ `storage_permission_denied`; endpoints interno/`ML_PUBLIC_HOST` no se mezclan.
+7. **Keys/mismatch:** espacios, `%`, Unicode, barras y `#`/`?` se preservan; `.`/`..` completos se rechazan explícitamente; un mismatch post-upload no borra el objeto y la reconciliación queda para 3.5; errores SDK genéricos sin causa pública.
+
+**Stop:** si un caso exige Azurite, Docker, Azure real, credenciales, `.env` reales, red o un provider forzado fuera de la configuración. Si aparece un fallback Azure→MinIO, una URL para un objeto ausente o un borrado post-mismatch, se detiene la fase.
+
+**Criterio de salida:** QA final PASSED con focus **2/36**, unit completo **33/473**, integración focal **3/41**, `typecheck` **0**, `build` **0** reutilizado del mismo source y audit **13** baseline **13** (delta 0, sin advisory Azure). **3.2 `[x]`**; 3.8 permanece parcial y depende de 3.4; 300 s no se adopta antes de 4.8. La firma Azure fue solo offline: no se creó, modificó ni destruyó ningún recurso Azure. Este runbook no declara validación OpenSpec.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 

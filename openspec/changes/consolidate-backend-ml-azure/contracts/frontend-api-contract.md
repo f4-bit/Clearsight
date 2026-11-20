@@ -327,7 +327,7 @@ El job interno lleva `expectedContext: { schemaVersion, fingerprintSha256 }` y `
 - `REVIEW_REQUIRED` no aprueba automáticamente ni permite `delivery.complete=true`; si la evidencia/PDF se sigue generando, el cliente continúa el polling hasta que la publicación conocida no tenga `PENDING`, sin convertir la revisión en éxito.
 - Polling: 2 s inicial, techo 10 s, `Retry-After`. Un timeout global configurable dispara aviso y no marca la inferencia como `FAILED` por sí solo.
 - Reportes: `reportId` + `version` inmutables; feedback/explicaciones nuevas crean nueva versión sin pisar la anterior.
-- Backend y ML deben abstraer **Azure Blob y MinIO/S3**. Azure usa SAS read-only sobre objeto, HTTPS y TTL; MinIO usa presign. El backend actual es solo S3/MinIO (`backend/src/services/storage.ts:1-98`); Azure no está implementado todavía y se marca como TARGET. Los tests de provider usan Azure fake/Azurite sin Azure real; el E2E real Azure queda condicionado a B6 (parcial, no deployment ready).
+- Backend **CURRENT** implementa provider dual **Azure Blob y MinIO/S3** y `StorageService` conserva la misma API pública (`ensureBucket`, `upload`, `getDownloadUrl`, `getMlDownloadUrl`, `getObjectStream`, export `s3Client`). Azure usa `@azure/storage-blob@12.32.0` con `SharedKeyCredential`, SAS read-only por objeto/HTTPS (`sp=r`, `sr=b`, `spr=https`) y TTL acotado; MinIO usa presign. Los tests de provider usan dobles de SDK y firma real offline con cuenta/clave sintéticas, sin Azure real, Azurite ni recursos creados/destruidos; el E2E real Azure queda condicionado a B6 (no deployment ready).
 
 ## 8. Estados agregados y precedencia
 

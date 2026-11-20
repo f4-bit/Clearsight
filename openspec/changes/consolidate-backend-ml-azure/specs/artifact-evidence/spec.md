@@ -64,25 +64,53 @@ El sistema SHALL persistir cada artefacto disponible mediante una referencia est
 
 ### Requirement: Abstracción de almacenamiento dual y firma por provider
 
-El sistema SHALL implementar una abstracción de almacenamiento tanto en backend como en ML para Azure Blob y MinIO/S3. Azure Blob MUST usar SAS read-only sobre el objeto, HTTPS, TTL corto configurable, verificación de existencia y verificación de upload. MinIO MUST usar presign equivalente y `ensure` de buckets. El sistema MUST NOT tratar un provider como caso especial del otro ni asumir que `ensure_buckets` de MinIO aplica a Azure.
+El sistema SHALL implementar una abstracción de almacenamiento tanto en backend como en ML para Azure Blob y MinIO/S3. El backend SHALL seleccionar el provider con `STORAGE_PROVIDER`: `minio` MUST ser el default retrocompatible y `azure` MUST ser explícito; cualquier otro valor MUST rechazarse fail closed con error seguro. `StorageService` MUST preservar sus firmas públicas y el export `s3Client` actuales, delegando en un `StorageProvider` interno (`ensure`, `upload`, `sign`, `read`, `exists`) resuelto por configuración confiable e inyección de dependencias. La construcción de la fachada MUST NOT abrir red ni exigir credenciales del proveedor; unit tests MUST poder construir el default MinIO sin configuración Azure.
 
-#### Scenario: Provider Azure
+Azure Blob MUST usar el SDK oficial `@azure/storage-blob` con `SharedKeyCredential`; MUST NOT implementar firma SAS casera ni criptografía propia. La configuración Azure MUST ser explícita con URL HTTPS de cuenta, nombre de cuenta y clave; si falta, es inválida, no es HTTPS o no es coherente con `AzureCloud`, el sistema MUST fallar de forma segura y MUST NOT caer a MinIO. Azure `ensure` MUST comprobar solo la existencia del contenedor y MUST NOT crearlo. Azure `upload` MUST validar un `contentType` no vacío y bien formado antes de I/O, y MUST verificar tras la subida la longitud y el `contentType` con `getProperties`; un mismatch post-upload MUST NOT borrar el objeto (la reconciliación es 3.5). Azure `sign` MUST verificar la existencia del objeto antes de firmar y MUST NOT interpretar un error de permisos o de red como objeto ausente. El SAS de Azure MUST ser por objeto, con permisos read-only (`p=r` como abreviatura; el SDK oficial emite `sp=r`), `sr=b`, `spr=https` y expiración acotada; MUST NOT conceder otros permisos ni emitirse a nivel de contenedor.
 
-- **WHEN** el storage configurado es Azure Blob
-- **THEN** backend y ML usan la abstracción Azure, verifican existencia/upload y firman SAS read-only HTTPS
-- **AND** no invocan `ensure_buckets` de MinIO.
+MinIO MUST conservar el endpoint interno y el endpoint distinto de `ML_PUBLIC_HOST` con sus puertos. MinIO `ensure` MUST crear el bucket solo ante `404`/not found, MUST aceptar `AlreadyOwnedByYou` en creación concurrente y MUST NOT absorber un `BucketAlreadyExists` de un bucket ajeno; otros errores de permisos o red MUST propagarse de forma segura. MinIO `upload` MUST validar `contentType` antes de I/O y verificar longitud y tipo con `HeadObject`; un mismatch post-upload MUST NOT borrar el objeto. MinIO `read` MUST devolver un `Readable`. `MINIO_SECURE` MUST aceptar solo booleanos reales o los strings exactos `true`/`false`; otros valores MUST fallar cerrado sin coerción silenciosa. Ningún provider MUST registrar signed URLs, credenciales, claves ni parámetros de firma.
 
-#### Scenario: Provider MinIO
+Las keys de objeto MUST conservarse exactamente, incluyendo espacios, `%`, Unicode y barras, sin normalización de filesystem ni `decodeURI`. Si una key no puede enviarse exactamente por el SDK (por ejemplo, segmentos completos `.` o `..`), el sistema MUST rechazarla explícitamente en vez de normalizarla en silencio. Bucket, contenedor, host y endpoint MUST provenir solo de configuración interna confiable, nunca de input HTTP. La allowlist obligatoria de referencias no forma parte de esta tarea; llega con 3.3.
 
-- **WHEN** el storage configurado es MinIO
-- **THEN** backend y ML usan presign y `ensure` de buckets
-- **AND** conservan el comportamiento local actual.
+El TTL de firma MUST ser configurable como entero en 1..3600 s con default 3600 s; el valor configurado es default, no cap, y un override explícito del caller MUST poder llegar hasta 3600 aunque el default sea menor. Los callers legacy MUST conservar 3600 s. La adopción de 300 s queda para 3.4/4.8 y MUST NOT prometerse en 3.2. `storageId` MUST resolverse por configuración local (`minio-local` para MinIO y `azure-blob-default` para Azure) sin cambio de esquema de DB. Azure y MinIO MUST NOT tratarse como casos especiales del otro ni asumir que `ensure_buckets` de MinIO aplica a Azure. Managed Identity queda fuera de 3.2 y anotada para 8.x.
 
-#### Scenario: Provider desconocido
+#### Scenario: Provider MinIO por defecto
 
-- **WHEN** la configuración de storage no corresponde a un provider soportado
-- **THEN** el sistema rechaza la operación con un error seguro
-- **AND** no intenta firmar ni descargar con supuestos implícitos.
+- **WHEN** no se configura `STORAGE_PROVIDER` o vale `minio`
+- **THEN** el backend usa MinIO/S3, conserva las firmas públicas y `s3Client`, y mantiene el comportamiento local actual
+- **AND** `ensure` solo crea el bucket ante `404`/not found y propaga otros errores de forma segura.
+
+#### Scenario: Provider Azure explícito
+
+- **WHEN** el storage configurado es Azure Blob con URL HTTPS, nombre y clave coherentes
+- **THEN** el backend usa la abstracción Azure con el SDK oficial y verifica existencia/upload, mientras ML conserva su abstracción Azure existente (3.1)
+- **AND** firman un SAS por objeto read-only (`sp=r` en el wire oficial; `p=r` abreviatura de D22), `sr=b`, `spr=https` y expiración acotada
+- **AND** `ensure` no crea contenedores y `sign` comprueba que el objeto existe.
+
+#### Scenario: Provider desconocido o Azure inválido
+
+- **WHEN** `STORAGE_PROVIDER` no es `minio`/`azure` o la configuración Azure es inválida
+- **THEN** el sistema falla de forma segura y no intenta firmar, leer ni descargar
+- **AND** no cae a MinIO ni abre una conexión de red para decidir el provider.
+
+#### Scenario: Upload Azure con objeto o metadatos inconsistentes
+
+- **WHEN** Azure sube un objeto y `getProperties` no coincide en longitud o `contentType`, o el objeto no existe
+- **THEN** la operación falla de forma segura
+- **AND** no se devuelve una URL ficticia ni se declara el artefacto disponible
+- **AND** no se borra el objeto; la reconciliación/limpieza posterior pertenece a 3.5.
+
+#### Scenario: Firma sobre objeto ausente o sin permisos
+
+- **WHEN** se intenta firmar una key cuyo objeto no existe
+- **THEN** el sistema reporta el objeto ausente sin inventar una URL
+- **AND** un error de permisos o de red se propaga como error seguro, no como `404` falso.
+
+#### Scenario: Key exacta o rechazo explícito
+
+- **WHEN** la key contiene espacios, `%`, Unicode, barras o una representación no soportada por el SDK
+- **THEN** el sistema conserva la key exacta o la rechaza explícitamente si no puede enviarla sin normalizar
+- **AND** no la convierte a ruta de filesystem, no la decodifica y no la normaliza en silencio.
 
 ### Requirement: Prohibición de persistir credenciales temporales y URLs arbitrarias
 

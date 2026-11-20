@@ -170,12 +170,18 @@
   - **Test:** `python -m pytest ml/tests/test_storage.py ml/tests/test_service.py ml/tests/test_azure_readiness.py -q`.
   - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, REG-001.
 
-- [ ] 3.2 Implementar abstracción dual en backend: Azure Blob y MinIO/S3.
-  - **Scope:** `backend/src/services/storage.ts` (hoy solo S3/MinIO, líneas 1-98), nuevo `backend/src/services/storage-provider.ts`; Azure SAS read-only objeto/HTTPS/TTL, verificación de existencia y upload; MinIO presign y `ensure`.
-  - **When/Then:** WHEN el provider es Azure THEN firma SAS read-only y verifica existencia/upload; WHEN es MinIO THEN usa presign y no asume API Azure; WHEN el provider es desconocido THEN rechaza.
+- [x] 3.2 Implementar abstracción dual en backend: Azure Blob y MinIO/S3.
+  - **Estado:** **QA final PASSED**. Focus storage **2 files / 36 tests** (35 + 1 QA de precedencia de validación), unit completo **33 files / 473 tests**, integración focal **3 files / 41 tests** re-ejecutada final, `typecheck` **0**, `build` **0** reutilizado del mismo source. Audit **13** baseline **13**, delta **0**, sin advisories Azure ni upgrades/`audit fix`. Evidencia: `contracts/testing-runbook.md` §1.24/§4.6.
+  - **Scope:** `backend/src/services/storage.ts` (antes solo S3/MinIO), nuevo `backend/src/services/storage-provider.ts`; dependencia oficial `@azure/storage-blob@12.32.0`, instalada solo desde el registry permitido; configuración `STORAGE_PROVIDER` y TTL de firma.
+  - **Contrato:** `STORAGE_PROVIDER=minio` (default retrocompatible) | `azure`; desconocido ⇒ fail closed con error seguro. Se preservan firmas públicas y `s3Client`: `getDownloadUrl`, `getMlDownloadUrl`, `upload`, `ensureBucket`, `getObjectStream`. `StorageService` es fachada que delega en `StorageProvider` (`ensure`, `upload`, `sign`, `read`, `exists`) resuelto por DI/config confiable; construcción sin red y default MinIO para unit tests. `storageId` local `minio-local`/`azure-blob-default` sin cambio de DB. TTL entero 1..3600, default 3600 (default, no cap); callers legacy conservan 3600 y 300 queda para 3.4/4.8.
+  - **Azure:** SDK oficial + `SharedKeyCredential` (sin SAS casero); config explícita HTTPS accountURL/name/key, coherente con `AzureCloud`; inválida ⇒ fail closed sin fallback MinIO. `ensure` solo comprueba contenedor y no crea. `upload` verifica `getProperties` (longitud/contentType). `sign` verifica `exists` antes de firmar, con SAS por objeto read-only (`sp=r` en el wire del SDK; `p=r` es la abreviatura de D22), `sr=b`, `spr=https`, expiración acotada y sin permisos extra ni container-wide; objeto ausente no genera URL y permisos/red no se confunden con `404`. Managed Identity queda para 8.x.
+  - **MinIO:** conserva endpoint interno y `ML_PUBLIC_HOST` distintos (puertos incluidos); `ensure` crea solo en `404`/not found, acepta `AlreadyOwnedByYou` y no absorbe `BucketAlreadyExists` ajeno; otros permisos/red se propagan seguros. `upload` usa `Buffer`/`Uint8Array` + `contentType` y verifica `HeadObject` (longitud/tipo); `read` devuelve `Readable`. Sin signed URLs ni credenciales en logs.
+  - **Keys/errores:** key exacta (espacios, `%`, Unicode, barras) sin normalización de filesystem ni `decodeURI`; representación no soportada por el SDK (segmentos completos `.`/`..`) se rechaza explícitamente. `contentType` no vacío y bien formado se valida antes de I/O; `MINIO_SECURE` solo booleanos o `true`/`false` exactos. Bucket/host nunca desde HTTP; allowlist obligatoria queda para 3.3. Excepción SDK cruda se envuelve en error genérico seguro con causa privada/omitida; sin cuentas, URLs, claves ni SAS en logs/errores.
+  - **When/Then:** WHEN el provider es Azure THEN firma SAS read-only por objeto/HTTPS/TTL y verifica existencia/upload; WHEN es MinIO THEN usa presign y `ensure` con el comportamiento actual; WHEN el provider es desconocido o la config Azure es inválida THEN rechaza de forma segura sin fallback; WHEN la key no puede enviarse exacta THEN rechaza explícitamente.
+  - **Fuera de alcance:** parser/referencia 3.3, ruta de artefactos 3.4, logs 3.7, cola delivery 4.8, migración/DB/`storagePath`, storage ML 3.1, Azure real/`.env`/secretos, Managed Identity y allowlist obligatoria.
   - **Depends on:** 0.3, 3.1.
-  - **Test:** tests nuevos de provider con `Azure fake/Azurite` y MinIO; `npm --prefix backend run test -- tests/repositories.test.ts`.
-  - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”.
+  - **Test:** **EJECUTADO (QA PASSED):** `npm --prefix backend run test:unit -- tests/unit/storage-provider.test.ts tests/unit/storage-service.test.ts` -> **2 files / 36 tests**; unit completo **33 files / 473 tests**; integración focal **3 files / 41 tests**; `typecheck`/`build` **0**. Casos MinIO con comandos/reloj fake y Azure con SAS real offline; no se creó/modificó/destruyó ningún recurso Azure. Sin Azurite, Docker innecesario ni credenciales Azure.
+  - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, “Referencia de artefacto estructurada y estable” (solo `storageId`/keys exactas).
 
 - [ ] 3.3 Implementar referencia estructurada única y parser legacy central.
   - **Scope:** nuevo `backend/src/services/artifact-reference.ts`; `backend/src/services/storage.ts`; `backend/src/schemas/inference.ts`.
@@ -185,7 +191,7 @@
   - **Coverage:** “Referencia de artefacto estructurada y estable”, “Compatibilidad de referencias legacy”.
 
 - [ ] 3.4 Implementar listado de artefactos y firma de descarga bajo demanda para ambos providers.
-  - **Scope:** nueva ruta `backend/src/routes/artifacts.ts`; `backend/src/services/storage.ts`; `backend/src/app.ts`; TTL configurable (300 s propuesto).
+  - **Scope:** nueva ruta `backend/src/routes/artifacts.ts`; `backend/src/services/storage.ts`; `backend/src/app.ts`; TTL configurable (300 s propuesto; el cambio de default se decide y verifica en 4.8; 3.2 conserva 3600).
   - **When/Then:** WHEN un usuario autorizado pide URL THEN el backend autoriza y firma; WHEN la URL expira THEN se pide nueva; WHEN no hay permisos THEN se deniega la nueva firma; WHEN el objeto falta THEN se marca inconsistencia.
   - **Depends on:** 3.2, 3.3.
   - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts tests/repositories.test.ts` con storage stub por provider.
@@ -211,12 +217,14 @@
   - **Test:** `npm --prefix backend run test -- tests/rbac.test.ts` con captura de logs.
   - **Coverage:** “Prohibición de persistir credenciales temporales y URLs arbitrarias”, “Auditoría append-only de acciones sensibles”.
 
-- [ ] 3.8 Tests de provider dual sin Azure real.
-  - **Scope:** tests nuevos con Azure fake/Azurite y MinIO; casos de SAS read-only, TTL, HTTPS, existencia, upload y store ausente.
-  - **When/Then:** WHEN corre la suite de provider THEN cubre ambos providers y fallos de store sin crear recursos Azure reales.
+- [ ] 3.8 Tests de provider dual sin Azure real (parcial; depende de 3.4).
+  - **Estado:** `[ ]` parcial. 3.2 tiene QA PASSED; 3.8 no se cierra hasta 3.4 y no adopta TTL 300 antes de 4.8.
+  - **Scope:** tests nuevos de `StorageProvider` con dobles de SDK y firma real offline con cuenta/clave sintéticas (sin red); MinIO con comandos de SDK y reloj fake; Azure con parsing de SAS y reloj inyectado. Sin Azurite, Docker innecesario, credenciales Azure ni `.env` reales.
+  - **When/Then:** WHEN corre la suite de provider THEN cubre ambos providers y fallos de store sin crear recursos Azure reales; WHEN Azure firma THEN el SAS se parsea con `sp=r` (wire oficial; `p=r` abreviatura de D22), `sr=b`, `spr=https`, TTL acotado según `now` y key/path exactos; WHEN el provider es desconocido o Azure inválido THEN no hay fallback ni llamada de red.
+  - **Casos mínimos:** default MinIO y firmas/`s3Client` preservados; `STORAGE_PROVIDER` desconocido fail closed; config Azure inválida sin fallback; `ensure` Azure solo `exists` sin create; upload Azure con `getProperties` (longitud/tipo) y fallo sin URL; `sign` con objeto ausente vs error de permisos/red; MinIO `HeadBucket` crea solo en `404`, acepta `AlreadyOwnedByYou` y no absorbe `BucketAlreadyExists` ajeno; upload MinIO verifica `HeadObject`; key exacta y rechazo explícito de `.`/`..`; TTL 1..3600 default 3600 y override validado; reloj inyectado; errores SDK genéricos sin causa pública.
   - **Depends on:** 3.2, 3.4.
-  - **Test:** comando nuevo de tests de integración de storage (prospectivo; no ejecutar en este change).
-  - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, “Reintento de publicación sin reinferir y consistencia con almacenamiento”.
+  - **Test:** Parcial actual: `tests/unit/storage-provider.test.ts` + `tests/unit/storage-service.test.ts` ya ejecutados (**2 files / 36 tests**); cierre final pendiente de 3.4. Sin integración Docker/Azurite para provider.
+  - **Coverage:** “Abstracción de almacenamiento dual y firma por provider”, “Prohibición de persistir credenciales temporales y URLs arbitrarias” (logs sin SAS), “Objeto ausente” (sin URL ficticia).
 
 ## 4. Contrato ML y orquestación
 
@@ -529,7 +537,7 @@
 | Precedencia de estados y `REPORT_PENDING` | “Estado agregado de consulta con precedencia determinista” | 2.3, 2.6, 4.10 | `npm --prefix backend run test -- tests/repositories.test.ts` (mezcla FAILED/REVIEW/running) |
 | Revisión terminal sin autoaprobar ni convertir | “Revisión humana terminal sin cierre automático”; “Reporte de revisión con limitación explícita” | 2.4, 6.3, D-01 | Worker stub; PDF de revisión; reanálisis con PDF independiente; B1 restricción aprobada |
 | Artefactos, estados y referencia única | “Catálogo de artefactos y obligatoriedad por ruta”; “Estado explícito por artefacto”; “Referencia de artefacto estructurada y estable” | 1.2, 3.3, 3.4 | `npm --prefix backend run test -- tests/schemas.test.ts tests/repositories.test.ts` |
-| Storage dual Azure/MinIO | “Abstracción de almacenamiento dual y firma por provider” | 3.1, 3.2, 3.8, 7.4 | Tests Azure fake/Azurite + MinIO; E2E real Azure condicionado a B6 (parcial, no deployment ready) |
+| Storage dual Azure/MinIO | “Abstracción de almacenamiento dual y firma por provider” | 3.1, 3.2, 3.8, 7.4 | **3.2 QA PASSED** (focus 2/36, unit 33/473, integración focal 3/41); 3.8 parcial pendiente de 3.4; E2E real Azure condicionado a B6 (no deployment ready) |
 | URLs firmadas, permisos y logs | “Autorización y firma de descargas bajo demanda”; “Prohibición de persistir credenciales temporales y URLs arbitrarias” | 3.4, 3.7 | `npm --prefix backend run test -- tests/rbac.test.ts` |
 | Contrato ML estricto | “Contrato público estricto del servicio ML” | 4.1 | `python -m pytest ml/tests/test_service.py -q` |
 | Idempotencia obligatoria y `202` recuperable | “Idempotencia persistida del backend” | 1.3, 4.4, 4.5 | Test nuevo de pérdida de `202`, replay y concurrencia |
