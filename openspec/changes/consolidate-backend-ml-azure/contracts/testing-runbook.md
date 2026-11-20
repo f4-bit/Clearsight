@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -493,6 +493,19 @@
 | Estático | `npm --prefix backend run typecheck` → **0 post-QA**; `npm --prefix backend run build` → **0 reutilizado**. |
 | Límites | Sin full integration/unit, sin Azure/E2E, sin PDF real ni migraciones. 3.5 publicación/reconciliación sigue pendiente y depende de 6.2; no se declara generador PDF implementado. URLs ya emitidas siguen válidas hasta su TTL; la ventana entre el último recheck y la respuesta HTTP no es atomicidad absoluta. |
 
+## 1.28 Evidencia HITO23 - 3.7 redacción de logs (CURRENT; QA PASSED)
+
+> **Naturaleza:** implementación local y QA final. Sin Azure/MinIO real, `.env`/credenciales reales, SRS, PDF, ML/worker, suite completa ni commit. **3.7 queda `[x]` con QA PASSED.**
+
+| Elemento | Evidencia |
+|---|---|
+| Documentos | `design.md` D24 (subsección de logs 3.7); `tasks.md` 3.7; este runbook §1.28/§4.9. |
+| Código | `lib/log-redaction.ts`: `req.url`/`req.originalUrl`/`req.query` censurados completos, variantes de casing de headers y `buildLoggerOptions`; `lib/not-found-handler.ts`: 404 genérico instalado en el root antes de plugins/rutas para evitar el mensaje `Route <method>:<url> not found` de Fastify; `app.ts`: logger único + `AppDeps.logDestination` (solo stream de test) + installer. Sin cambios de rutas, storage, auditoría, TTL ni contrato HTTP. |
+| Tests | Salida real de Fastify/Pino: 13 tests en `tests/unit/log-redaction.test.ts`; integración: 24 tests en `tests/artifact-downloads.integration.test.ts`. QA red: 6 regresiones (3 unit + 3 download) por `lib/four-oh-four.js:52-59` → `lib/log-controller.js:118-122`, que interpola `request.raw.url` en el mensaje. |
+| Comandos | Maker focus **3 files / 65 tests** antes de QA final; QA post **13 unit / 13** y **24 download / 24**; ACL/RBAC **2 files / 29 tests** reutilizado; `typecheck` **0**; `build` **0** mismo source. |
+| Estado | **3.7 `[x]` QA PASSED HITO23.** Las 6 regresiones QA rojas (`basic404` → `routeNotFound`) quedan verdes. 3.5/3.6 siguen pendientes de PDF 6.2. |
+| Límites | Sin full unit/integration, Azure/E2E ni correlación con métricas externas. Los logs internos de Fastify que interpolan strings fuera de `req`/`res` no se censuran de forma universal; no se modifica `node_modules` ni se añade un redactor de mensajes. El error handler global no es un redactor universal. Un eventual log de doble envío con URL no tiene trigger alcanzable en las rutas 3.4; se documenta sin abrir cambio interno del framework. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -760,7 +773,37 @@ npm --prefix backend run build
 
 **Stop:** si un caso exige Azure/Azurite, migraciones, SDK/red real, credenciales o suite completa; si aparece un fallback cross-provider, una URL para objeto ausente, un `AVAILABLE` inventado o una URL devuelta antes del commit de auditoría.
 
-**Criterio de salida:** **QA final PASSED**; **3.4 y 3.8 quedan `[x]`**. 3.8 se cerró reutilizando 3.2 SDK real offline + 3.4 auth/missing/storage/version, sin Azure/Azurite. 3.7/3.5 siguen unchecked; 3.5 publicación depende de 6.2 y no se declara generador PDF. URLs ya emitidas siguen válidas hasta su TTL (ventana entre el último recheck y la respuesta HTTP documentada, sin garantía absoluta).
+**Criterio de salida:** **QA final PASSED**; **3.4, 3.8 y 3.7 quedan `[x]`**. 3.8 se cerró reutilizando 3.2 SDK real offline + 3.4 auth/missing/storage/version, sin Azure/Azurite. 3.7 se cerró con QA PASSED HITO23. 3.5/3.6 siguen pendientes de PDF 6.2 y no se declara generador PDF. URLs ya emitidas siguen válidas hasta su TTL (ventana entre el último recheck y la respuesta HTTP documentada, sin garantía absoluta).
+
+### 4.9 Fase específica HITO23 - 3.7 redacción de logs (CURRENT; QA PASSED)
+
+**Objetivo:** probar la salida real de Fastify/Pino con un stream en memoria, no solo la lista de paths configurados, incluyendo los logs autogenerados por rutas/métodos no encontrados.
+
+**Precondiciones:** tests unitarios puros sin DB; integración con PostgreSQL owned de Testcontainers; storage mock; sin Azure/MinIO/red reales.
+
+**Comandos ejecutados:**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/log-redaction.test.ts tests/unit/artifact-reference.test.ts tests/schemas.test.ts
+npm --prefix backend run test:integration -- tests/artifact-downloads.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts
+npm --prefix backend run typecheck
+npm --prefix backend run build
+```
+
+**Resultados:** maker focus **3 files / 65 tests** antes de QA final; QA post **13 unit / 13** y **24 download / 24**; ACL/RBAC **2 files / 29 tests** reutilizado; `typecheck` **0**; `build` **0** mismo source. Las 6 regresiones QA rojas (3 unit + 3 download, `basic404` → `routeNotFound`) quedan verdes. Sin full suite.
+
+**Casos mínimos:**
+
+1. Query canary/SAS antes de validación (health `200`, sin auth `401`) no aparece en logs; se conservan `reqId`, método y status.
+2. Descarga `200`: URL firmada y locators solo en el body HTTP; logs sin URL/query/bucket/key y auditoría `ARTIFACT_URL_ISSUED` con `targetId`.
+3. Objeto ausente `409`, permiso/red `503` y auditoría caída `503`: logs sin canary/causa/locators; incidente solo cuando corresponde.
+4. Headers sensibles y `req.query` censurados también si un serializer los expone; variantes de casing de `Set-Cookie`/`Authorization`/`Cookie`/`Proxy-Authorization`.
+5. Logger deshabilitado por defecto: los tests existentes no escriben a stdout y solo el seam `logDestination` captura en memoria.
+6. Ruta de artefacto desconocida, path malformado y método no soportado devuelven `404` genérico sin eco de URL/query ni log `Route <method>:<url> not found`. Causa: `lib/four-oh-four.js:52-59` llama `logController.routeNotFound`; `lib/log-controller.js:118-122` interpola `request.raw.url` en el mensaje y la redacción por path no aplica a strings. Fix: `registerGenericNotFoundHandler` en el root antes de plugins/rutas.
+
+**Stop:** si la redacción exige regex sobre URL, un redactor universal, desactivar la redacción, Azure/red real o suite completa.
+
+**Criterio de salida:** **3.7 QA PASSED**; checkbox `[x]`. 3.5/3.6 siguen pendientes de PDF 6.2.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 

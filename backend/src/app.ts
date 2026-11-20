@@ -1,3 +1,4 @@
+import type { Writable } from "node:stream";
 import fastifyCors from "@fastify/cors";
 import fastifyJwt from "@fastify/jwt";
 import fastifyMultipart from "@fastify/multipart";
@@ -13,7 +14,8 @@ import {
 import { ZodError } from "zod";
 import { env, type Env } from "./config/env.js";
 import { HttpError } from "./lib/http-error.js";
-import { AUTH_LOG_REDACT_PATHS } from "./lib/log-redaction.js";
+import { buildLoggerOptions } from "./lib/log-redaction.js";
+import { registerGenericNotFoundHandler } from "./lib/not-found-handler.js";
 import { prisma as defaultPrisma, type PrismaClient } from "./lib/prisma.js";
 import { createRepositories } from "./repositories/index.js";
 import type { ArtifactReadRepository } from "./repositories/artifact.repo.js";
@@ -72,6 +74,11 @@ export interface AppDeps {
   /** Trusted test seam; the real client is built from the injected env. */
   mlClient?: ClinicalContextPreparer;
   logger?: boolean;
+  /**
+   * Trusted test seam for capturing real Pino output. Redaction paths are
+   * always applied; only the destination changes.
+   */
+  logDestination?: Writable;
   /** Explicit target schema shared by the auth service and the login guard. */
   databaseSchema?: string;
   /** Trusted clock seam shared by session issuance and login protection. */
@@ -121,18 +128,16 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
 
   const loggerEnabled = deps?.logger ?? (nodeEnv === "development" && !deps);
   const app = Fastify({
-    logger: loggerEnabled
-      ? {
-          redact: {
-            paths: [...AUTH_LOG_REDACT_PATHS],
-            censor: "[REDACTED]",
-          },
-        }
-      : false,
+    logger: loggerEnabled ? buildLoggerOptions(deps?.logDestination) : false,
     // request.ip is the actual socket peer; reverse-proxy XFF trust is a
     // deliberate future 8.x trusted-CIDR decision, never a global bypass.
     trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
+
+  // Install the generic 404 before plugins/routes. Fastify's default handler
+  // logs the raw URL as a message string, which Pino path redaction cannot
+  // scrub; unmatched paths/methods must not echo or log the request URL.
+  registerGenericNotFoundHandler(app);
 
   // 1. Zod compiler setup
   app.setValidatorCompiler(validatorCompiler);

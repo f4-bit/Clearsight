@@ -676,6 +676,16 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - El encargo puede dividirse en A (repositorio/lectores, `ArtifactReadScope`, filtro/orden/paginación) y B (HTTP, auth fresca post-I/O, auditoría, guard PDF/reporte y errores de storage), pero se implementa como un encargo cohesivo. Los tests usan fixture snapshot → inference → `ArtifactRecord AVAILABLE` → `PdfReport` respetando el SQL real.
 - 3.4 y 3.8 quedan cerradas con QA PASSED. 3.8 combina el SDK real offline de 3.2 con los tests de 3.4 (auth, objeto ausente, fallo de storage y versiones), sin Azure ni Azurite. La publicación/reconciliación 3.5 y las rutas `/reports` de 6.2 siguen pendientes; no se declara generador PDF implementado.
 
+**Logs de descarga (3.7; QA PASSED HITO23)**
+
+- La redacción de la URL es total, no selectiva: `req.url`, `req.originalUrl` y `req.query` se censuran completos en el logger. No se limpian `X-Amz-Signature`/SAS con expresiones regulares porque la query es adversarial y puede venir codificada; el `reqId`, método y status cubren la correlación operativa.
+- Se conservan las rutas de credenciales y se añaden variantes de casing para headers sensibles (`Authorization`, `Cookie`, `Proxy-Authorization`, `Set-Cookie`) como defensa si un serializer expone headers con otra capitalización. No se introduce un redactor universal de strings ni un framework nuevo.
+- `buildLoggerOptions` es la única configuración del logger; un test real de Fastify captura el stream Pino en memoria mediante el seam tipado `AppDeps.logDestination`. No existe una opción para desactivar la redacción y el logger sigue deshabilitado por defecto en tests.
+- Causa raíz del QA 3.7: el 404 stock de Fastify (`lib/four-oh-four.js:52-59`) llama `logController.routeNotFound`; `lib/log-controller.js:118-122` interpola `request.raw.url` en el mensaje `Route <method>:<url> not found`, que la redacción por path no puede limpiar. `registerGenericNotFoundHandler` se instala en el root público antes de plugins/rutas y responde `{ message: "Route not found", error: "Not Found", statusCode: 404 }` sin invocar `routeNotFound` ni ecoar URL/query en body/log; cubre ruta desconocida, path malformado y método no soportado. Los `400`/`401` de auth/schema ya seguros no cambian.
+- Límite residual: otros logs internos de Fastify que interpolan strings (fuera de `req`/`res`) no se censuran de forma universal; no se modifica `node_modules` ni se añade un redactor de mensajes. Un eventual log interno de doble envío con URL no tiene trigger alcanzable en las rutas 3.4 y queda documentado, sin abrir un cambio interno del framework.
+- Escenarios cubiertos: query canary antes de validación (health, `401`), descarga exitosa con URL firmada solo en el body, objeto ausente, permiso/red con secreto y fallo de auditoría. En todos, los logs conservan `reqId`/método/status y no incluyen URL, locators, SAS ni causa. Los tests usan la misma configuración de producción (`buildLoggerOptions` + installer 404), no un mirror.
+- QA final: maker focus **3 files / 65 tests** antes de QA; QA post **13 unit / 13** y **24 download / 24**; las 6 regresiones rojas de 404 (`basic404` → `routeNotFound`) quedan verdes. `typecheck`/`build` **0** reutilizados del mismo source. **3.7 queda `[x]` con QA PASSED.**
+
 ## ADR Registry
 
 | ID | Decisión | Estado | Fuente |

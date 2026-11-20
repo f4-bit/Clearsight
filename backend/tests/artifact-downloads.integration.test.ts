@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Writable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "../src/generated/prisma/client.js";
@@ -38,6 +39,43 @@ let headersAdmin: { authorization: string };
 let headersResearcher: { authorization: string };
 
 const TTL = 3600;
+
+interface LogCapture {
+  stream: Writable;
+  lines: string[];
+  text: () => string;
+  clear: () => void;
+}
+
+function createLogCapture(): LogCapture {
+  const lines: string[] = [];
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      lines.push(chunk.toString());
+      callback();
+    },
+  });
+  return {
+    stream,
+    lines,
+    text: () => lines.join(""),
+    clear: () => {
+      lines.length = 0;
+    },
+  };
+}
+
+function parsedLogs(capture: LogCapture): Array<Record<string, any>> {
+  return capture
+    .text()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, any>);
+}
+
+async function flushLogs(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+}
 
 function contextFor(bucket: string): ArtifactReferenceContext {
   return {
@@ -984,5 +1022,352 @@ describe("artifact read scope regression holes", () => {
     expect(repoSpy.findExact).not.toHaveBeenCalled();
     expect(repoSpy.findPublishedPdfReport).not.toHaveBeenCalled();
     expect(storage.getDownloadUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe("artifact download log redaction", () => {
+  let capture: LogCapture;
+  let logged: FastifyInstance;
+
+  beforeAll(async () => {
+    capture = createLogCapture();
+    logged = await buildTestApp(prisma, {
+      storage,
+      artifactReadRepository: repoSpy,
+      logger: true,
+      logDestination: capture.stream,
+    });
+  });
+
+  beforeEach(() => {
+    capture.clear();
+  });
+
+  afterAll(async () => {
+    await logged.close();
+  });
+
+  it("keeps reqId, method and status while censoring canary queries before validation", async () => {
+    const health = await logged.inject({
+      method: "GET",
+      url: "/health?X-Amz-Signature=CANARY_HEALTH_SIG&token=CANARY_HEALTH_TOKEN",
+    });
+    expect(health.statusCode).toBe(200);
+    await flushLogs();
+
+    const healthOutput = capture.text();
+    for (const leak of ["CANARY_HEALTH_SIG", "CANARY_HEALTH_TOKEN", "X-Amz-Signature"]) {
+      expect(healthOutput).not.toContain(leak);
+    }
+    let entries = parsedLogs(capture);
+    const healthIncoming = entries.find((entry) => entry.msg === "incoming request");
+    expect(healthIncoming).toMatchObject({
+      req: { method: "GET", url: "[REDACTED]" },
+    });
+    expect(typeof healthIncoming?.reqId).toBe("string");
+    expect(entries.find((entry) => entry.msg === "request completed")).toMatchObject({
+      reqId: healthIncoming?.reqId,
+      res: { statusCode: 200 },
+    });
+
+    capture.clear();
+    const unauthorized = await logged.inject({
+      method: "GET",
+      url: `/inferences/${randomUUID()}/artifacts/mask/url?version=1&X-Amz-Signature=CANARY_SIG&token=CANARY_TOKEN&encoded=https%3A%2F%2Fsecret.example%2Fobject`,
+    });
+    expect(unauthorized.statusCode).toBe(401);
+    await flushLogs();
+
+    const unauthorizedOutput = capture.text();
+    for (const leak of [
+      "CANARY_SIG",
+      "CANARY_TOKEN",
+      "X-Amz-Signature",
+      "secret.example",
+      "version=1",
+    ]) {
+      expect(unauthorizedOutput).not.toContain(leak);
+    }
+    entries = parsedLogs(capture);
+    expect(entries.find((entry) => entry.msg === "incoming request")).toMatchObject({
+      req: { method: "GET", url: "[REDACTED]" },
+    });
+    expect(entries.find((entry) => entry.msg === "request completed")).toMatchObject({
+      res: { statusCode: 401 },
+    });
+  });
+
+  it("returns a generic 404 body without echoing the request URL", async () => {
+    const res = await logged.inject({
+      method: "GET",
+      url: `/inferences/${randomUUID()}/artifacts/mask/unknown-action?X-Amz-Signature=CANARY_404_BODY_SIG&token=CANARY_404_BODY_TOKEN&encoded=https%3A%2F%2Fsecret.example`,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({
+      message: "Route not found",
+      error: "Not Found",
+      statusCode: 404,
+    });
+    expect(res.body).not.toContain("CANARY_404_BODY_SIG");
+    expect(res.body).not.toContain("X-Amz-Signature");
+    expect(res.body).not.toContain("/artifacts");
+
+    await flushLogs();
+    const output = capture.text();
+    for (const leak of [
+      "CANARY_404_BODY_SIG",
+      "CANARY_404_BODY_TOKEN",
+      "X-Amz-Signature",
+      "secret.example",
+      "/artifacts",
+    ]) {
+      expect(output).not.toContain(leak);
+    }
+    const completed = parsedLogs(capture).find(
+      (entry) => entry.msg === "request completed",
+    );
+    expect(completed).toMatchObject({ res: { statusCode: 404 } });
+  });
+
+  it("logs a successful download without the signed URL or locators", async () => {
+    const study = await seedStudy(doctorA.id);
+    const artifact = await makeArtifact(study.inference.id, "mask", 1, {
+      bucket: "mask-bucket",
+      key: "mask/v1.png",
+    });
+    vi.mocked(storage.getDownloadUrl).mockResolvedValueOnce(
+      "https://signed.example/mask/v1.png?X-Amz-Signature=CANARY_URL_SIG&token=CANARY_URL_TOKEN",
+    );
+
+    const res = await logged.inject({
+      method: "GET",
+      url: urlFor(study, "mask", "?version=1"),
+      headers: headersA,
+    });
+    expect(res.statusCode).toBe(200);
+    // The HTTP body legitimately carries the signed URL (3.4); only logs are
+    // restricted, so the response is asserted instead of hidden.
+    expect(res.json()).toMatchObject({
+      url: "https://signed.example/mask/v1.png?X-Amz-Signature=CANARY_URL_SIG&token=CANARY_URL_TOKEN",
+    });
+    await flushLogs();
+
+    const output = capture.text();
+    for (const leak of [
+      "CANARY_URL_SIG",
+      "CANARY_URL_TOKEN",
+      "signed.example",
+      "mask-bucket",
+      "mask/v1.png",
+    ]) {
+      expect(output).not.toContain(leak);
+    }
+    const entries = parsedLogs(capture);
+    const incoming = entries.find((entry) => entry.msg === "incoming request");
+    expect(incoming).toMatchObject({ req: { method: "GET", url: "[REDACTED]" } });
+    expect(entries.find((entry) => entry.msg === "request completed")).toMatchObject({
+      reqId: incoming?.reqId,
+      res: { statusCode: 200 },
+    });
+
+    const events = await auditRows("ARTIFACT_URL_ISSUED");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      targetType: "ARTIFACT",
+      targetId: artifact.id,
+      outcome: "SUCCESS",
+      metadata: { reasonCode: "AUTHORIZED_READ" },
+    });
+    expect(JSON.stringify(events[0]?.metadata)).not.toContain("mask/v1.png");
+    expect(JSON.stringify(events[0]?.metadata)).not.toContain("CANARY_URL_SIG");
+  });
+
+  it("logs missing, storage and audit failures without secrets or locators", async () => {
+    const study = await seedStudy(doctorA.id);
+    const artifact = await makeArtifact(study.inference.id, "mask", 1, {
+      bucket: "mask-bucket",
+      key: "mask/v1.png",
+    });
+    const auditArtifact = await makeArtifact(study.inference.id, "mask", 2, {
+      bucket: "mask-bucket",
+      key: "mask/v2.png",
+    });
+    const download = (version = 1) =>
+      logged.inject({
+        method: "GET",
+        url: urlFor(study, "mask", `?version=${version}`),
+        headers: headersA,
+      });
+
+    vi.mocked(storage.getDownloadUrl).mockRejectedValueOnce(
+      new StorageProviderError("storage_object_missing"),
+    );
+    const missing = await download();
+    expect(missing.statusCode).toBe(409);
+    await flushLogs();
+    const missingOutput = capture.text();
+    for (const leak of ["mask-bucket", "mask/v1.png", "CANARY"]) {
+      expect(missingOutput).not.toContain(leak);
+    }
+    expect(parsedLogs(capture).find((entry) => entry.msg === "request completed")).toMatchObject({
+      res: { statusCode: 409 },
+    });
+    const incidents = await auditRows("ARTIFACT_OBJECT_MISSING");
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({ targetId: artifact.id, outcome: "FAILURE" });
+
+    capture.clear();
+    vi.mocked(storage.getDownloadUrl).mockRejectedValueOnce(
+      new Error(
+        "CANARY_SECRET https://secret.example/object?sig=CANARY_SIG&token=CANARY_TOKEN",
+      ),
+    );
+    const failed = await download();
+    expect(failed.statusCode).toBe(503);
+    expect(failed.body).not.toContain("CANARY_SECRET");
+    expect(failed.body).not.toContain("secret.example");
+    await flushLogs();
+    const failedOutput = capture.text();
+    for (const leak of [
+      "CANARY_SECRET",
+      "CANARY_SIG",
+      "CANARY_TOKEN",
+      "secret.example",
+      "mask-bucket",
+      "mask/v1.png",
+    ]) {
+      expect(failedOutput).not.toContain(leak);
+    }
+    expect(parsedLogs(capture).find((entry) => entry.msg === "request completed")).toMatchObject({
+      res: { statusCode: 503 },
+    });
+
+    capture.clear();
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE audit_events ADD CONSTRAINT qa_fail_artifact_log CHECK (target_id IS DISTINCT FROM '${auditArtifact.id}'::uuid)`,
+    );
+    try {
+      const auditFailure = await download(2);
+      expect(auditFailure.statusCode).toBe(503);
+      expect(auditFailure.body).not.toContain("https://signed.example");
+      await flushLogs();
+      const auditOutput = capture.text();
+      for (const leak of [
+        "https://signed.example",
+        "mask-bucket",
+        "mask/v1.png",
+        "mask/v2.png",
+        "CANARY",
+      ]) {
+        expect(auditOutput).not.toContain(leak);
+      }
+      expect(
+        parsedLogs(capture).find((entry) => entry.msg === "request completed"),
+      ).toMatchObject({ res: { statusCode: 503 } });
+    } finally {
+      await prisma.$executeRawUnsafe(
+        "ALTER TABLE audit_events DROP CONSTRAINT qa_fail_artifact_log",
+      );
+    }
+  });
+
+  // Gap HITO23/3.7: autogenerated framework logs on failure paths. Pino
+  // redact.paths cannot censor Fastify's "route not found" message, which
+  // interpolates the raw request URL (lib/log-controller.js routeNotFound).
+  const CANARY_Q =
+    "?X-Amz-Signature=CANARY_SIG&token=CANARY_TOKEN&encoded=https%3A%2F%2Fsecret.example%2Fobject%3Fsig%3DCANARY_ENC";
+  const URL_LEAKS = [
+    "CANARY_SIG",
+    "CANARY_TOKEN",
+    "CANARY_ENC",
+    "X-Amz-Signature",
+    "secret.example",
+    "/artifacts",
+  ];
+
+  function expectAutogeneratedLogsClean(
+    capture: LogCapture,
+    method: string,
+    statusCode: number,
+  ): void {
+    const output = capture.text();
+    for (const leak of URL_LEAKS) {
+      expect(output).not.toContain(leak);
+    }
+    const entries = parsedLogs(capture);
+    expect(entries.find((entry) => entry.msg === "incoming request")).toMatchObject(
+      { req: { method, url: "[REDACTED]" } },
+    );
+    const completed = entries.find((entry) => entry.msg === "request completed");
+    expect(completed).toMatchObject({ res: { statusCode } });
+    expect(completed?.reqId).toBe(
+      entries.find((entry) => entry.msg === "incoming request")?.reqId,
+    );
+    expect(typeof completed?.reqId).toBe("string");
+  }
+
+  it("keeps unknown artifact action 404s out of the autogenerated logs", async () => {
+    const res = await logged.inject({
+      method: "GET",
+      url: `/inferences/${randomUUID()}/artifacts/mask/unknown-action${CANARY_Q}`,
+      headers: headersA,
+    });
+    expect(res.statusCode).toBe(404);
+    await flushLogs();
+    expectAutogeneratedLogsClean(capture, "GET", 404);
+  });
+
+  it("keeps malformed artifact path 404s out of the autogenerated logs", async () => {
+    const res = await logged.inject({
+      method: "GET",
+      url: `/inferences/${randomUUID()}/artifacts/mask${CANARY_Q}`,
+      headers: headersA,
+    });
+    expect(res.statusCode).toBe(404);
+    await flushLogs();
+    expectAutogeneratedLogsClean(capture, "GET", 404);
+  });
+
+  it("keeps wrong-method download requests out of the autogenerated logs", async () => {
+    // Fastify resolves a method mismatch through the not-found handler
+    // (fastify/fastify#862): 404 on the wire, same routeNotFound log path.
+    const res = await logged.inject({
+      method: "POST",
+      url: `/inferences/${randomUUID()}/artifacts/mask/url${CANARY_Q}`,
+      headers: headersA,
+    });
+    expect(res.statusCode).toBe(404);
+    await flushLogs();
+    expectAutogeneratedLogsClean(capture, "POST", 404);
+  });
+
+  it("rejects hostile query keys without changing authorization or audit semantics", async () => {
+    // A CSRF-style hostile query must not alter authorization outcomes.
+    const unauth = await logged.inject({
+      method: "GET",
+      url: `/inferences/${randomUUID()}/artifacts/mask/url${CANARY_Q}`,
+    });
+    expect(unauth.statusCode).toBe(401);
+    expect(await auditRows("ARTIFACT_URL_ISSUED")).toHaveLength(0);
+    expect(await auditRows("ARTIFACT_OBJECT_MISSING")).toHaveLength(0);
+
+    capture.clear();
+    // A valid version plus unknown keys fails the strict query schema: the
+    // hostile URL neither smuggles a success nor writes audit events.
+    const strict = await logged.inject({
+      method: "GET",
+      url: `/inferences/${randomUUID()}/artifacts/mask/url?version=1&X-Amz-Signature=CANARY_SIG&token=CANARY_TOKEN&encoded=https%3A%2F%2Fsecret.example%2Fobject`,
+      headers: headersA,
+    });
+    expect(strict.statusCode).toBe(400);
+    expect(strict.json()).toMatchObject({
+      error: "bad_request",
+      message: "A positive artifact version is required",
+      statusCode: 400,
+    });
+    await flushLogs();
+    expectAutogeneratedLogsClean(capture, "GET", 400);
+    expect(await auditRows("ARTIFACT_URL_ISSUED")).toHaveLength(0);
+    expect(await auditRows("ARTIFACT_OBJECT_MISSING")).toHaveLength(0);
   });
 });

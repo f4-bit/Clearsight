@@ -1,3 +1,4 @@
+import type { Writable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import type { PrismaClient } from "../../src/lib/prisma.js";
@@ -32,6 +33,8 @@ export async function buildTestApp(
     mlClient?: ClinicalContextPreparer;
     storage?: ArtifactStoragePort;
     artifactReadRepository?: ArtifactReadRepository;
+    logger?: boolean;
+    logDestination?: Writable;
   } = {},
 ): Promise<FastifyInstance> {
   const app = await buildApp({
@@ -42,6 +45,8 @@ export async function buildTestApp(
     mlClient: options.mlClient ?? createFakeMlClient(),
     storage: options.storage,
     artifactReadRepository: options.artifactReadRepository,
+    logger: options.logger,
+    logDestination: options.logDestination,
   });
   await app.ready();
   return app;
