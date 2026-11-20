@@ -39,6 +39,12 @@ export function createInferenceRepository(db: Db) {
           predictedClass: result.predictedClass,
           confidence: result.confidence,
           probabilities: result.probabilities as JsonObject,
+          ...(result.modelVersions !== undefined && {
+            modelVersions: result.modelVersions as JsonObject,
+          }),
+          ...(result.modelPredictions !== undefined && {
+            modelPredictions: result.modelPredictions as JsonObject,
+          }),
           cdr: result.cdr,
           cdrVertical: result.cdrVertical,
           quality: (result.quality ?? {}) as JsonObject,

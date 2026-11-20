@@ -185,6 +185,95 @@ describe("MlClient", () => {
         modelVersions: { resnet50: "repo@revision" },
       },
     });
+    expect(status.result?.modelPredictions.resnet50?.probabilities).toEqual({
+      Glaucoma: 0.8,
+      Non_Glaucoma: 0.2,
+    });
+  });
+
+  it("preserves prototype-named wire records from real JSON without mutating input", async () => {
+    const inferenceId = crypto.randomUUID();
+    const modelPredictions = JSON.parse(
+      '{"__proto__":{"probabilities":{"Glaucoma":0.8,"Non_Glaucoma":0.1,"Suspicious_Glaucoma":0.1,"__proto__":0},"predicted_class":"Glaucoma","confidence":0.8}}',
+    );
+    const modelVersions = JSON.parse('{"__proto__":"repo@revision"}');
+    const payload = {
+      inference_id: inferenceId,
+      job_id: inferenceId,
+      status: "COMPLETED",
+      stage: "COMPLETED",
+      message: null,
+      result: {
+        inference_id: inferenceId,
+        eye_side: "OD",
+        label: "Glaucoma",
+        confidence: 0.8,
+        probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+        model_predictions: modelPredictions,
+        cdr: 0.4,
+        cdr_vertical: 0.45,
+        quality: { review_required: false },
+        artifacts: { mask: "s3://masks/mask.png" },
+        model_versions: modelVersions,
+        elapsed_seconds: 1.2,
+      },
+    };
+    const before = JSON.stringify(payload);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+    const client = new MlClient({ baseUrl: "https://ml.test", apiToken: null });
+
+    const status = await client.getJobStatus(inferenceId);
+    const parsedResult = status.result;
+    expect(parsedResult).not.toBeNull();
+    if (!parsedResult) throw new Error("missing parsed result");
+
+    expect(
+      Object.prototype.hasOwnProperty.call(parsedResult.modelPredictions, "__proto__"),
+    ).toBe(true);
+    expect(
+      Object.prototype.hasOwnProperty.call(parsedResult.modelVersions, "__proto__"),
+    ).toBe(true);
+    const prototypePrediction = parsedResult.modelPredictions["__proto__"];
+    expect(prototypePrediction?.predictedClass).toBe("Glaucoma");
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        prototypePrediction?.probabilities,
+        "__proto__",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(payload)).toBe(before);
+  });
+
+  it("rejects malformed prototype-named wire values before copying", async () => {
+    const inferenceId = crypto.randomUUID();
+    const modelVersions = JSON.parse('{"__proto__":123}');
+    const payload = {
+      inference_id: inferenceId,
+      job_id: inferenceId,
+      status: "COMPLETED",
+      stage: "COMPLETED",
+      message: null,
+      result: {
+        inference_id: inferenceId,
+        eye_side: "OD",
+        label: "Glaucoma",
+        confidence: 0.8,
+        probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+        model_predictions: {},
+        cdr: 0.4,
+        cdr_vertical: 0.45,
+        quality: { review_required: false },
+        artifacts: { mask: "s3://masks/mask.png" },
+        model_versions: modelVersions,
+        elapsed_seconds: 1.2,
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+    const client = new MlClient({ baseUrl: "https://ml.test", apiToken: null });
+
+    await expect(client.getJobStatus(inferenceId)).rejects.toBeInstanceOf(
+      MlClientError,
+    );
   });
 
   it("rejects an invalid status/result wire without exposing its body", async () => {

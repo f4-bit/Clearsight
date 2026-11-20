@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ml.config import Settings, get_settings
@@ -17,6 +17,7 @@ from ml.inference.classification import ClassificationEngine, ClassificationRunn
 from ml.inference.onnx_serving import OnnxClassificationRunner
 from ml.inference.pipeline import InferencePipeline
 from ml.inference.segmentation import SegmentationRunner
+from ml.inference.url_policy import SignedImageUrlError, validate_signed_image_url
 from ml.models.registry import artifact_spec, ensure_artifact, load_manifest
 from ml.service.context import (
     ClinicalContextError,
@@ -48,6 +49,7 @@ class Runtime:
     queue: Any
     context: RuntimeContext | None = None
     context_error: str | None = None
+    settings: Settings | None = None
 
 
 def build_runtime(settings: Settings) -> Runtime:
@@ -123,6 +125,7 @@ def build_runtime(settings: Settings) -> Runtime:
         queue=create_job_queue(settings),
         context=context,
         context_error=context_error,
+        settings=settings,
     )
 
 
@@ -149,10 +152,16 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
     )
     bearer = HTTPBearer(auto_error=False)
 
+    def current_settings() -> Settings:
+        runtime = getattr(application.state, "runtime", None)
+        if runtime is not None and runtime.settings is not None:
+            return runtime.settings
+        return get_settings()
+
     async def require_service_token(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     ) -> None:
-        settings = get_settings()
+        settings = current_settings()
         if not settings.api_token:
             return
         if credentials is None or not hmac.compare_digest(
@@ -171,7 +180,11 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
             raise HTTPException(status_code=503, detail=error)
         return runtime
 
-    @application.post(
+    # Keep compatibility with existing clients that send valid JSON without a
+    # Content-Type header, while still rejecting multipart bodies as 422.
+    inference_router = APIRouter(strict_content_type=False)
+
+    @inference_router.post(
         "/v1/inferences",
         response_model=JobAccepted,
         status_code=status.HTTP_202_ACCEPTED,
@@ -179,6 +192,15 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
     )
     async def create_inference(request: InferenceRequest) -> JobAccepted:
         runtime = current_runtime()
+        settings = current_settings()
+        try:
+            validate_signed_image_url(
+                request.image_url,
+                allowed_signed_url_hosts=settings.allowed_signed_url_hosts,
+                allow_http_signed_urls=settings.allow_http_signed_urls,
+            )
+        except SignedImageUrlError as error:
+            raise HTTPException(status_code=422, detail=error.code) from error
         if request.expected_context is not None:
             try:
                 verify_expected_context(
@@ -273,7 +295,7 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
             )
         return {
             "status": "ready",
-            "device": get_settings().device,
+            "device": current_settings().device,
             "model_version": runtime.pipeline.manifest["version"],
         }
 
@@ -282,6 +304,7 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
         content, content_type = metrics_response()
         return Response(content=content, media_type=content_type)
 
+    application.include_router(inference_router)
     return application
 
 

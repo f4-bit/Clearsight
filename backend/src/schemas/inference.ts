@@ -34,11 +34,21 @@ export const RepoInferenceCreate = z.object({
 });
 export type InferenceCreate = z.input<typeof RepoInferenceCreate>;
 
+export const modelPredictionSchema = z.object({
+  probabilities: z.record(z.string(), z.number()),
+  predictedClass: z.string(),
+  confidence: z.number(),
+});
+
+export type ModelPrediction = z.infer<typeof modelPredictionSchema>;
+
 /** What the worker writes back when the ML service finishes (InferenceResult). */
 export const InferenceResultUpdate = z.object({
   predictedClass: DiagnosticClass.nullable(),
   confidence: z.number().min(0).max(1).nullable(),
   probabilities: Probabilities,
+  modelVersions: z.record(z.string(), z.string()).optional(),
+  modelPredictions: z.record(z.string(), modelPredictionSchema).optional(),
   cdr: z.number().nullable(),
   cdrVertical: z.number().nullable(),
   quality: z.record(z.string(), z.unknown()).default({}),
@@ -49,14 +59,6 @@ export const InferenceResultUpdate = z.object({
   status: JobStatus.nullish(),
 });
 export type InferenceResultUpdate = z.input<typeof InferenceResultUpdate>;
-
-export const modelPredictionSchema = z.object({
-  probabilities: z.record(z.string(), z.number()),
-  predictedClass: z.string(),
-  confidence: z.number(),
-});
-
-export type ModelPrediction = z.infer<typeof modelPredictionSchema>;
 
 export const inferenceResultSchema = z.object({
   inferenceId: z.string().uuid(),

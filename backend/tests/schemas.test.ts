@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { CLASS_LABELS } from "../src/schemas/common.js";
+import {
+  CLASS_LABEL_INDEX,
+  CLASS_LABELS,
+  canonicalClassIndex,
+} from "../src/schemas/common.js";
 import { CLINICAL_FEATURE_NAMES, ClinicalFeaturesSchema, ClinicalSnapshotCreateSchema, extractClinicalFeatures } from "../src/schemas/clinical.js";
 import { FeedbackCreate } from "../src/schemas/feedback.js";
 import {
@@ -10,6 +14,7 @@ import {
   ArtifactRefSchema,
   ArtifactUrlQuerySchema,
   ArtifactUrlSchema,
+  InferenceResultUpdate,
   patientCreateSchema,
   registerRequestSchema,
 } from "../src/schemas/index.js";
@@ -20,6 +25,100 @@ const base = () => ({ consultation_id: randomUUID(), inference_id: randomUUID(),
 describe("class vocabulary", () => {
   it("follows the ML manifest order (0 = Glaucoma, not Normal)", () => {
     expect([...CLASS_LABELS]).toEqual(["Glaucoma", "Non_Glaucoma", "Suspicious_Glaucoma"]);
+  });
+
+  it("derives the canonical index from CLASS_LABELS", () => {
+    expect(CLASS_LABEL_INDEX).toEqual({
+      Glaucoma: 0,
+      Non_Glaucoma: 1,
+      Suspicious_Glaucoma: 2,
+    });
+  });
+
+  it("maps only canonical labels and bounded legacy casing", () => {
+    expect(canonicalClassIndex("Glaucoma")).toBe(0);
+    expect(canonicalClassIndex("Non_Glaucoma")).toBe(1);
+    expect(canonicalClassIndex("Suspicious_Glaucoma")).toBe(2);
+    expect(canonicalClassIndex("glaucoma")).toBe(0);
+    expect(canonicalClassIndex("NON_GLAUCOMA")).toBe(1);
+    expect(canonicalClassIndex("suspicious_glaucoma")).toBe(2);
+    expect(canonicalClassIndex("GlAuCoMa")).toBe(0);
+  });
+
+  it("returns null for unknown, non-string and prototype keys", () => {
+    for (const value of [
+      "unknown",
+      "",
+      " glaucoma",
+      "glaucoma ",
+      "__proto__",
+      "constructor",
+      "toString",
+      null,
+      undefined,
+      {},
+      [],
+      Object.create({ Glaucoma: 0 }),
+      0,
+      false,
+    ]) {
+      expect(canonicalClassIndex(value)).toBeNull();
+    }
+  });
+});
+
+describe("InferenceResultUpdate model details", () => {
+  const update = () => ({
+    predictedClass: 0,
+    confidence: 0.8,
+    probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+    cdr: 0.4,
+    cdrVertical: 0.45,
+    elapsedSeconds: 1.2,
+  });
+
+  it("accepts and preserves the actual versions and camelCase predictions", () => {
+    const parsed = InferenceResultUpdate.parse({
+      ...update(),
+      modelVersions: {
+        manifest: "2026-09-24",
+        efficientnet_b3: "repo/efficientnet_b3@revision",
+      },
+      modelPredictions: {
+        efficientnet_b3: {
+          probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+          predictedClass: "Glaucoma",
+          confidence: 0.8,
+        },
+      },
+    });
+
+    expect(parsed.modelVersions).toEqual({
+      manifest: "2026-09-24",
+      efficientnet_b3: "repo/efficientnet_b3@revision",
+    });
+    expect(parsed.modelPredictions).toEqual({
+      efficientnet_b3: {
+        probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+        predictedClass: "Glaucoma",
+        confidence: 0.8,
+      },
+    });
+  });
+
+  it("rejects malformed model predictions without coercing classifications", () => {
+    const result = InferenceResultUpdate.safeParse({
+      ...update(),
+      modelPredictions: {
+        efficientnet_b3: {
+          probabilities: { Glaucoma: 0.8 },
+          predictedClass: 0,
+          confidence: 0.8,
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
   });
 });
 

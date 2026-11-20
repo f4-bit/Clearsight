@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import fnmatch
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
@@ -29,31 +27,12 @@ from ml.inference.postprocessing import (
     segmentation_quality,
 )
 from ml.inference.segmentation import SegmentationRunner
+from ml.inference.url_policy import host_is_allowed, validate_signed_image_url
 from ml.service.context import RuntimeContext, verify_expected_context
 from ml.service.schemas import InferenceRequest, JobStatus
 from ml.service.storage import ArtifactStore
 
-
-def host_is_allowed(
-    hostname: str | None,
-    netloc: str | None,
-    patterns: Sequence[str],
-) -> bool:
-    """Return ``True`` when ``hostname`` matches any allowed host pattern.
-
-    Patterns support shell-style wildcards (via :func:`fnmatch.fnmatchcase`), so
-    Azure Blob Storage hosts such as ``clearsight.blob.core.windows.net`` match
-    the ``*.blob.core.windows.net`` allowlist entry.
-    """
-
-    if not patterns:
-        return True
-    candidates = [value for value in (hostname, netloc) if value]
-    return any(
-        fnmatch.fnmatchcase(candidate, pattern)
-        for pattern in patterns
-        for candidate in candidates
-    )
+__all__ = ["InferencePipeline", "host_is_allowed"]
 
 
 class InferencePipeline:
@@ -74,37 +53,43 @@ class InferencePipeline:
         self.context = context
 
     def _download_image(self, url: str) -> bytes:
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("The signed image URL is invalid")
-        if parsed.scheme == "http" and not self.settings.allow_http_signed_urls:
-            raise ValueError("HTTP signed image URLs are disabled")
-        if self.settings.allowed_signed_url_hosts and not host_is_allowed(
-            parsed.hostname,
-            parsed.netloc,
-            self.settings.allowed_signed_url_hosts,
-        ):
-            raise ValueError("The signed image URL host is not allowed")
-        if not self.settings.allowed_signed_url_hosts and parsed.scheme == "https":
-            raise ValueError("No signed image URL host allowlist is configured")
-        with httpx.Client(
-            follow_redirects=False,
-            timeout=self.settings.request_timeout_seconds,
-        ) as client:
-            with client.stream("GET", url) as response:
-                if response.status_code != 200:
-                    raise ValueError(f"Image download failed with HTTP {response.status_code}")
-                content_length = response.headers.get("content-length")
-                if content_length and int(content_length) > self.settings.max_image_bytes:
-                    raise ValueError("The image exceeds the maximum allowed size")
-                chunks: list[bytes] = []
-                received = 0
-                for chunk in response.iter_bytes():
-                    received += len(chunk)
-                    if received > self.settings.max_image_bytes:
-                        raise ValueError("The image exceeds the maximum allowed size")
-                    chunks.append(chunk)
-                return b"".join(chunks)
+        validated = validate_signed_image_url(
+            url,
+            allowed_signed_url_hosts=self.settings.allowed_signed_url_hosts,
+            allow_http_signed_urls=self.settings.allow_http_signed_urls,
+        )
+        try:
+            with httpx.Client(
+                follow_redirects=False,
+                timeout=self.settings.request_timeout_seconds,
+            ) as client:
+                with client.stream("GET", validated.url) as response:
+                    if response.status_code != 200:
+                        raise ValueError(
+                            f"Image download failed with HTTP {response.status_code}"
+                        )
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            declared_length = int(content_length)
+                        except ValueError as error:
+                            raise ValueError("image_download_failed") from error
+                        if declared_length < 0:
+                            raise ValueError("image_download_failed")
+                        if declared_length > self.settings.max_image_bytes:
+                            raise ValueError(
+                                "The image exceeds the maximum allowed size"
+                            )
+                    chunks: list[bytes] = []
+                    received = 0
+                    for chunk in response.iter_bytes():
+                        received += len(chunk)
+                        if received > self.settings.max_image_bytes:
+                            raise ValueError("The image exceeds the maximum allowed size")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+        except (httpx.HTTPError, httpx.InvalidURL) as error:
+            raise ValueError("image_download_failed") from error
 
     def _artifacts(
         self,

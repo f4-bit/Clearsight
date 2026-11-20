@@ -103,13 +103,37 @@ describe("consultations / images / inferences", () => {
     const jobId = randomUUID();
     const created = await repos.inferences.create({ imageId: image.id, jobId });
 
+    expect(created.modelVersions).toEqual({});
+    expect(created.modelPredictions).toEqual({});
+
+    const modelVersions = {
+      manifest: "2026-09-24",
+      backend: "pytorch",
+      efficientnet_b3: "repo/efficientnet_b3@revision-efficientnet_b3",
+      resnet50: "repo/resnet50@revision-resnet50",
+    };
+    const modelPredictions = {
+      efficientnet_b3: {
+        probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+        predictedClass: "Glaucoma",
+        confidence: 0.8,
+      },
+    };
     const saved = await repos.inferences.saveResult(created.id, {
       predictedClass: 2, confidence: 0.72,
       probabilities: { Glaucoma: 0.1, Non_Glaucoma: 0.18, Suspicious_Glaucoma: 0.72 },
+      modelVersions, modelPredictions,
       cdr: 0.61, cdrVertical: 0.66, quality: { review_required: false }, artifacts: { gradcam_url: "x" },
       elapsedSeconds: 2.4, gradcamPath: "g.png", modelVersion: "v1",
     });
-    expect(saved).toMatchObject({ predictedClass: 2, cdr: 0.61, cdrVertical: 0.66, modelVersion: "v1" });
+    expect(saved).toMatchObject({
+      predictedClass: 2,
+      cdr: 0.61,
+      cdrVertical: 0.66,
+      modelVersion: "v1",
+      modelVersions,
+      modelPredictions,
+    });
     expect((await repos.inferences.findByJobId(jobId))?.id).toBe(created.id);
 
     const ctx = await repos.inferences.findWithContext(created.id);

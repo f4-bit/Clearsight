@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -506,6 +506,78 @@
 | Estado | **3.7 `[x]` QA PASSED HITO23.** Las 6 regresiones QA rojas (`basic404` → `routeNotFound`) quedan verdes. 3.5/3.6 siguen pendientes de PDF 6.2. |
 | Límites | Sin full unit/integration, Azure/E2E ni correlación con métricas externas. Los logs internos de Fastify que interpolan strings fuera de `req`/`res` no se censuran de forma universal; no se modifica `node_modules` ni se añade un redactor de mensajes. El error handler global no es un redactor universal. Un eventual log de doble envío con URL no tiene trigger alcanzable en las rutas 3.4; se documenta sin abrir cambio interno del framework. |
 
+## 1.29 Registro HITO24 - preparación documental 4.1-4.3 (sin ejecución)
+
+> **Naturaleza:** solo documentación. No se implementó código, no se ejecutaron tests, no se usó Azure/MinIO real, `.env` reales, SRS, PDF, SMTP, descarga de modelos ni commit. **4.1-4.3 siguen `[ ]`** en ese turno histórico; posteriormente cerraron con QA PASSED en §1.33. No se declara validación OpenSpec ni QA en este registro histórico.
+
+| Elemento | Registro |
+|---|---|
+| Documentos | `design.md` D25/ADR-059..061 y riesgos; `specs/inference-orchestration/spec.md`; `tasks.md` 4.1/4.2/4.3; este runbook §1.29/§4.10/§10. |
+| 4.1 | Política de URL pura y compartida con `Settings` confiable; allowlist no vacía para HTTP/HTTPS, HTTP solo con flag de desarrollo explícito y allowlist (MinIO localhost/minio:port); rechazo de esquemas/userinfo/fragmento/puerto/host inválidos; `422` antes de encolar; revalidación antes del `GET`, sin redirecciones `301/302/307`, timeout existente y bytes acotados; sin framework global DNS/private-IP ni verificación SAS criptográfica en ML. Auth entrante preservada, sin tokens/scopes nuevos. |
+| 4.2 | Migración `20261120000000_inference_result_details` con `model_versions`/`model_predictions` JSONB `DEFAULT '{}' NOT NULL` y CHECK de objeto; baseline intacto; legacy `{}` = desconocido sin copiar `modelVersion`; CAS persiste resultado completo en `COMPLETED`, parcial válido en `REVIEW_REQUIRED`, `{}` en `FAILED`; `GET /inferences/:id` sin exposición nueva; sin `ArtifactRecord`/PDF. |
+| 4.3 | Fuente única en `common.ts` derivada de `CLASS_LABELS` con `0 Glaucoma`/`1 Non_Glaucoma`/`2 Suspicious_Glaucoma`; helper `canonicalClassIndex` seguro ante `null`/`__proto__`/`constructor`; solo aliases legacy en minúsculas; desconocido ⇒ `FAILED` seguro o `null` en revisión; validación por modelo sin clase inventada ni label raw en logs. |
+| Código/tests | Ninguno. Sin migración creada, sin cambios de schema/rutas/worker/processor/Settings ni tests fuente. |
+| Límites | Sin QA, sin evidencia de verde y sin `openspec validate` afirmado. No se ejecutan suites completas, Azure/`.env` reales, PDF, SMTP, commits ni descargas de modelos. Revisor independiente solo si se justifica por migración/seguridad. |
+| Comandos | No ejecutados en este turno; §1.30/§1.31/§1.32/§4.10 registran después la evidencia 4.1(A)/4.2(B)/4.3(C). |
+
+## 1.30 Evidencia HITO24-A - 4.1(A) implementada (QA PASSED; cierre en §1.33)
+
+> **Naturaleza:** implementación local y tests focales de 4.1(A). Sin QA del bloque A+B+C, sin suite completa, Azure/`.env` reales, PDF, SMTP, descarga de modelos ni commit. **4.1 seguía `[ ]` en ese turno; QA final PASSED en §1.33.**
+
+| Elemento | Evidencia |
+|---|---|
+| Documentos | `design.md` D25.1; `tasks.md` 4.1; `specs/inference-orchestration/spec.md`; este runbook §1.30/§4.10/§10. |
+| Código | `ml/inference/url_policy.py` (helper puro, `host_is_allowed` fail-closed, `SignedImageUrlError` con códigos fijos); `ml/service/main.py` (`Runtime.settings`, validación `422` antes de pin/queue, `APIRouter(strict_content_type=False)`); `ml/inference/pipeline.py` (revalidación antes de `httpx.Client`, `follow_redirects=False`, bytes/timeout, error de red seguro). |
+| Contrato | Allowlist no vacía para HTTP/HTTPS; HTTP solo con flag explícito + allowlist; rechazo de esquema/host/userinfo/fragmento/puerto; `422` sin URL; redirecciones `301/302/307` bloqueadas; JSON sin Content-Type soportado y multipart/CDR/campos extra `422`. |
+| Tests | Nuevo `ml/tests/test_service_contract.py` (**35**); ajustes en `test_azure_readiness` (allowlist vacía/exacta) y `test_clinical_context` (fixture con host válido). Foco **5 files / 86 tests passed**. Incluye `urlparse` corrupto, `httpx.InvalidURL` y `content-length` inválido con códigos seguros. |
+| Estático | `ruff` limpio; `mypy --follow-imports=skip` limpio en los 6 archivos afectados. |
+| Comandos | `python -m pytest ml/tests/test_service_contract.py ml/tests/test_service.py ml/tests/test_clinical_context.py ml/tests/test_azure_readiness.py ml/tests/test_clinical_normalization.py -q`; `python -m ruff check ...`; `python -m mypy --follow-imports=skip ...`. |
+| Límites | Sin full ML/test de pesos, Azure model, `.env` real, PDF, SMTP, commit ni QA A+B+C. 4.2/4.3 no se tocaron; 4.1 permanece `[ ]`. Validación OpenSpec `--strict` reportada por el arquitecto en 0; no re-ejecutada aquí. |
+
+## 1.31 Evidencia HITO24-B - 4.2(B) implementada (QA PASSED; cierre en §1.33)
+
+> **Naturaleza:** implementación local y tests focales de 4.2(B). Sin QA A+B+C, suite completa, 4.3, GET nuevo, `ArtifactRecord`/PDF, Azure/`.env` reales, SRS, modelos ni commit. **4.2 seguía `[ ]` en ese turno; QA final PASSED en §1.33.**
+
+| Elemento | Evidencia |
+|---|---|
+| Documentos | `design.md` D25.2; `tasks.md` 4.2; `specs/inference-orchestration/spec.md`; este runbook §1.31/§4.10/§10. |
+| Migración | `20261120000000_inference_result_details`: `model_versions`/`model_predictions` JSONB `NOT NULL DEFAULT '{}'`, CHECK de objeto vía `pg_constraint`, replay idempotente, privilegios de `clearsight_app` verificados; legacy `model_version` intacto y `{}` = desconocido, sin backfill. |
+| Prisma/código | `Inference.modelVersions`/`modelPredictions`; `InferenceResultUpdate`/`saveResult` opcionales para compatibilidad; `TerminalInferenceUpdate`/CAS y processor persisten el resultado real en `COMPLETED`, parcial en `REVIEW_REQUIRED`, `{}` en `FAILED`; sin exposición GET nueva. |
+| Tests | Unit **3 files / 59** (`inference.processor`, `ml-client`, `schemas`); integración **3 files / 56** (`migrations`, `inference-worker`, `repositories`); cubre replay/CHECK/defaults/roles, completo/revisión/fallo, identidad foránea, payload mutado y carrera CAS. |
+| Estático | `prisma validate` + `prisma generate` con URL sintética (sin `.env` real); `typecheck`/`build` **0**. |
+| Límites | Sin full unit/integration, 4.3, GET nuevo, `ArtifactRecord`/PDF, Azure/`.env`, SRS, modelos ni commit. 4.2 permanece `[ ]` hasta QA A+B+C. |
+
+## 1.32 Evidencia HITO24-C - 4.3(C) implementada (QA PASSED; cierre en §1.33)
+
+> **Naturaleza:** implementación local y tests focales de 4.3(C). Sin QA A+B+C, suite completa, migraciones B repetidas, ML, Azure/`.env` reales, SRS/PDF ni commit. **4.3 seguía `[ ]` en ese turno; QA final PASSED en §1.33.**
+
+| Elemento | Evidencia |
+|---|---|
+| Documentos | `design.md` D25.3; `tasks.md` 4.3; `specs/inference-orchestration/spec.md`; este runbook §1.32/§4.10/§10. |
+| Código | `common.ts`: `CLASS_LABEL_INDEX`/`CLASS_LABEL_SET`/`canonicalClassIndex` derivados de `CLASS_LABELS`; aliases legacy acotados; `__proto__`/`constructor`/`toString` ⇒ `null`. Processor sin mapa local; usa helper/set de `common.ts`. |
+| Comportamiento | `COMPLETED` desconocido ⇒ `FAILED` con `predictedClass=null`, `modelVersions`/`modelPredictions` `{}`; `REVIEW_REQUIRED` desconocido o predicciones por modelo inválidas ⇒ `predictedClass=null`, `modelPredictions` `{}` y otros parciales preservados; sin clases `0`/`v1` fabricadas. |
+| Tests | Unit **4 files / 86** (`schemas`, `inference.processor`, `ml-client`, `inference-run-repo`); integración worker/repo **2 files / 31** (9 worker + 22 repo). Sin migraciones B repetidas. |
+| Corrección QA | Records propios proto-safe en processor, `MlClient` con `protoSafeRecord`, CAS JSONB raw **schema-qualified** (`public`/custom validado) para roundtrip PG de `__proto__` own y defensa ante `search_path` decoy, y REVIEW con `probabilities={}` legítimo conserva segmentación. |
+| Estático | `typecheck`/`build` **0**. |
+| Límites | Sin full unit/integration, ML, Azure/`.env`, SRS/PDF, commits ni refactor de 4.9. 4.3 permanece `[ ]` hasta QA A+B+C. |
+
+## 1.33 Cierre QA final HITO24 - 4.1/4.2/4.3 (PASSED)
+
+> **Naturaleza:** cierre documental post-QA. Sin source/test edits en este turno, sin suite completa, Azure/`.env` reales, SRS/PDF, ML real ni commit. `defects/regressions.md` no se edita.
+
+| Elemento | Evidencia |
+|---|---|
+| Pre-fix | 3 regresiones QA de prototipo en unit estaban rojas (extra prob `__proto__`, REVIEW per-model proto, model name `__proto__`). |
+| Post-fix unit | **4 files / 86 passed** (`schemas`, `inference.processor`, `ml-client`, `inference-run-repo`). |
+| Post-fix integración | worker **9** (8 previos + decoy) + repo **22** archivo reutilizado = **2 files / 31 passed**. |
+| Migración B | Baseline pre-fix **3 files / 56** (incluye migration tests; SQL/source sin cambios). No se repite en cierre; replay/CHECK/legacy/app-role quedaron verificados en baseline, no se presenta como full final. |
+| ML | **5 files / 86 passed** (35 en `test_service_contract`), `ruff`/`mypy --follow-imports=skip` limpios en 6 archivos. |
+| Estático backend | `typecheck`/`build` **0**. |
+| Fixes confirmados | own proto records; `MlClient` `protoSafeRecord`; CAS JSONB raw schema-qualified (`public`/custom validado, values bound, same terminal guard); REVIEW `probabilities={}` conserva segmentación; `urlparse`/`httpx.InvalidURL`/`content-length` safe codes. |
+| Repro edges | 3 QA proto rojo→verde; REVIEW real ML con diagnóstico vacío; PG decoy/search_path + proto roundtrip; safe URL exceptions cubiertas. |
+| Clarificaciones | X1: `label`/`confidence` son diagnóstico, no segmentación. X2: Zod `record()` no usado en runtime puede ser hazard futuro 4.9; no se reclama refactor total. X3: per-model válido con aggregate probs `{}` deja label/conf global `null` y conserva metadata validada, sin autodiagnóstico. Columnas nuevas vacías = desconocido, no resultado inventado. |
+| Límites | No 4.4/4.6/4.7/4.9/PDF/poll implementados. REG-004 queda para cierre humano; `gradcam` `NOT_SUPPORTED` legítimo, sin sustituir por `mask`. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -805,6 +877,44 @@ npm --prefix backend run build
 
 **Criterio de salida:** **3.7 QA PASSED**; checkbox `[x]`. 3.5/3.6 siguen pendientes de PDF 6.2.
 
+### 4.10 Fase específica HITO24 - 4.1(A)+4.2(B)+4.3(C) CURRENT; QA PASSED
+
+**Estado:** 4.1, 4.2 y 4.3 **QA PASSED**; cierre en §1.33 y checkboxes `[x]`.
+
+**Objetivo:** verificar en tres unidades secuenciales la admisión ML estricta, la persistencia real de versiones/predicciones y el catálogo canónico único, con foco acotado y sin suite completa.
+
+**Precondiciones:** fase 1 documental revisada; D25/ADR-059..061 y specs de orquestación leídos; sin Azure/`.env` reales, PDF, SMTP, descarga de modelos ni commit. La integración 4.2 usa PostgreSQL owned de Testcontainers o la base aislada ya verificada por el runner; no se usa el compose raíz.
+
+**Comandos (4.1A/4.2B/4.3C CURRENT; QA PASSED):**
+
+```powershell
+# 4.1(A) - CURRENT: helper de URL/admisión y foco de regresión
+python -m pytest ml/tests/test_service_contract.py ml/tests/test_service.py ml/tests/test_clinical_context.py ml/tests/test_azure_readiness.py ml/tests/test_clinical_normalization.py -q
+python -m ruff check ml/inference/url_policy.py ml/inference/pipeline.py ml/service/main.py ml/tests/test_service_contract.py ml/tests/test_azure_readiness.py ml/tests/test_clinical_context.py
+python -m mypy --follow-imports=skip ml/inference/url_policy.py ml/inference/pipeline.py ml/service/main.py ml/tests/test_service_contract.py ml/tests/test_azure_readiness.py ml/tests/test_clinical_context.py
+# 4.2(B) - CURRENT: migración, Prisma y persistencia real
+npm --prefix backend run test:unit -- tests/unit/inference.processor.test.ts tests/unit/ml-client.test.ts tests/schemas.test.ts
+npm --prefix backend run test:integration -- tests/migrations.test.ts tests/inference-worker.integration.test.ts tests/repositories.test.ts
+# Prisma validate/generate con URL sintética (sin .env real)
+$env:DATABASE_URL="postgresql://user:pass@localhost:5432/clearsight_synthetic"; npx prisma validate; npx prisma generate
+# 4.3(C) - CURRENT: catálogo único y processor (sin repetir migraciones B)
+npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/inference.processor.test.ts tests/unit/ml-client.test.ts tests/unit/inference-run-repo.test.ts
+npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts tests/repositories.test.ts
+npm --prefix backend run typecheck
+```
+
+**Resultados finales (sin fusionar históricos):** 4.1A ML **5 files / 86** (35 nuevos), `ruff`/`mypy --follow-imports=skip` limpios en 6. **4.2B pre-fix** migración **3 files / 56** (incluye migration tests; SQL/source sin cambios; no es full final); **post-fix** worker/repo **2 files / 31**. **4.3C** unit **4 files / 86** (incluye `inference-run-repo`) e integración worker/repo **2 files / 31** (9 worker + 22 repo). `typecheck`/`build` **0**. 3 regresiones proto QA: rojo pre-fix, verde post-fix.
+
+**Casos mínimos:**
+
+1. 4.1: allowlist vacía y HTTP sin flag ⇒ `422` antes de encolar; URL válida allowlisted ⇒ `202` sin inferencia real; esquema `file:`/`data:`/`ftp:`, hostname ausente, userinfo, fragmento raw, puerto inválido y host no allowlisted ⇒ `422` con mensaje seguro sin URL; redirect `301/302/307` bloqueado; timeout/bytes excedidos sin procesar; auth existente preservada.
+2. 4.2: migración replay idempotente, CHECK de objeto, defaults `{}` en filas legacy, privilegios de `clearsight_app`; `COMPLETED` persiste `modelVersions`/`modelPredictions` completos; `REVIEW_REQUIRED` persiste parcial válido, incluido `probabilities={}` real con label/conf null y segmentación preservada; `FAILED` `{}`; CAS/duplicados no sobrescriben terminal; `GET /inferences/:id` sin exposición nueva.
+3. 4.3: tres clases canónicas y casing legacy; `null`/`unknown`/`__proto__`/`constructor`/`toString` ⇒ `null` sin crash; model name `__proto__` legítimo preservado; `COMPLETED` desconocido ⇒ `FAILED` con código fijo sin label raw; `REVIEW_REQUIRED` desconocido ⇒ `predictedClass=null` con parcial preservado; predicción por modelo desconocida fail closed.
+
+**Stop:** si el test exige runtime/modelos/descarga real, Azure/`.env`, PDF, SMTP, suite completa, commit, un framework global DNS/private-IP, verificación SAS en ML o modificar el fallback de producción para pasar.
+
+**Criterio de salida:** QA final focal PASSED sobre 4.1-4.3, con fix proto/review y evidencia de §1.33. 4.1-4.3 quedan `[x]`; no se marca suite completa.
+
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
 **Objetivo:** probar integración local de DB/cola/storage sin tocar recursos ajenos.
@@ -1025,6 +1135,13 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/artifact-reference.test.ts tests/unit/storage-service.test.ts tests/unit/storage-provider.test.ts tests/unit/runner-isolation.test.ts` | CURRENT (3.4/3.8, QA PASSED) | **5 files / 102 tests**; DTO/query/contexto row y 36 de provider. |
 | `npm --prefix backend run test:integration -- tests/artifact-downloads.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts tests/inference-creation.integration.test.ts` | CURRENT (3.4, QA PASSED) | **4 files / 60 tests**; nuevo archivo **16 tests** (+4 QA); PostgreSQL owned, sin Azure/Azurite. |
 | Cierre 3.8 | QA PASSED | 3.2 SDK real offline + 3.4 auth/missing/storage/version; sin Azure ni Azurite. |
+| `python -m pytest ml/tests/test_service_contract.py ml/tests/test_service.py ml/tests/test_clinical_context.py ml/tests/test_azure_readiness.py ml/tests/test_clinical_normalization.py -q` (4.1A) | **CURRENT (QA PASSED)** | **5 files / 86 tests passed**; 35 nuevos; sin full ML, Azure ni descarga real de modelos. |
+| `python -m ruff check ...` / `python -m mypy --follow-imports=skip ...` (4.1A) | **CURRENT** | Limpios en los 6 archivos afectados. |
+| Pre-fix B: `npm --prefix backend run test:unit -- tests/unit/inference.processor.test.ts tests/unit/ml-client.test.ts tests/schemas.test.ts` | **BASELINE** | **3 files / 59**; no es full final; cierre post-fix unit **4 files / 86** en fila 4.3C. |
+| Pre-fix B: `npm --prefix backend run test:integration -- tests/migrations.test.ts tests/inference-worker.integration.test.ts tests/repositories.test.ts` | **BASELINE** | **3 files / 56** incluye migration tests; SQL/source sin cambios; cierre post-fix worker/repo **2 files / 31**. |
+| `prisma validate` + `prisma generate` con URL sintética (4.2B) | **CURRENT** | Schema válido y cliente generado; sin `.env` real. |
+| `npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/inference.processor.test.ts tests/unit/ml-client.test.ts tests/unit/inference-run-repo.test.ts` (4.3C) | **CURRENT (QA PASSED)** | **4 files / 86 tests passed**; catálogo único, aliases legacy, prototipos, repo schema validation/desconocido y predicciones por modelo. |
+| `npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts tests/repositories.test.ts` (4.3C) | **CURRENT (QA PASSED)** | **2 files / 31 tests passed**; 9 worker + 22 repo, sin repetir migraciones B. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

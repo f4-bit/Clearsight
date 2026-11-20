@@ -52,6 +52,8 @@ function execution(
       overrides.modelVersion === undefined
         ? FAKE_MANIFEST_VERSION
         : overrides.modelVersion,
+    modelVersions: {},
+    modelPredictions: {},
     image: {
       id: IMAGE_ID,
       eyeSide: "OD",
@@ -103,7 +105,26 @@ function completedResult(
       Non_Glaucoma: 0.1,
       Suspicious_Glaucoma: 0.1,
     },
-    modelPredictions: {},
+    modelPredictions: {
+      efficientnet_b3: {
+        probabilities: {
+          Glaucoma: 0.8,
+          Non_Glaucoma: 0.1,
+          Suspicious_Glaucoma: 0.1,
+        },
+        predictedClass: "Glaucoma",
+        confidence: 0.8,
+      },
+      resnet50: {
+        probabilities: {
+          Glaucoma: 0.1,
+          Non_Glaucoma: 0.8,
+          Suspicious_Glaucoma: 0.1,
+        },
+        predictedClass: "Non_Glaucoma",
+        confidence: 0.8,
+      },
+    },
     cdr: 0.4,
     cdrVertical: 0.45,
     quality: { review_required: false },
@@ -234,6 +255,52 @@ describe("worker inference processor (C)", () => {
       completedResult().probabilities,
     );
     expect(db.saves[0]?.artifacts).toEqual(completedResult().artifacts);
+    expect(db.saves[0]?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(db.saves[0]?.modelVersions).not.toEqual(prepared.modelVersions);
+    expect(db.saves[0]?.modelPredictions).toEqual(
+      completedResult().modelPredictions,
+    );
+    expect(db.saves[0]?.modelPredictions?.efficientnet_b3).not.toHaveProperty(
+      "predicted_class",
+    );
+  });
+
+  it.each([
+    ["Glaucoma", 0],
+    ["Non_Glaucoma", 1],
+    ["Suspicious_Glaucoma", 2],
+    ["glaucoma", 0],
+    ["NON_GLAUCOMA", 1],
+    ["suspicious_glaucoma", 2],
+  ])("maps %s to canonical class %i and persists actual metadata", async (label, expected) => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([response("COMPLETED", completedResult({ label }))]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("COMPLETED");
+    expect(db.saves[0]?.predictedClass).toBe(expected);
+    expect(db.saves[0]?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(db.saves[0]?.modelPredictions).toEqual(
+      completedResult().modelPredictions,
+    );
+  });
+
+  it("persists the actual modelVersions exactly without merging snapshot keys", async () => {
+    const db = new FakeDb(execution());
+    const actualVersions = {
+      ...completedResult().modelVersions,
+      extra_model: "repo/extra@actual-revision",
+    };
+    const ml = fakeMl([
+      response("COMPLETED", completedResult({ modelVersions: actualVersions })),
+    ]);
+
+    await processor(db, ml)(job());
+
+    expect(db.saves[0]?.modelVersions).toEqual(actualVersions);
+    expect(db.saves[0]?.modelVersions).not.toHaveProperty("manifest");
+    expect(db.saves[0]?.modelVersions).not.toEqual(prepared.modelVersions);
   });
 
   it("uses the snapshot clinicalFeatures even when only the job is perturbed", async () => {
@@ -265,6 +332,262 @@ describe("worker inference processor (C)", () => {
       predictedClass: 2,
       confidence: 0.55,
     });
+    expect(db.saves[0]?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(db.saves[0]?.modelPredictions).toEqual(
+      completedResult().modelPredictions,
+    );
+  });
+
+  it("persists partial model metadata in REVIEW_REQUIRED without filling missing versions", async () => {
+    const db = new FakeDb(execution());
+    const partialVersions = {
+      efficientnet_b3: completedResult().modelVersions.efficientnet_b3,
+    };
+    const partialPredictions = {
+      efficientnet_b3: completedResult().modelPredictions.efficientnet_b3,
+    };
+    const ml = fakeMl([
+      response(
+        "REVIEW_REQUIRED",
+        completedResult({
+          modelVersions: partialVersions,
+          modelPredictions: partialPredictions,
+        }),
+      ),
+    ]);
+
+    const result = await processor(db, ml)(job());
+
+    expect(result.status).toBe("REVIEW_REQUIRED");
+    expect(db.saves[0]?.modelVersions).toEqual(partialVersions);
+    expect(db.saves[0]?.modelVersions).not.toHaveProperty("resnet50");
+    expect(db.saves[0]?.modelPredictions).toEqual(partialPredictions);
+  });
+
+  it("keeps REVIEW_REQUIRED with an unknown aggregate label null and preserves valid partials", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response("REVIEW_REQUIRED", completedResult({ label: "Not_A_Class" })),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const saved = db.saves[0];
+    expect(saved?.status).toBe("REVIEW_REQUIRED");
+    expect(saved?.predictedClass).toBeNull();
+    expect(saved?.cdr).toBe(0.4);
+    expect(saved?.cdrVertical).toBe(0.45);
+    expect(saved?.quality).toEqual(completedResult().quality);
+    expect(saved?.artifacts).toEqual(completedResult().artifacts);
+    expect(saved?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(saved?.modelPredictions).toEqual(completedResult().modelPredictions);
+    expect(saved?.elapsedSeconds).toBe(1.2);
+  });
+
+  it("preserves a valid legacy per-model raw label without casting an index", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "COMPLETED",
+        completedResult({
+          modelPredictions: {
+            efficientnet_b3: {
+              ...completedResult().modelPredictions.efficientnet_b3!,
+              predictedClass: "glaucoma",
+            },
+          },
+        }),
+      ),
+    ]);
+
+    await processor(db, ml)(job());
+
+    expect(
+      db.saves[0]?.modelPredictions?.efficientnet_b3?.predictedClass,
+    ).toBe("glaucoma");
+  });
+
+  it("keeps legitimate empty REVIEW_REQUIRED diagnostics while preserving segmentation metadata", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "REVIEW_REQUIRED",
+        completedResult({
+          label: null,
+          confidence: null,
+          probabilities: {},
+          modelPredictions: {},
+          quality: { review_required: true, segmentation: "ok" },
+          artifacts: {
+            mask: "s3://masks/mask.png",
+            overlay: "s3://overlays/overlay.png",
+          },
+        }),
+      ),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const saved = db.saves[0];
+    expect(saved?.status).toBe("REVIEW_REQUIRED");
+    expect(saved?.predictedClass).toBeNull();
+    expect(saved?.confidence).toBeNull();
+    expect(saved?.probabilities).toEqual({});
+    expect(saved?.modelPredictions).toEqual({});
+    expect(saved?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(saved?.quality).toEqual({ review_required: true, segmentation: "ok" });
+    expect(saved?.artifacts).toEqual({
+      mask: "s3://masks/mask.png",
+      overlay: "s3://overlays/overlay.png",
+    });
+    expect(saved?.cdr).toBe(0.4);
+    expect(saved?.cdrVertical).toBe(0.45);
+    expect(saved?.elapsedSeconds).toBe(1.2);
+  });
+
+  it("drops malformed aggregate probabilities in REVIEW but preserves segmentation metadata", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "REVIEW_REQUIRED",
+        completedResult({
+          label: "Glaucoma",
+          confidence: 0.8,
+          probabilities: JSON.parse('{"Glaucoma":0.8,"Unknown":0.2}'),
+        }),
+      ),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const saved = db.saves[0];
+    expect(saved?.predictedClass).toBeNull();
+    expect(saved?.confidence).toBeNull();
+    expect(saved?.probabilities).toEqual({});
+    expect(saved?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(saved?.modelPredictions).toEqual(completedResult().modelPredictions);
+    expect(saved?.quality).toEqual(completedResult().quality);
+    expect(saved?.artifacts).toEqual(completedResult().artifacts);
+    expect(saved?.cdr).toBe(0.4);
+    expect(saved?.cdrVertical).toBe(0.45);
+    expect(saved?.elapsedSeconds).toBe(1.2);
+  });
+
+  it("does not keep REVIEW data when version compatibility fails", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "REVIEW_REQUIRED",
+        completedResult({
+          modelVersions: {
+            ...completedResult().modelVersions,
+            resnet50: "other@revision",
+          },
+        }),
+      ),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const saved = db.saves[0];
+    expect(saved?.predictedClass).toBeNull();
+    expect(saved?.probabilities).toEqual({});
+    expect(saved?.modelVersions).toEqual({});
+    expect(saved?.modelPredictions).toEqual({});
+    expect(saved?.quality).toEqual({});
+    expect(saved?.artifacts).toEqual({});
+    expect(saved?.cdr).toBeNull();
+    expect(saved?.cdrVertical).toBeNull();
+    expect(saved?.elapsedSeconds).toBeNull();
+  });
+
+  it("discards invalid per-model predictions in REVIEW_REQUIRED but keeps other partials", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "REVIEW_REQUIRED",
+        completedResult({
+          modelPredictions: {
+            efficientnet_b3: {
+              probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+              predictedClass: "Glaucoma",
+              confidence: 0.8,
+            },
+          },
+        }),
+      ),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const saved = db.saves[0];
+    expect(saved?.status).toBe("REVIEW_REQUIRED");
+    expect(saved?.predictedClass).toBeNull();
+    expect(saved?.modelPredictions).toEqual({});
+    expect(saved?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(saved?.cdr).toBe(0.4);
+    expect(saved?.cdrVertical).toBe(0.45);
+    expect(saved?.quality).toEqual(completedResult().quality);
+    expect(saved?.artifacts).toEqual(completedResult().artifacts);
+    expect(saved?.elapsedSeconds).toBe(1.2);
+  });
+
+  it("discards predictions with prototype probability keys in REVIEW_REQUIRED and keeps other partials", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "REVIEW_REQUIRED",
+        completedResult({
+          modelPredictions: JSON.parse(
+            '{"efficientnet_b3":{"probabilities":{"Glaucoma":0.8,"Non_Glaucoma":0.1,"Suspicious_Glaucoma":0.1,"__proto__":0},"predictedClass":"Glaucoma","confidence":0.8}}',
+          ),
+        }),
+      ),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const saved = db.saves[0];
+    expect(saved?.status).toBe("REVIEW_REQUIRED");
+    expect(saved?.predictedClass).toBeNull();
+    expect(saved?.modelPredictions).toEqual({});
+    expect(saved?.modelVersions).toEqual(completedResult().modelVersions);
+    expect(saved?.cdr).toBe(0.4);
+    expect(saved?.cdrVertical).toBe(0.45);
+    expect(saved?.quality).toEqual(completedResult().quality);
+    expect(saved?.artifacts).toEqual(completedResult().artifacts);
+    expect(saved?.elapsedSeconds).toBe(1.2);
+  });
+
+  it("preserves prototype-named wire keys instead of silently dropping predictions", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([
+      response(
+        "COMPLETED",
+        completedResult({
+          modelPredictions: JSON.parse(
+            '{"__proto__":{"probabilities":{"Glaucoma":0.8,"Non_Glaucoma":0.1,"Suspicious_Glaucoma":0.1},"predictedClass":"Glaucoma","confidence":0.8}}',
+          ),
+        }),
+      ),
+    ]);
+
+    const outcome = await processor(db, ml)(job());
+
+    expect(outcome.status).toBe("COMPLETED");
+    const saved = db.saves[0];
+    expect(
+      Object.prototype.hasOwnProperty.call(saved?.modelPredictions, "__proto__"),
+    ).toBe(true);
+    expect(
+      Object.getOwnPropertyNames(saved?.modelPredictions ?? {}).sort(),
+    ).toEqual(["__proto__"]);
   });
 
   it("persists FAILED without fabricating a result", async () => {
@@ -279,6 +602,8 @@ describe("worker inference processor (C)", () => {
       predictedClass: null,
       confidence: null,
       probabilities: {},
+      modelVersions: {},
+      modelPredictions: {},
       quality: {},
       artifacts: {},
       gradcamPath: null,
@@ -301,8 +626,99 @@ describe("worker inference processor (C)", () => {
       expect(outcome.status).toBe("FAILED");
       expect(db.saves[0]?.status).toBe("FAILED");
       expect(db.saves[0]?.predictedClass).toBeNull();
+      expect(db.saves[0]?.modelVersions).toEqual({});
+      expect(db.saves[0]?.modelPredictions).toEqual({});
+      expect(db.saves[0]?.modelVersion).not.toBe("v1");
     }
   });
+
+  it.each([
+    [
+      "unknown predicted class",
+      {
+        efficientnet_b3: {
+          probabilities: {
+            Glaucoma: 0.8,
+            Non_Glaucoma: 0.1,
+            Suspicious_Glaucoma: 0.1,
+          },
+          predictedClass: "Not_A_Class",
+          confidence: 0.8,
+        },
+      },
+    ],
+    [
+      "missing canonical probability",
+      {
+        efficientnet_b3: {
+          probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+          predictedClass: "Glaucoma",
+          confidence: 0.8,
+        },
+      },
+    ],
+    [
+      "extra probability key",
+      {
+        efficientnet_b3: {
+          probabilities: {
+            Glaucoma: 0.8,
+            Non_Glaucoma: 0.1,
+            Suspicious_Glaucoma: 0.1,
+            Unknown: 0,
+          },
+          predictedClass: "Glaucoma",
+          confidence: 0.8,
+        },
+      },
+    ],
+    [
+      "prototype probability key",
+      JSON.parse(
+        '{"efficientnet_b3":{"probabilities":{"Glaucoma":0.8,"Non_Glaucoma":0.1,"Suspicious_Glaucoma":0.1,"__proto__":0},"predictedClass":"Glaucoma","confidence":0.8}}',
+      ),
+    ],
+    [
+      "confidence outside unit interval",
+      {
+        efficientnet_b3: {
+          probabilities: {
+            Glaucoma: 0.8,
+            Non_Glaucoma: 0.1,
+            Suspicious_Glaucoma: 0.1,
+          },
+          predictedClass: "Glaucoma",
+          confidence: 1.5,
+        },
+      },
+    ],
+    [
+      "malformed prediction",
+      {
+        efficientnet_b3: {
+          probabilities: "not-an-object",
+          predictedClass: "Glaucoma",
+          confidence: 0.8,
+        },
+      },
+    ],
+  ])(
+    "rejects invalid per-model predictions in COMPLETED: %s",
+    async (_case, modelPredictions) => {
+      const db = new FakeDb(execution());
+      const ml = fakeMl([
+        response("COMPLETED", completedResult({ modelPredictions })),
+      ]);
+
+      const outcome = await processor(db, ml)(job());
+
+      expect(outcome.status).toBe("FAILED");
+      expect(db.saves[0]?.status).toBe("FAILED");
+      expect(db.saves[0]?.predictedClass).toBeNull();
+      expect(db.saves[0]?.modelVersions).toEqual({});
+      expect(db.saves[0]?.modelPredictions).toEqual({});
+    },
+  );
 
   it("rejects model-version drift against the snapshot as terminal failure", async () => {
     const db = new FakeDb(execution());
@@ -504,6 +920,8 @@ describe("worker inference processor (C)", () => {
       expect(saved?.confidence).toBeNull();
       expect(saved?.probabilities).toEqual({});
       expect(saved?.artifacts).toEqual({});
+      expect(saved?.modelVersions).toEqual({});
+      expect(saved?.modelPredictions).toEqual({});
     }
   });
 

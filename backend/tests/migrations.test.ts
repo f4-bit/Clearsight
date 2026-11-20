@@ -792,3 +792,198 @@ describe("migration A execution invariants", () => {
     ]);
   });
 });
+
+/**
+ * Migration F: actual ML result details (4.2). Own schema, applied over the
+ * previous migrations with a legacy inference row already present.
+ */
+describe("migration F inference result details", () => {
+  const RESULT_SCHEMA = "inference_result_details_rules";
+  const RESULT_DETAILS = "20261120000000_inference_result_details";
+  const USER = "00000000-0000-4000-8000-0000000003d1";
+  const PATIENT = "00000000-0000-4000-8000-0000000003a1";
+  const CONSULTATION = "00000000-0000-4000-8000-0000000003c1";
+  const IMAGE = "00000000-0000-4000-8000-0000000003b1";
+  const SNAPSHOT = "00000000-0000-4000-8000-0000000003f1";
+  const LEGACY_INFERENCE = "00000000-0000-4000-8000-0000000003e1";
+  const NEW_INFERENCE = "00000000-0000-4000-8000-0000000003e2";
+
+  let details: Client;
+
+  beforeAll(async () => {
+    details = new Client({ connectionString: inject("databaseUrl") });
+    await details.connect();
+    await details.query(
+      `DROP SCHEMA IF EXISTS ${RESULT_SCHEMA} CASCADE; CREATE SCHEMA ${RESULT_SCHEMA}; SET search_path TO ${RESULT_SCHEMA}`,
+    );
+    for (const name of MIGRATIONS.filter((migration) => migration !== RESULT_DETAILS)) {
+      await details.query(migrationSql(name));
+    }
+    await details.query(
+      "INSERT INTO users (id, email, password_hash, full_name) VALUES ($1, $2, 'x', 'Dr')",
+      [USER, "result-details@clearsight.test"],
+    );
+    await details.query("INSERT INTO patients (id) VALUES ($1)", [PATIENT]);
+    await details.query(
+      "INSERT INTO consultations (id, patient_id, doctor_id) VALUES ($1, $2, $3)",
+      [CONSULTATION, PATIENT, USER],
+    );
+    await details.query(
+      "INSERT INTO images (id, consultation_id, eye_side, storage_path) VALUES ($1, $2, 'OD', 'x')",
+      [IMAGE, CONSULTATION],
+    );
+    await details.query(
+      "INSERT INTO clinical_snapshots (id, consultation_id, raw_payload, normalized_payload, schema_version, model_versions) " +
+        "VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, 'ml-zscore-f32-v1', $3::jsonb)",
+      [SNAPSHOT, CONSULTATION, '{"manifest":"snapshot-v1"}'],
+    );
+    await details.query(
+      "INSERT INTO inferences (id, image_id, clinical_snapshot_id, model_version) VALUES ($1, $2, $3, 'legacy-v1')",
+      [LEGACY_INFERENCE, IMAGE, SNAPSHOT],
+    );
+    await details.query(migrationSql(RESULT_DETAILS));
+  });
+
+  afterAll(async () => {
+    await details.query(`SET search_path TO public; DROP SCHEMA IF EXISTS ${RESULT_SCHEMA} CASCADE`);
+    await details.end();
+  });
+
+  it("migrates legacy rows to unknown JSON objects without mutating model_version", async () => {
+    const columns = await details.query(
+      "SELECT column_name, data_type, is_nullable, column_default " +
+        "FROM information_schema.columns " +
+        "WHERE table_schema = $1 AND table_name = 'inferences' " +
+        "AND column_name IN ('model_versions', 'model_predictions') ORDER BY column_name",
+      [RESULT_SCHEMA],
+    );
+    expect(columns.rows).toEqual([
+      {
+        column_name: "model_predictions",
+        data_type: "jsonb",
+        is_nullable: "NO",
+        column_default: "'{}'::jsonb",
+      },
+      {
+        column_name: "model_versions",
+        data_type: "jsonb",
+        is_nullable: "NO",
+        column_default: "'{}'::jsonb",
+      },
+    ]);
+
+    const constraints = await details.query(
+      "SELECT conname FROM pg_constraint WHERE conrelid = $1::regclass ORDER BY conname",
+      [`${RESULT_SCHEMA}.inferences`],
+    );
+    expect(constraints.rows.map((row) => row.conname)).toEqual(
+      expect.arrayContaining([
+        "inferences_model_predictions_object_check",
+        "inferences_model_versions_object_check",
+      ]),
+    );
+
+    const legacy = await details.query(
+      "SELECT model_version, model_versions, model_predictions FROM inferences WHERE id = $1",
+      [LEGACY_INFERENCE],
+    );
+    expect(legacy.rows).toEqual([
+      {
+        model_version: "legacy-v1",
+        model_versions: {},
+        model_predictions: {},
+      },
+    ]);
+    const snapshotVersions = await details.query(
+      "SELECT model_versions FROM clinical_snapshots WHERE id = $1",
+      [SNAPSHOT],
+    );
+    expect(snapshotVersions.rows).toEqual([{ model_versions: { manifest: "snapshot-v1" } }]);
+
+    await expect(details.query(migrationSql(RESULT_DETAILS))).resolves.toBeDefined();
+    const replay = await details.query(
+      "SELECT model_version, model_versions, model_predictions FROM inferences WHERE id = $1",
+      [LEGACY_INFERENCE],
+    );
+    expect(replay.rows).toEqual(legacy.rows);
+  });
+
+  it("defaults new rows to unknown and rejects non-object JSON", async () => {
+    await details.query(
+      "INSERT INTO inferences (id, image_id) VALUES ($1, $2)",
+      [NEW_INFERENCE, IMAGE],
+    );
+    const inserted = await details.query(
+      "SELECT model_versions, model_predictions FROM inferences WHERE id = $1",
+      [NEW_INFERENCE],
+    );
+    expect(inserted.rows).toEqual([{ model_versions: {}, model_predictions: {} }]);
+
+    for (const value of ['[]', 'null', '1', '"x"']) {
+      await expect(
+        details.query(
+          "UPDATE inferences SET model_versions = $2::jsonb WHERE id = $1",
+          [LEGACY_INFERENCE, value],
+        ),
+      ).rejects.toThrow(/inferences_model_versions_object_check/);
+      await expect(
+        details.query(
+          "UPDATE inferences SET model_predictions = $2::jsonb WHERE id = $1",
+          [LEGACY_INFERENCE, value],
+        ),
+      ).rejects.toThrow(/inferences_model_predictions_object_check/);
+    }
+  });
+
+  it("lets clearsight_app update the new columns without broadening permissions", async () => {
+    const qualified = `${RESULT_SCHEMA}.inferences`;
+    const privilege = await details.query(
+      "SELECT has_column_privilege('clearsight_app', $1, 'model_versions', 'SELECT') AS versions_sel, " +
+        "has_column_privilege('clearsight_app', $1, 'model_versions', 'UPDATE') AS versions_upd, " +
+        "has_column_privilege('clearsight_app', $1, 'model_predictions', 'SELECT') AS predictions_sel, " +
+        "has_column_privilege('clearsight_app', $1, 'model_predictions', 'UPDATE') AS predictions_upd, " +
+        "has_table_privilege('clearsight_app', $1, 'DELETE') AS del, " +
+        "has_table_privilege('clearsight_app', $1, 'TRUNCATE') AS trunc, " +
+        "has_table_privilege('clearsight_app', $1, 'TRIGGER') AS trigger, " +
+        "has_table_privilege('clearsight_app', $1, 'REFERENCES') AS refs",
+      [qualified],
+    );
+    expect(privilege.rows[0]).toEqual({
+      versions_sel: true,
+      versions_upd: true,
+      predictions_sel: true,
+      predictions_upd: true,
+      del: false,
+      trunc: false,
+      trigger: false,
+      refs: false,
+    });
+
+    await details.query("SET ROLE clearsight_app");
+    try {
+      await expect(
+        details.query(
+          "UPDATE inferences SET model_versions = $2::jsonb, model_predictions = $3::jsonb WHERE id = $1",
+          [LEGACY_INFERENCE, '{"manifest":"actual"}', '{"efficientnet_b3":{"confidence":0.8}}'],
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        details.query("DELETE FROM inferences WHERE id = $1", [LEGACY_INFERENCE]),
+      ).rejects.toThrow(/permission denied/);
+      await expect(details.query("TRUNCATE inferences")).rejects.toThrow(/permission denied/);
+    } finally {
+      await details.query("RESET ROLE");
+    }
+
+    const updated = await details.query(
+      "SELECT model_versions, model_predictions FROM inferences WHERE id = $1",
+      [LEGACY_INFERENCE],
+    );
+    expect(updated.rows).toEqual([
+      {
+        model_versions: { manifest: "actual" },
+        model_predictions: { efficientnet_b3: { confidence: 0.8 } },
+      },
+    ]);
+  });
+});

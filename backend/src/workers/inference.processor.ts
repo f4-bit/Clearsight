@@ -1,9 +1,13 @@
 import {
+  CLASS_LABEL_SET,
+  canonicalClassIndex,
+} from "../schemas/common.js";
+import {
   CLINICAL_FEATURE_NAMES,
   ClinicalFeaturesSchema,
   type ClinicalFeatures,
 } from "../schemas/clinical.js";
-import type { JobResponse } from "../schemas/inference.js";
+import type { JobResponse, ModelPrediction } from "../schemas/inference.js";
 import type {
   InferenceRunExecution,
   InferenceRunRepository,
@@ -21,20 +25,6 @@ import {
   type InferenceJobData,
   type InferenceTerminalStatus,
 } from "./inference.contracts.js";
-
-const CANONICAL_LABELS = {
-  Glaucoma: 0,
-  Non_Glaucoma: 1,
-  Suspicious_Glaucoma: 2,
-} as const;
-const CANONICAL_LABEL_SET = new Set(Object.keys(CANONICAL_LABELS));
-// Legacy casing already accepted by the old worker is normalized to the same
-// canonical index; any other label is rejected, never guessed.
-const LEGACY_LABEL_ALIASES: Record<string, keyof typeof CANONICAL_LABELS> = {
-  glaucoma: "Glaucoma",
-  non_glaucoma: "Non_Glaucoma",
-  suspicious_glaucoma: "Suspicious_Glaucoma",
-};
 
 export interface ProcessInferenceOutcome {
   inferenceId: string;
@@ -340,10 +330,12 @@ function completedUpdate(
   const quality = asRecord(result.quality);
   const artifacts = asStringRecord(result.artifacts);
   const modelVersions = asStringRecord(result.modelVersions);
+  const modelPredictions = asModelPredictions(result.modelPredictions);
   if (
     quality === null ||
     artifacts === null ||
     modelVersions === null ||
+    modelPredictions === null ||
     !versionsCompatible(modelVersions, context, true)
   ) {
     throw new InvalidResultError();
@@ -364,6 +356,8 @@ function completedUpdate(
     predictedClass,
     confidence,
     probabilities,
+    modelVersions,
+    modelPredictions,
     cdr,
     cdrVertical,
     quality,
@@ -386,6 +380,8 @@ function reviewUpdate(
     predictedClass: null,
     confidence: null,
     probabilities: {},
+    modelVersions: {},
+    modelPredictions: {},
     cdr: null,
     cdrVertical: null,
     quality: {},
@@ -407,8 +403,8 @@ function reviewUpdate(
   const quality = asRecord(result.quality);
   const artifacts = asStringRecord(result.artifacts);
   const modelVersions = asStringRecord(result.modelVersions);
+  const modelPredictions = asModelPredictions(result.modelPredictions);
   if (
-    probabilities === null ||
     quality === null ||
     artifacts === null ||
     modelVersions === null ||
@@ -417,11 +413,20 @@ function reviewUpdate(
     return base;
   }
 
+  const acceptedProbabilities = probabilities ?? {};
+  const diagnosticsValid =
+    probabilities !== null &&
+    Object.keys(acceptedProbabilities).length > 0 &&
+    modelPredictions !== null;
   return {
     ...base,
-    predictedClass: canonicalClassIndex(result.label),
-    confidence: finiteUnit(result.confidence),
-    probabilities,
+    predictedClass: diagnosticsValid
+      ? canonicalClassIndex(result.label)
+      : null,
+    confidence: diagnosticsValid ? finiteUnit(result.confidence) : null,
+    probabilities: acceptedProbabilities,
+    modelVersions,
+    modelPredictions: modelPredictions ?? {},
     cdr: nullable(finiteOrNull(result.cdr)),
     cdrVertical: nullable(finiteOrNull(result.cdrVertical)),
     quality,
@@ -440,6 +445,8 @@ function failedUpdate(): TerminalInferenceUpdate {
     predictedClass: null,
     confidence: null,
     probabilities: {},
+    modelVersions: {},
+    modelPredictions: {},
     cdr: null,
     cdrVertical: null,
     quality: {},
@@ -510,35 +517,20 @@ function assertResultIdentity(
   }
 }
 
-function canonicalClassIndex(
-  label: string | null | undefined,
-): number | null {
-  if (typeof label !== "string") return null;
-  if (Object.prototype.hasOwnProperty.call(CANONICAL_LABELS, label)) {
-    return CANONICAL_LABELS[label as keyof typeof CANONICAL_LABELS];
-  }
-  const normalized = label.toLowerCase();
-  if (!Object.prototype.hasOwnProperty.call(LEGACY_LABEL_ALIASES, normalized)) {
-    return null;
-  }
-  const alias = LEGACY_LABEL_ALIASES[normalized];
-  return alias === undefined ? null : CANONICAL_LABELS[alias];
-}
-
 function parseProbabilities(
   probabilities: Record<string, number>,
   requireAll: boolean,
 ): Record<string, number> | null {
   const entries = Object.entries(probabilities);
-  if (entries.length === 0) return null;
+  if (entries.length === 0) return requireAll ? null : {};
   const parsed: Record<string, number> = {};
   for (const [name, value] of entries) {
-    if (!CANONICAL_LABEL_SET.has(name) || finiteUnit(value) === null) {
+    if (!CLASS_LABEL_SET.has(name) || finiteUnit(value) === null) {
       return null;
     }
-    parsed[name] = value;
+    defineOwn(parsed, name, value);
   }
-  if (requireAll && Object.keys(parsed).length !== CANONICAL_LABEL_SET.size) {
+  if (requireAll && Object.keys(parsed).length !== CLASS_LABEL_SET.size) {
     return null;
   }
   return parsed;
@@ -583,7 +575,7 @@ function artifactPath(
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-function finiteUnit(value: number | null | undefined): number | null {
+function finiteUnit(value: unknown): number | null {
   return typeof value === "number" &&
     Number.isFinite(value) &&
     value >= 0 &&
@@ -619,7 +611,62 @@ function asStringRecord(value: unknown): Record<string, string> | null {
   const parsed: Record<string, string> = {};
   for (const [key, item] of Object.entries(record)) {
     if (typeof item !== "string") return null;
-    parsed[key] = item;
+    defineOwn(parsed, key, item);
   }
   return parsed;
+}
+
+function asModelPredictions(
+  value: unknown,
+): Record<string, ModelPrediction> | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  const parsed: Record<string, ModelPrediction> = {};
+  for (const [name, item] of Object.entries(record)) {
+    const prediction = asRecord(item);
+    if (prediction === null) return null;
+    const probabilityEntries = asFiniteNumberRecord(prediction.probabilities);
+    if (probabilityEntries === null) return null;
+    const probabilities = parseProbabilities(probabilityEntries, true);
+    const predictedClass = prediction.predictedClass;
+    const confidence = finiteUnit(prediction.confidence);
+    if (
+      probabilities === null ||
+      typeof predictedClass !== "string" ||
+      canonicalClassIndex(predictedClass) === null ||
+      confidence === null
+    ) {
+      return null;
+    }
+    defineOwn(parsed, name, {
+      probabilities,
+      predictedClass,
+      confidence,
+    });
+  }
+  return parsed;
+}
+
+function asFiniteNumberRecord(value: unknown): Record<string, number> | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  const parsed: Record<string, number> = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (!isFiniteNumber(item)) return null;
+    defineOwn(parsed, key, item);
+  }
+  return parsed;
+}
+
+function defineOwn<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }

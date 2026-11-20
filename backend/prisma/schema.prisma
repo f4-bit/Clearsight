@@ -150,6 +150,9 @@ model Inference {
   predictedClass Int?     @map("predicted_class")
   confidence     Float?
   probabilities  Json     @default("{}") @db.JsonB
+  // Actual result returned by the ML wire; separate from snapshot.modelVersions.
+  modelVersions    Json @default("{}") @map("model_versions") @db.JsonB
+  modelPredictions Json @default("{}") @map("model_predictions") @db.JsonB
   // Area-based CDR (model input) vs vertical CDR (clinical report): never interchangeable.
   cdr            Float?
   cdrVertical    Float?   @map("cdr_vertical")

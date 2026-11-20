@@ -31,8 +31,48 @@ export class MlClientError extends Error {
   }
 }
 
+function defineRecordEntry<T>(
+  record: Record<string, T>,
+  key: string,
+  value: T,
+): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+/**
+ * Zod `record()` silently drops an own `__proto__` key. The ML wire is JSON;
+ * preserve every own key and validate each value before copying it.
+ */
+function protoSafeRecord<T>(
+  valueSchema: z.ZodType<T>,
+): z.ZodType<Record<string, T>> {
+  return z.unknown().transform((value, ctx) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      ctx.addIssue({ code: "custom", message: "Expected an object record" });
+      return z.NEVER;
+    }
+    const parsed: Record<string, T> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const result = valueSchema.safeParse(item);
+      if (!result.success) {
+        for (const issue of result.error.issues) {
+          ctx.addIssue({ ...issue, path: [key, ...issue.path] });
+        }
+        return z.NEVER;
+      }
+      defineRecordEntry(parsed, key, result.data);
+    }
+    return parsed;
+  });
+}
+
 const WireModelPrediction = z.strictObject({
-  probabilities: z.record(z.string(), z.number().finite()),
+  probabilities: protoSafeRecord(z.number().finite()),
   predicted_class: z.string(),
   confidence: z.number().finite(),
 });
@@ -42,13 +82,13 @@ const WireInferenceResult = z.strictObject({
   eye_side: z.enum(["OD", "OS"]),
   label: z.string().nullable(),
   confidence: z.number().finite().nullable(),
-  probabilities: z.record(z.string(), z.number().finite()),
-  model_predictions: z.record(z.string(), WireModelPrediction),
+  probabilities: protoSafeRecord(z.number().finite()),
+  model_predictions: protoSafeRecord(WireModelPrediction),
   cdr: z.number().finite().nullable(),
   cdr_vertical: z.number().finite().nullable(),
-  quality: z.record(z.string(), z.unknown()),
-  artifacts: z.record(z.string(), z.string()),
-  model_versions: z.record(z.string(), z.string()),
+  quality: protoSafeRecord(z.unknown()),
+  artifacts: protoSafeRecord(z.string()),
+  model_versions: protoSafeRecord(z.string()),
   elapsed_seconds: z.number().finite(),
 });
 

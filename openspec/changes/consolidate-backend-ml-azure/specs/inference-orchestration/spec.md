@@ -4,25 +4,43 @@
 
 ### Requirement: Contrato público estricto del servicio ML
 
-El servicio ML SHALL exponer `POST /v1/inferences` con cuerpo JSON que contenga `inference_id`, `image_url` firmada, `eye_side`, `clinical_features` y `model_version` opcional. El endpoint MUST NOT aceptar multipart, un segundo archivo de imagen ni un valor de CDR como entrada. El servicio MUST validar estrictamente los campos y MUST responder `202 Accepted` con identificadores de inferencia y job cuando acepte el trabajo.
+El servicio ML SHALL exponer `POST /v1/inferences` con cuerpo JSON estricto (`extra=forbid`) que contenga `inference_id`, `image_url` firmada, `eye_side`, `clinical_features` con las once variables finitas y `model_version` opcional. El endpoint MUST NOT aceptar multipart, un segundo archivo de imagen, un valor de CDR de entrada, `cdr_vertical` ni campos desconocidos. El servicio MUST validar estrictamente los campos y MUST responder `422` antes de encolar cuando el contrato o la `image_url` no sean válidos, y `202 Accepted` con identificadores de inferencia y job cuando acepte el trabajo. La política de URL MUST ser un helper puro y compartido, alimentado solo por configuración confiable, y MUST aplicarse tanto en la admisión como antes del `GET` de descarga. `ML_ALLOWED_SIGNED_URL_HOSTS` MUST ser no vacío para HTTP y HTTPS, sin “allow all”; HTTPS es el default de producción y HTTP solo se admite con `ML_ALLOW_HTTP_SIGNED_URLS=true` explícito más allowlist no vacía (compatibilidad de desarrollo MinIO `localhost`/`minio` con puerto). MUST rechazarse sin inferir: esquemas distintos de `http`/`https` (`file:`, `data:`, `ftp:` u otro), hostname ausente, credenciales/userinfo, fragmento raw, puerto inválido, host vacío o host fuera de la allowlist, con mensaje seguro que no incluya la URL. La allowlist MUST evaluarse por hostname/patrón, conservando solo el wildcard legacy acotado `*.blob.core.windows.net`; no se añade un framework global de DNS/private-IP ni se valida criptografía/SAS en el ML porque storage es la autoridad de firma. La descarga MUST NOT seguir redirecciones (`301`/`302`/`307` se bloquean sin reconstruir una URL), MUST conservar el timeout configurado existente y MUST acotar bytes por `Content-Length` y por lectura real en stream. La política de autenticación del servicio entrante se conserva sin tokens ni scopes nuevos de producción.
 
 #### Scenario: Solicitud válida con URL firmada
 
-- **WHEN** el backend envía un JSON estricto con `inference_id`, `image_url`, `eye_side` y las once variables clínicas
+- **WHEN** el backend envía un JSON estricto con `inference_id`, `image_url` válida y allowlisted, `eye_side` y las once variables clínicas finitas
 - **THEN** el servicio ML responde `202 Accepted` con `inference_id`, `job_id` y estado `QUEUED`
 - **AND** no requiere subir un archivo multipart.
 
-#### Scenario: Intento de enviar CDR de entrada
+#### Scenario: Intento de enviar CDR o campos desconocidos
 
-- **WHEN** la solicitud incluye un campo de CDR o un archivo adjunto no previsto
-- **THEN** el servicio ML rechaza la solicitud por contrato estricto
+- **WHEN** la solicitud incluye un campo de CDR, `cdr_vertical`, multipart o cualquier campo desconocido
+- **THEN** el servicio ML responde `422` antes de encolar
 - **AND** no inicia un análisis con datos no canónicos.
 
-#### Scenario: URL de imagen no firmada o inválida
+#### Scenario: URL con allowlist vacía o HTTP no habilitado
 
-- **WHEN** `image_url` no es HTTPS válido o su host no está allowlisted
-- **THEN** el servicio ML rechaza la descarga con un error seguro
-- **AND** no sigue redirecciones ni hosts no autorizados.
+- **WHEN** `ML_ALLOWED_SIGNED_URL_HOSTS` está vacío o `image_url` usa HTTP sin `ML_ALLOW_HTTP_SIGNED_URLS=true`
+- **THEN** el servicio ML responde `422` antes de encolar, sin inferir
+- **AND** no existe un default “allow all” ni un fallback permisivo.
+
+#### Scenario: URL con esquema, host o componentes inválidos
+
+- **WHEN** `image_url` usa `file:`/`data:`/`ftp:` u otro esquema, no tiene hostname, incluye credenciales/userinfo, fragmento raw, puerto inválido o host no allowlisted
+- **THEN** el servicio ML responde `422` con mensaje seguro sin URL
+- **AND** no intenta descargar ni acceder a redes internas o metadatos del proveedor.
+
+#### Scenario: Redirección en la descarga
+
+- **WHEN** el `GET` de la imagen responde `301`/`302`/`307`
+- **THEN** el pipeline bloquea la redirección y no sigue una URL nueva
+- **AND** no descarga el cuerpo de un host no autorizado.
+
+#### Scenario: Tamaño o timeout excedido
+
+- **WHEN** `Content-Length` o los bytes leídos superan el máximo, o se agota el timeout configurado
+- **THEN** la descarga falla con error seguro sin URL
+- **AND** no se procesa una imagen parcial ni se pipelinea un resultado.
 
 ### Requirement: Estados de job y resultado completo
 
@@ -45,6 +63,34 @@ El servicio ML SHALL usar el vocabulario de estados `QUEUED`, `DOWNLOADING`, `LO
 - **WHEN** el cliente consulta un job recién aceptado
 - **THEN** recibe su estado y etapa actuales sin error
 - **AND** no se le obliga a reenviar el trabajo para conocer el estado.
+
+### Requirement: Persistencia completa de versiones y predicciones
+
+El backend SHALL persistir el resultado real del ML en la ejecución, no solo un subconjunto. La persistencia MUST añadir `model_versions` y `model_predictions` como objetos JSON completos (claves tal como las devuelve el wire ML validado) mediante una migración incremental idempotente, con `DEFAULT '{}' NOT NULL` y CHECK de objeto; `0_init` y el baseline MUST quedar intactos. Las filas históricas MUST leer `{}` como resultado desconocido y MUST NOT copiar el string legacy `modelVersion` como `modelVersions` ni rellenar un objeto inventado. `snapshot.modelVersions` MUST seguir siendo el input inmutable de la preparación clínica, no el resultado efectivo. `COMPLETED` MUST guardar el resultado completo; `REVIEW_REQUIRED` MUST guardar la evidencia parcial válida disponible; `FAILED` MUST guardar `{}` sin clases ni predicciones ficticias. Los campos `cdr`, `cdr_vertical`, `quality`, `artifacts` y `elapsed_seconds` ya implementados MUST conservarse. El `modelVersion` primario MUST seguir siendo compatibilidad resuelta sin `"v1"` fabricado. `saveResult` deprecated MAY aceptar los campos nuevos opcionales por compatibilidad, pero MUST NOT tener caller de producción ni adelantar el CAS de 4.9. `GET /inferences/:id` MUST NOT cambiar por esta persistencia ni exponer los nuevos campos como lectura pública, y `readResult` MUST NOT filtrar artefactos. `modelVersions`/`modelPredictions` MUST conservar el mapeo existente `snake_case` ML → `camelCase` y los labels string reales, sin transformación ni clasificación adivinada.
+
+#### Scenario: Resultado completo persistido
+
+- **WHEN** el ML devuelve `COMPLETED` con versiones y predicciones por modelo
+- **THEN** el CAS persiste `modelVersions` y `modelPredictions` completos junto con los campos existentes
+- **AND** no se pierde ninguna clave válida del wire.
+
+#### Scenario: Revisión con evidencia parcial
+
+- **WHEN** el ML devuelve `REVIEW_REQUIRED` con evidencia parcial válida
+- **THEN** se persisten las versiones/predicciones disponibles sin inventar una clase ni declarar completitud
+- **AND** la revisión no se autoaprueba.
+
+#### Scenario: Fallo y fila legacy
+
+- **WHEN** la ejecución termina `FAILED` o se lee una fila histórica
+- **THEN** `modelVersions`/`modelPredictions` quedan `{}` como desconocidos
+- **AND** no se copia `modelVersion` ni se fabrica `"v1"`.
+
+#### Scenario: GET público sin cambios
+
+- **WHEN** el cliente consulta `GET /inferences/:id`
+- **THEN** el contrato público se mantiene y no se exponen los nuevos campos persistidos
+- **AND** `readResult` no recibe artefactos por esta vía.
 
 ### Requirement: Polling, Retry-After y entrega posterior a COMPLETED
 
@@ -176,19 +222,37 @@ El worker SHALL asumir entrega al menos una vez y MUST aplicar efectos idempoten
 
 ### Requirement: Etiquetas canónicas y rechazo de etiquetas desconocidas
 
-El sistema SHALL usar las clases canónicas `0 Glaucoma`, `1 Non_Glaucoma` y `2 Suspicious_Glaucoma`. Si el servicio ML devuelve una etiqueta desconocida, el worker MUST rechazarla o registrarla como error seguro; MUST NOT mapearla a una clase inventada ni persistir un índice arbitrario.
+El sistema SHALL usar una única fuente canónica en `backend/src/schemas/common.ts`, derivada exactamente de `CLASS_LABELS` con `0 Glaucoma`, `1 Non_Glaucoma` y `2 Suspicious_Glaucoma`. El mapa tipado y el helper `canonicalClassIndex` MUST exportarse y ser usados por el processor; MUST NOT existir un segundo mapa local divergente. Solo MUST preservarse los aliases/casing legacy ya aceptados por el processor (`glaucoma`, `non_glaucoma`, `suspicious_glaucoma`); el matching legacy MUST aplicar `toLowerCase()` únicamente para esos tres nombres y MUST NOT hacer trim, substring ni otras variantes. El helper MUST ser seguro para valores no string y para claves de prototipo como `__proto__`, `constructor` y `toString`, devolviendo `null` sin lanzar. Si el servicio ML devuelve una etiqueta desconocida, el worker MUST rechazarla o registrarla como error seguro; MUST NOT mapearla a una clase inventada ni persistir un índice arbitrario. En `COMPLETED`, una etiqueta desconocida MUST terminar en `FAILED` con código fijo y seguro, sin label raw en logs de producción y con `modelVersions`/`modelPredictions` `{}`. En `REVIEW_REQUIRED`, una etiqueta desconocida MUST dejar `predictedClass=null` y conservar el resto de evidencia parcial válida, sin autoaprobar ni fabricar `0`/`1`. Cada `modelPredictions` MUST exigir las tres claves canónicas con valores finitos `[0,1]`, `confidence` finita `[0,1]` y `predictedClass` canónico o alias legacy acotado, preservando el string raw válido sin castear un índice. Bajo `COMPLETED`, una predicción desconocida o malformada MUST terminar en `FAILED`; bajo `REVIEW_REQUIRED`, MUST descartarse (`{}`) dejando `predictedClass=null` y conservando los demás parciales válidos, sin guardar ni loguear el label raw inválido.
 
-#### Scenario: Etiqueta desconocida
+#### Scenario: Etiqueta desconocida en COMPLETED
 
-- **WHEN** el resultado ML contiene una etiqueta que no pertenece al catálogo canónico
-- **THEN** el sistema registra un error seguro y no persiste una clase adivinada
-- **AND** la ejecución no se marca como completada con datos inválidos.
+- **WHEN** un resultado `COMPLETED` contiene una etiqueta fuera del catálogo canónico
+- **THEN** el sistema termina `FAILED` con un código de error fijo y seguro
+- **AND** no persiste una clase adivinada ni escribe el label raw en logs de producción.
 
-#### Scenario: Clase canónica correcta
+#### Scenario: Etiqueta desconocida en REVIEW_REQUIRED
 
-- **WHEN** el resultado contiene `Glaucoma`
-- **THEN** el sistema persiste la clase `0`
+- **WHEN** un resultado `REVIEW_REQUIRED` contiene una etiqueta fuera del catálogo canónico
+- **THEN** `predictedClass` queda `null` y se conserva la demás evidencia parcial válida
+- **AND** no se convierte la revisión en `COMPLETED` ni se fabrica `0`/`1`.
+
+#### Scenario: Clase canónica y casing legacy
+
+- **WHEN** el resultado contiene `Glaucoma`, `Non_Glaucoma`, `Suspicious_Glaucoma` o el casing legacy `glaucoma`/`non_glaucoma`/`suspicious_glaucoma`
+- **THEN** el sistema persiste `0`/`1`/`2` según la fuente única
 - **AND** conserva la etiqueta y las probabilidades originales para trazabilidad.
+
+#### Scenario: Clave de prototipo y valor nulo
+
+- **WHEN** la etiqueta es `null`, `undefined`, `__proto__`, `constructor` o `toString`
+- **THEN** `canonicalClassIndex` devuelve `null` sin lanzar
+- **AND** no se persiste una clase por accidente de prototipo.
+
+#### Scenario: Predicción por modelo desconocida o malformada
+
+- **WHEN** `modelPredictions` contiene un label desconocido, claves de probabilidad no canónicas, valores fuera de `[0,1]` o una estructura malformada
+- **THEN** en `COMPLETED` la validación falla de forma cerrada y la ejecución termina `FAILED`
+- **AND** en `REVIEW_REQUIRED` se descartan esas predicciones (`{}`), `predictedClass` queda `null` y se conservan los demás parciales válidos sin guardar ni loguear el label raw.
 
 ### Requirement: Reintentos acotados y semántica de timeout/cancelación
 

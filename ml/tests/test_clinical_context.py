@@ -154,12 +154,16 @@ def _client(
     monkeypatch.setattr(
         service_main,
         "get_settings",
-        lambda: replace(get_settings(), api_token="secret-token"),
+        lambda: replace(
+            get_settings(),
+            api_token="secret-token",
+            allowed_signed_url_hosts=("example.test",),
+        ),
     )
     queue = _Queue()
     application = create_app(initialize_runtime=False)
     application.state.runtime = Runtime(
-        pipeline=_Pipeline(),
+        pipeline=_Pipeline(),  # type: ignore[arg-type]
         queue=queue,
         context=context,
     )
@@ -643,7 +647,7 @@ def _pipeline(context: RuntimeContext | None) -> InferencePipeline:
         manifest=copy.deepcopy(MANIFEST),
         context=context,
     )
-    pipeline._download_image = lambda _: (_ for _ in ()).throw(  # type: ignore[method-assign]
+    pipeline._download_image = lambda _: (_ for _ in ()).throw(  # type: ignore[assignment, method-assign]
         _SentinelError()
     )
     return pipeline
