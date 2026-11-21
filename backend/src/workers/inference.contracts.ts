@@ -3,6 +3,15 @@ import type { ClinicalFeatures } from "../schemas/clinical.js";
 export const INFERENCE_QUEUE_NAME = "inference-jobs";
 export const INFERENCE_POLL_INTERVAL_MS = 2_000;
 export const INFERENCE_MAX_POLLS = 60;
+export const INFERENCE_DEFAULT_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: "exponential" as const,
+    delay: 2_000,
+  },
+  removeOnComplete: 1_000,
+  removeOnFail: 5_000,
+} as const;
 
 export const INFERENCE_TERMINAL_STATUSES = [
   "COMPLETED",
@@ -29,7 +38,8 @@ export interface InferenceExpectedContext {
 export interface InferenceJobData {
   inferenceId: string;
   imageId: string;
-  imageUrl: string;
+  /** Legacy compatibility only; new jobs sign from the trusted DB storagePath. */
+  imageUrl?: string;
   eyeSide: "OD" | "OS";
   clinicalFeatures: ClinicalFeatures;
   modelVersion?: string | null;

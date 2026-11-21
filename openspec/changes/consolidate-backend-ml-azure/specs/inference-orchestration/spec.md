@@ -266,7 +266,7 @@ El backend SHALL calcular SHA-256 sobre los bytes sanitizados para verificar el 
 
 ### Requirement: Entrega at-least-once y recuperación del worker
 
-El worker SHALL asumir entrega al menos una vez y MUST aplicar efectos idempotentes. El sistema MUST persistir la intención de encolado de forma consistente con la creación de la ejecución, mediante outbox o reconciliación equivalente, y MUST usar un identificador de inferencia estable. Si se pierde la respuesta de aceptación del ML, el worker MUST consultar el job existente antes de reenviar. Tras un reinicio, el worker MUST recuperar o consultar el job ML existente y MUST NOT inventar un trabajo nuevo para la misma ejecución.
+El worker SHALL asumir entrega al menos una vez y MUST aplicar efectos idempotentes. La intención de encolado MUST recuperarse mediante reconciliación acotada, no mediante un outbox transaccional con Redis. Una migración incremental aditiva sobre `idempotency_records` MUST añadir `dispatch_attempts` (entero no negativo, default 0), `next_dispatch_at` (default `now()`), `lease_until` y `last_error_code` (código seguro, nunca URL ni mensaje), con índice parcial de filas `PENDING`, sin editar migraciones históricas ni `0_init`; el replay MUST ser idempotente y los privilegios de `clearsight_app` MUST conservarse. Un reconciliador no bloqueante MUST reclamar lotes acotados de filas `PENDING` vencidas mediante lease atómico (`SKIP LOCKED`/`UPDATE` condicional sobre `state='PENDING'`, lease ausente o expirado y `next_dispatch_at<=now()`) y MUST reanudar sin sesión ni claims reutilizando el helper de `inference-creation`, con firma fresca y `enqueue` de `jobId=inferenceId`. Al éxito MUST marcar `ACCEPTED` por CAS. Ante fallo de firma o cola MUST dejar `PENDING`, incrementar `dispatch_attempts`, fijar backoff `2s * 2^attempts` con cap ~120 s y liberar el lease; MUST NOT persistir `FAILED` por ese fallo. Una ejecución ya terminal MUST marcarse `ACCEPTED` sin reencolar. Varias réplicas MUST coordinarse por lease + `jobId` + CAS por `inferenceId`. Si BullMQ perdió el job por retención, MUST reencolar el mismo `jobId` (dedupe de BullMQ si aún existe). No se promete at-least-once perfecto ni outbox durable transaccional. El reconciliador MUST usar schema DB calificado y validado, parámetros bound y MUST NOT loguear URLs, SAS ni PHI.
 
 #### Scenario: Respuesta de aceptación perdida
 
@@ -285,6 +285,30 @@ El worker SHALL asumir entrega al menos una vez y MUST aplicar efectos idempoten
 - **WHEN** el mismo resultado se entrega o persiste dos veces
 - **THEN** la segunda persistencia es idempotente
 - **AND** no duplica artefactos, feedback ni transiciones de estado.
+
+#### Scenario: Reconciliación de un `PENDING` vencido
+
+- **WHEN** un registro `PENDING` tiene lease ausente/expirado y `next_dispatch_at<=now()`
+- **THEN** una réplica lo reclama con lease atómico, firma una URL fresca desde DB y encola `jobId=inferenceId`
+- **AND** al confirmar la cola lo marca `ACCEPTED` por CAS sin abrir sesión ni reclamar claims.
+
+#### Scenario: Fallo de firma o cola durante la reconciliación
+
+- **WHEN** falla la firma o el encolado al reanudar un `PENDING`
+- **THEN** el registro permanece `PENDING`, incrementa `dispatch_attempts`, recibe backoff acotado y libera el lease
+- **AND** no se marca `FAILED` ni se crea otra ejecución.
+
+#### Scenario: Reconciliación de una ejecución ya terminal
+
+- **WHEN** el registro `PENDING` apunta a una ejecución `COMPLETED`, `REVIEW_REQUIRED` o `FAILED`
+- **THEN** se marca `ACCEPTED` sin firmar ni reencolar
+- **AND** no depende de que BullMQ conserve el job antiguo.
+
+#### Scenario: Job perdido por retención de BullMQ
+
+- **WHEN** BullMQ perdió el job por retención
+- **THEN** la reconciliación reencola el mismo `jobId=inferenceId`
+- **AND** si el job aún existe, BullMQ deduplica y no se crea otro trabajo.
 
 ### Requirement: Etiquetas canónicas y rechazo de etiquetas desconocidas
 
@@ -322,7 +346,7 @@ El sistema SHALL usar una única fuente canónica en `backend/src/schemas/common
 
 ### Requirement: Reintentos acotados y semántica de timeout/cancelación
 
-El sistema SHALL reintentar solo errores transitorios, con backoff acotado y un límite explícito. Timeout y cancelación MUST tener semántica explícita y MUST NOT permitir un job huérfano silencioso. Un fallo permanente MUST terminar en `FAILED` con causa segura, sin reintentos infinitos.
+El sistema SHALL reintentar solo errores transitorios (`429`, `5xx`, timeout y red), con backoff acotado y un límite explícito. Timeout y cancelación MUST tener semántica explícita y MUST NOT permitir un job huérfano silencioso. El worker MUST NOT persistir `FAILED` en un intento no final. El `failed` handler MUST persistir `FAILED` una sola vez cuando el intento es final: al agotar BullMQ (`attemptsMade >= opts.attempts`) o al recibir `UnrecoverableError`, que BullMQ marca final sin consumir los tres intentos. La persistencia MUST usar CAS `saveTerminalResult` con payload seguro vacío, sin fabricar resultado, clase, predicciones ni versiones. Los errores terminales (`invalid_job_context`, `execution_not_found`, `terminal_conflict`, identity/eye mismatch, `invalid_result`, context mismatch o 4xx distinto de `429`) MUST convertirse en `UnrecoverableError` de BullMQ para no consumir los tres intentos. El CAS MUST proteger una ejecución ya terminal: un `FAILED` tardío MUST NOT sobrescribir `COMPLETED` ni `REVIEW_REQUIRED`. `attempts: 3`, backoff exponencial `2s`, `removeOnComplete: 1000` y `removeOnFail: 5000` MUST permanecer y MUST fijarse con un test de `defaultJobOptions`. REG-002/003/004 no se declaran resueltos por este requisito.
 
 #### Scenario: Error transitorio de red
 
@@ -330,11 +354,35 @@ El sistema SHALL reintentar solo errores transitorios, con backoff acotado y un 
 - **THEN** el sistema reintenta con backoff
 - **AND** conserva el mismo identificador de ejecución.
 
+#### Scenario: Intento no final
+
+- **WHEN** un intento falla pero `attemptsMade` aún no alcanzó `opts.attempts`
+- **THEN** el `failed` handler no persiste `FAILED`
+- **AND** el job puede reintentarse con el mismo identificador.
+
 #### Scenario: Límite de reintentos agotado
 
 - **WHEN** se agota el límite de reintentos
-- **THEN** la ejecución termina en `FAILED` con causa segura y no reintentable
+- **THEN** la ejecución termina en `FAILED` una sola vez con causa segura y no reintentable
 - **AND** no queda un job en ejecución sin dueño.
+
+#### Scenario: Error terminal sin gastar reintentos
+
+- **WHEN** ocurre un error terminal (`invalid_job_context`, `execution_not_found`, `terminal_conflict`, identity/eye mismatch, `invalid_result` o 4xx no-429) antes de agotar los intentos
+- **THEN** el job falla como `UnrecoverableError` sin consumir los tres intentos
+- **AND** el `failed` handler persiste `FAILED` una vez por CAS aunque `attemptsMade < opts.attempts`.
+
+#### Scenario: `FAILED` tardío no pisa evidencia
+
+- **WHEN** el `failed` handler intenta persistir `FAILED` sobre una ejecución ya `COMPLETED` o `REVIEW_REQUIRED`
+- **THEN** el CAS no actualiza la fila
+- **AND** se conserva el estado terminal original.
+
+#### Scenario: Defaults de cola fijados
+
+- **WHEN** se inspeccionan las opciones por defecto de la cola
+- **THEN** `attempts=3`, backoff exponencial `2s`, `removeOnComplete=1000` y `removeOnFail=5000` no cambian
+- **AND** un test falla si alguno se altera.
 
 #### Scenario: Cancelación solicitada
 
@@ -344,13 +392,37 @@ El sistema SHALL reintentar solo errores transitorios, con backoff acotado y un 
 
 ### Requirement: URL firmada just-in-time y protección SSRF
 
-El backend SHALL generar la URL firmada para el ML justo antes de entregarla al worker o de enviarla al servicio ML, a partir de una referencia de almacenamiento confiable. El sistema MUST NOT persistir una URL firmada de larga vida en BullMQ ni en base de datos. La descarga ML MUST validar host allowlisted, esquema HTTPS, no seguir redirecciones y respetar límites de tamaño.
+El backend SHALL generar la URL firmada para el ML **justo antes de cada** `submitInference` del worker, a partir de `execution.image.storagePath` leído de DB confiable y con un firmador inyectado. Los jobs nuevos MUST NOT incluir una URL firmada en el payload de BullMQ: `imageUrl` MUST eliminarse de `InferenceJobData` o quedar opcional solo para compatibilidad legacy. Un job legacy con `imageUrl` obsoleta MUST re-firmarse desde DB si el snapshot/contexto lo permiten y MUST ignorar la URL del payload. El sistema MUST NOT usar una URL que venga del payload cuando exista `storagePath` confiable; si no hay `storagePath` y falta la URL, el fallo MUST ser retryable, no terminal. El firmador MUST ser el mismo `StorageService`/`signMlDownloadUrl` con la allowlist de 4.1; un fallo de firma MUST ser retryable y MUST NOT llamar al ML. La descarga ML MUST validar host allowlisted, esquema HTTPS, no seguir redirecciones y respetar límites de tamaño; la allowlist/SSRF sigue siendo la autoridad y no cambia. El TTL default MUST seguir siendo 3600 s; la firma JIT elimina el riesgo de expiración por cola/stall y MUST NOT adoptarse 300 s. El sistema MUST NOT persistir la URL firmada en Redis, DB ni logs.
 
 #### Scenario: Espera en cola mayor que el TTL
 
 - **WHEN** un job espera en cola más tiempo que el TTL de la URL firmada
-- **THEN** el worker obtiene una URL nueva justo antes de enviarla
+- **THEN** el worker firma una URL nueva justo antes del `submitInference`
 - **AND** el ML no recibe una URL expirada.
+
+#### Scenario: Job nuevo sin URL en el payload
+
+- **WHEN** se encola un job nuevo
+- **THEN** el payload de BullMQ no contiene una URL firmada
+- **AND** el worker la obtiene desde `execution.image.storagePath` antes de llamar al ML.
+
+#### Scenario: Job legacy con URL obsoleta
+
+- **WHEN** un job legacy trae `imageUrl` y su ejecución tiene `storagePath` confiable
+- **THEN** el worker re-firma desde DB, ignora la URL del payload y envía la URL fresca
+- **AND** no reutiliza la URL legacy aunque el snapshot/contexto sea válido.
+
+#### Scenario: Sin `storagePath` y sin URL
+
+- **WHEN** no existe `storagePath` confiable y el payload tampoco trae URL
+- **THEN** el job falla de forma retryable
+- **AND** no se persiste `FAILED` terminal por esa ausencia.
+
+#### Scenario: Fallo del firmador
+
+- **WHEN** la firma falla antes del `submitInference`
+- **THEN** el job se reintenta de forma acotada sin llamar al ML
+- **AND** no se registra una URL ni se envía una URL obsoleta.
 
 #### Scenario: Host no permitido
 

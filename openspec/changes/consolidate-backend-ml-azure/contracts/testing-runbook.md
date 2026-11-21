@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -608,6 +608,36 @@
 | E2E | `scripts/e2e-backend.ps1` actualizado para enviar una key por intento; **no ejecutado** contra la DB de desarrollo compartida. |
 | Límites | 4.6 outbox/reconciliación, 4.7 retries/cancelación, 4.8 URL JIT, 4.9 y PDF/publicación pendientes; BullMQ `removeOnComplete:1000` sin dedup eterna; PENDING resume y `ACCEPTED` replay no reencolan job tras terminal (CAS worker protege); ventana post-dispatch enqueue→markAccepted sin cancelación atómica; sin TTL/borrado/tombstone hasta B3; `defects/regressions.md` no editado. `4.4/4.5 [x]`. |
 
+## 1.36 Registro HITO26 - implementación 4.6/4.7/4.8 (QA PASSED en §1.37)
+
+> **Naturaleza:** implementación y verificación focalizada de HITO26 sobre la base `bb83a3a`. **Actualización:** 4.6/4.7/4.8 implementados y QA PASSED; cerrados `[x]`. No se declaran resueltas REG-002/003/004. Los registros históricos §1.23/§1.26/§4.6/§4.8 que decían “300 queda para 4.8” se leen como planificación previa: D27.3 mantiene 3600 s y resuelve la expiración con firma JIT, sin adoptar 300 s.
+
+| Elemento | Registro |
+|---|---|
+| Base | `bb83a3a`; source modificado para 4.6/4.7/4.8. |
+| Documentos | `design.md` D27.1-D27.3/ADR-064..066 y riesgos; `specs/inference-orchestration/spec.md`; `specs/artifact-evidence/spec.md` (TTL); `tasks.md` 4.6/4.7/4.8; este runbook §1.36/§1.37/§4.12/§10. |
+| 4.6 | Migración aditiva `20261121000000_inference_dispatch` sobre `idempotency_records`; reconciliador con lease `SKIP LOCKED`, resume sin sesión, firma fresca + `jobId=inferenceId`, CAS `markAccepted`, backoff acotado; sin outbox transaccional Redis; schema calificado/params bound/sin URL en logs. |
+| 4.7 | `failed` handler persiste `FAILED` una vez cuando el intento es final (`attemptsMade >= opts.attempts` o `UnrecoverableError`, que no consume los 3 intentos) con CAS vacío; H2 exige `await job.isFailed()` antes del persist; H1 preserva `.code` en logs; `429`/`5xx`/timeout/red siguen retry; defaults 3/2s/1000/5000 intactos + test; CAS no pisa terminal. |
+| 4.8 | Worker re-firma URL JIT desde `execution.image.storagePath` antes de cada submit; jobs nuevos sin URL en payload; legacy re-firma desde DB e ignora URL obsoleta; sin storagePath+sin URL ⇒ retryable; fallo de firma retryable sin ML; TTL 3600; sin URL en Redis/logs. |
+| Código/tests | 4.6/4.7/4.8 implementados en migración/schema/repo/services/worker/processor/creation/contratos y tests unit/integration. |
+| Límites | Sin suite completa, Redis real, Azure/`.env`, modelos, PDF ni commit. La migración histórica/`0_init` no se edita. |
+| Comandos | Ejecutados para 4.6/4.7/4.8 en §4.12; cifras de cierre en §1.37. |
+
+**Frontend:** sin cambios de contrato; 4.6-4.8 no añaden códigos de error ni headers públicos. `imageUrl` es payload interno de BullMQ y no forma parte de la API clínica.
+
+## 1.37 Evidencia HITO26 - 4.6/4.7/4.8 QA PASSED
+
+> **Naturaleza:** cierre documental sobre source sin cambios adicionales. Sin suite completa, Redis real, Azure/`.env`, PDF, modelos ni commit. `defects/regressions.md` no se edita.
+
+| Elemento | Evidencia |
+|---|---|
+| 4.7/4.8 | Unit foco **5 files / 65 tests**; integración **3 files / 46 tests**; `typecheck` **0**. |
+| Correcciones H1/H2 | Unit **2 files / 55 tests**; `typecheck`/`build` **0**; revisor fase 2 confirmó `.code` en logs y `await job.isFailed()` antes del persist. |
+| 4.6 | Unit **6 files / 96 tests** (82 + 14 QA); integración **4 files / 56 tests** (50 + 6 QA); `typecheck` **0**; `build` reutilizado; revisor sin defectos. |
+| Migración | `20261121000000_inference_dispatch` aditiva/idempotente; replay, columnas/defaults, índice parcial y privilegios `clearsight_app` verificados. |
+| Cierre | 4.6/4.7/4.8 `[x]`. REG-002/003/004 **NO** declarados resueltos; `gradcam`/`mask`/`overlay` y agregados/PDF siguen en 2.3/6.x. |
+| Límites | 4.6 no es outbox transaccional Redis (lease+jobId+inferenceId+CAS mitigan réplicas, no at-least-once perfecto); reconciliador recupera `PENDING` sin cliente; persist del failed handler es best-effort y depende del reconciliador; backoff `2s*2^attempts` cap 120 s; inconsistencias reintentan acotado con `last_error_code` observable y sin give-up; `UnrecoverableError` con `attemptsMade=1`; JIT desde `storagePath`, payload nuevo sin URL, legacy ignorado con storagePath, TTL 3600 sin 300 s. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -868,7 +898,7 @@ npm --prefix backend run build
 1. **Listado:** envelope/orden/filtro antes de contar; tipo no autorizado no aparece ni suma; `result`/desconocido `400`; sin filas `200`; ejecución ajena/inexistente/sin capability `404`; JWT inválido `401`.
 2. **Grants:** unión `readArtifacts`/`readPdf`; sin `ADMIN` implícito; `readResult` no lista ni firma; dueño médico todo; médico no dueño sin grant nada.
 3. **URL versionada:** `version` obligatoria; sin versión/`result` `400`; fila exacta inexistente (pertenencia inferencia/tipo/versión) o acceso `404`; config storage/metadata corrupta `503` seguro antes del SDK; no `latest` ni fallback a versión anterior.
-4. **Estados:** no-`AVAILABLE` `200` con `url`/`expiresInSeconds`/`contentType` nulos sin storage; `AVAILABLE` URL + TTL efectivo configurado; 300 no se adopta antes de 4.8.
+4. **Estados:** no-`AVAILABLE` `200` con `url`/`expiresInSeconds`/`contentType` nulos sin storage; `AVAILABLE` URL + TTL efectivo configurado; 300 no se adopta: 4.8 mantiene 3600 y firma JIT (D27.3).
 5. **PDF:** `reportVersion` solo con `PdfReport` válido; PDF `AVAILABLE` sin reporte `409` auditado; no-PDF `null`.
 6. **Auth/auditoría:** sesión revocada `401`, grant perdido `404` sin URL; auditoría caída `503` sin URL; URL solo tras commit `ARTIFACT_URL_ISSUED`.
 7. **Storage:** `storage_object_missing` `409` + incidente sin mutar `AVAILABLE`; permisos/red `503`; `Cache-Control: no-store` en listado/URL y `503` genérico.
@@ -970,6 +1000,35 @@ npm --prefix backend run typecheck
 **Stop:** si el test exige Redis/ML/modelos reales, Azure/`.env`, PDF, suite completa, DB compartida, inyección global del header o modificar el contrato actual para pasar.
 
 **Criterio de salida:** QA focal PASSED con evidencia; 4.4/4.5 `[x]`. Límites: 4.6/4.7/4.8/4.9 y PDF/publicación pendientes; BullMQ `removeOnComplete:1000` sin dedup eterna; PENDING resume/`ACCEPTED` replay no reencolan job tras terminal (CAS worker protege); ventana post-dispatch sin cancelación atómica; sin TTL/B3; E2E no ejecutado; `defects/regressions.md` no editado.
+
+### 4.12 Fase específica HITO26 - 4.6/4.7/4.8 (QA PASSED)
+
+**Estado:** 4.6/4.7/4.8 implementados, QA PASSED y cerrados `[x]`.
+
+**Resultados:** 4.7/4.8 unit **5 files / 65 tests**, integración **3 files / 46 tests**, `typecheck` **0**; correcciones H1/H2 unit **2 files / 55 tests**, `typecheck`/`build` **0**. 4.6 unit **6 files / 96 tests** (82+14 QA), integración **4 files / 56 tests** (50+6 QA), `typecheck` **0**, `build` reutilizado; revisor sin defectos. Sin Redis real, Azure/`.env`, PDF, modelos ni suite completa.
+
+**Objetivo:** verificar reconciliación de dispatch, cierre de reintentos/terminal y firma JIT con foco, sin Redis real ni suite completa.
+
+**Precondiciones:** D27/ADR-064..066 y specs revisados; migración `20261121000000_inference_dispatch` aplicada en PostgreSQL owned/aislado; worker con DB real y dobles de cola/firmador/ML; sin Redis real, Azure/`.env`, modelos, PDF, DB compartida ni commit.
+
+**Comandos (ejecutados):**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/idempotency-repo.test.ts tests/unit/inference-dispatch.test.ts tests/unit/inference-reconciler.test.ts tests/unit/inference.worker.test.ts tests/unit/inference.processor.test.ts tests/unit/runner-isolation.test.ts
+npm --prefix backend run test:integration -- tests/inference-dispatch.integration.test.ts tests/inference-creation.integration.test.ts tests/inference-idempotency.integration.test.ts tests/inference-worker.integration.test.ts
+npm --prefix backend run typecheck
+npm --prefix backend run build
+```
+
+**4.6:** migración y reconciliador implementados; su integración `tests/inference-dispatch.integration.test.ts` se ejecutó en el foco anterior.
+
+**Casos mínimos:** migración replay idempotente, constraints/índice parcial y privilegios `clearsight_app`; claim con lease/`SKIP LOCKED`, lease vencido y dos réplicas; resume con firma fresca y `jobId=inferenceId`; CAS `markAccepted`; fallo de firma/cola deja `PENDING`, incrementa `dispatch_attempts`, aplica backoff y limpia lease; ejecución terminal ⇒ `ACCEPTED` sin reencolar; reencolado del mismo jobId tras retención; `failed` handler solo al agotar intentos y CAS vacío; no escritura en intento no final; `UnrecoverableError` para terminales; `429`/`5xx`/timeout/red con retry; `defaultJobOptions` 3/2s/1000/5000; `FAILED` tardío no pisa `COMPLETED`/`REVIEW_REQUIRED`; JIT re-firma antes de cada submit, ignora URL legacy si hay `storagePath`, falla retryable si faltan ambas fuentes y no llama al ML si falla la firma; logs sin URL/SAS.
+
+**Allowlists:** añadir `tests/inference-dispatch.integration.test.ts` a `vitest.integration.config.ts` y a `INTEGRATION_INCLUDE` de `tests/unit/runner-isolation.test.ts`; mantener la sincronización de `vitest.unit.config.ts`/`vitest.config.ts` si se añaden tests unitarios explícitos.
+
+**Stop:** si el test exige Redis/ML/modelos reales, Azure/`.env`, PDF, suite completa, DB compartida o modificar source antes de `arquitectovalidate`.
+
+**Criterio de salida:** QA PASSED con evidencia; 4.6/4.7/4.8 quedan `[x]`. REG-002/003/004 siguen sin cierre humano.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
@@ -1204,6 +1263,8 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | QA focal integración 4.4/4.5: inference-idempotency/inference-creation/clinical-access/rbac/identity-migrations | **CURRENT (QA PASSED)** | **5 files / 82 tests**. |
 | Post-corrección reviewer: unit/integration | **CURRENT (QA PASSED)** | Unit **3 files / 16**; integración **1 file / 19** (decoy/advisory); `typecheck` **0**; build reutilizable. |
 | `scripts/e2e-backend.ps1` con `Idempotency-Key` (4.4) | FUTURO / NO EJECUTAR | Solo actualizar el caller; no correr contra la DB de desarrollo compartida. |
+| Unit 4.6-4.8: reconciler/failed-handler/processor/queue-options/worker + runner-isolation | **CURRENT QA PASSED (HITO26)** | 4.7/4.8 **5 files / 65**; H1/H2 **2 files / 55**; 4.6 **6 files / 96** (82+14 QA); sin Redis real. |
+| Integración 4.6-4.8: dispatch + worker con PostgreSQL real | **CURRENT QA PASSED (HITO26)** | 4.7/4.8 **3 files / 46**; 4.6 **4 files / 56** (50+6 QA); Testcontainers/DB aislada, sin Redis/Azure. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

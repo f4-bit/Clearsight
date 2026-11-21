@@ -26,6 +26,7 @@ import {
 import {
   createInferenceProcessor,
   InferenceRetryableError,
+  InferenceTerminalError,
 } from "../../src/workers/inference.processor.js";
 import type { InferenceJobData } from "../../src/workers/inference.contracts.js";
 
@@ -41,6 +42,7 @@ function execution(
     snapshot?: InferenceRunExecution["snapshot"];
     eyeSide?: string | null;
     modelVersion?: string | null;
+    storagePath?: string;
   } = {},
 ): InferenceRunExecution {
   return {
@@ -58,7 +60,7 @@ function execution(
       id: IMAGE_ID,
       eyeSide: "OD",
       consultationId: "55555555-5555-4555-8555-555555555555",
-      storagePath: "2026/10/image.jpg",
+      storagePath: overrides.storagePath ?? "2026/10/image.jpg",
     },
     snapshot:
       overrides.snapshot === undefined
@@ -204,10 +206,19 @@ function fakeMl(responses: JobResponse[]) {
   return { submitInference, getJobStatus };
 }
 
-function processor(db: FakeDb, ml: ReturnType<typeof fakeMl>) {
+function signer(url = "https://signed.test/image.png") {
+  return vi.fn(async () => url);
+}
+
+function processor(
+  db: FakeDb,
+  ml: ReturnType<typeof fakeMl>,
+  signMlDownloadUrl = signer(),
+) {
   return createInferenceProcessor({
     db,
     mlClient: ml,
+    signMlDownloadUrl,
     sleep: async () => {},
     now: () => new Date("2026-11-20T00:00:00.000Z"),
     pollIntervalMs: 1,
@@ -262,6 +273,124 @@ describe("worker inference processor (C)", () => {
     );
     expect(db.saves[0]?.modelPredictions?.efficientnet_b3).not.toHaveProperty(
       "predicted_class",
+    );
+  });
+
+  it("re-signs from trusted storagePath for every submit and ignores legacy imageUrl", async () => {
+    const signMlDownloadUrl = signer("https://signed.test/fresh-1");
+    const firstDb = new FakeDb(execution());
+    const firstMl = fakeMl([response("COMPLETED", completedResult())]);
+    await processor(firstDb, firstMl, signMlDownloadUrl)(
+      job({ imageUrl: "https://legacy.test/stale.png" }),
+    );
+
+    const secondDb = new FakeDb(execution());
+    const secondMl = fakeMl([response("COMPLETED", completedResult())]);
+    await processor(secondDb, secondMl, signMlDownloadUrl)(
+      job({ imageUrl: "https://legacy.test/stale.png" }),
+    );
+
+    expect(signMlDownloadUrl).toHaveBeenCalledTimes(2);
+    expect(signMlDownloadUrl).toHaveBeenNthCalledWith(1, "2026/10/image.jpg");
+    expect(signMlDownloadUrl).toHaveBeenNthCalledWith(2, "2026/10/image.jpg");
+    expect(firstMl.submitInference.mock.calls[0]![0].image_url).toBe(
+      "https://signed.test/fresh-1",
+    );
+    expect(secondMl.submitInference.mock.calls[0]![0].image_url).toBe(
+      "https://signed.test/fresh-1",
+    );
+  });
+
+  it("treats a signer failure as retryable without calling ML", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([]);
+    const signMlDownloadUrl = vi.fn(async () => {
+      throw new Error("storage signing failed");
+    });
+
+    await expect(
+      processor(db, ml, signMlDownloadUrl)(job()),
+    ).rejects.toBeInstanceOf(InferenceRetryableError);
+    expect(ml.submitInference).not.toHaveBeenCalled();
+    expect(db.saves).toEqual([]);
+  });
+
+  it("retries when neither trusted storagePath nor legacy imageUrl exists", async () => {
+    const db = new FakeDb(execution({ storagePath: "" }));
+    const ml = fakeMl([]);
+
+    await expect(
+      processor(db, ml, signer())(job({ imageUrl: undefined })),
+    ).rejects.toBeInstanceOf(InferenceRetryableError);
+    expect(ml.submitInference).not.toHaveBeenCalled();
+    expect(db.saves).toEqual([]);
+  });
+
+  it("uses legacy imageUrl only when no trusted storagePath exists", async () => {
+    const db = new FakeDb(execution({ storagePath: " " }));
+    const ml = fakeMl([response("COMPLETED", completedResult())]);
+    const signMlDownloadUrl = signer();
+
+    await processor(db, ml, signMlDownloadUrl)(
+      job({ imageUrl: "https://legacy.test/only.png" }),
+    );
+
+    expect(signMlDownloadUrl).not.toHaveBeenCalled();
+    expect(ml.submitInference.mock.calls[0]![0].image_url).toBe(
+      "https://legacy.test/only.png",
+    );
+  });
+
+  it("re-signs a fresh URL on every attempt with a counting signer", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([response("COMPLETED", completedResult())]);
+    const signed = [
+      "https://signed.test/attempt-1",
+      "https://signed.test/attempt-2",
+    ];
+    const signMlDownloadUrl = vi.fn(async () => signed.shift()!);
+    const attempt = processor(db, ml, signMlDownloadUrl);
+
+    // Attempt 1 fails retryably after signing; BullMQ re-runs the same handler.
+    ml.submitInference.mockRejectedValueOnce(new MlClientHttpError(503));
+    await expect(attempt(job())).rejects.toBeInstanceOf(InferenceRetryableError);
+
+    const outcome = await attempt(job());
+    expect(outcome.status).toBe("COMPLETED");
+
+    expect(signMlDownloadUrl).toHaveBeenCalledTimes(2);
+    expect(signMlDownloadUrl).toHaveBeenNthCalledWith(1, "2026/10/image.jpg");
+    expect(signMlDownloadUrl).toHaveBeenNthCalledWith(2, "2026/10/image.jpg");
+    expect(ml.submitInference.mock.calls[0]![0].image_url).toBe(
+      "https://signed.test/attempt-1",
+    );
+    expect(ml.submitInference.mock.calls[1]![0].image_url).toBe(
+      "https://signed.test/attempt-2",
+    );
+    expect(db.saves).toHaveLength(1);
+    expect(db.saves[0]?.status).toBe("COMPLETED");
+  });
+
+  it("ignores a hostile payload imageUrl when a trusted storagePath exists", async () => {
+    const db = new FakeDb(execution());
+    const ml = fakeMl([response("COMPLETED", completedResult())]);
+    const signMlDownloadUrl = signer("https://signed.test/from-storage");
+
+    const outcome = await processor(db, ml, signMlDownloadUrl)(
+      job({
+        imageUrl:
+          "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+      }),
+    );
+
+    expect(outcome.status).toBe("COMPLETED");
+    expect(signMlDownloadUrl).toHaveBeenCalledTimes(1);
+    expect(signMlDownloadUrl).toHaveBeenCalledWith("2026/10/image.jpg");
+    expect(ml.submitInference.mock.calls[0]![0].image_url).toBe(
+      "https://signed.test/from-storage",
+    );
+    expect(ml.submitInference.mock.calls[0]![0].image_url).not.toContain(
+      "169.254.169.254",
     );
   });
 
@@ -611,24 +740,30 @@ describe("worker inference processor (C)", () => {
   });
 
   it("rejects unknown labels, NaN and mismatched identities as terminal failure", async () => {
-    for (const result of [
-      completedResult({ label: "Not_A_Class" }),
-      completedResult({ label: "toString" }),
-      completedResult({ probabilities: { Glaucoma: Number.NaN } }),
-      completedResult({ inferenceId: "99999999-9999-4999-8999-999999999999" }),
-      completedResult({ eyeSide: "OS" }),
-    ]) {
+    const cases = [
+      { result: completedResult({ label: "Not_A_Class" }), code: "invalid_result" },
+      { result: completedResult({ label: "toString" }), code: "invalid_result" },
+      {
+        result: completedResult({ probabilities: { Glaucoma: Number.NaN } }),
+        code: "invalid_result",
+      },
+      {
+        result: completedResult({
+          inferenceId: "99999999-9999-4999-8999-999999999999",
+        }),
+        code: "identity_mismatch",
+      },
+      { result: completedResult({ eyeSide: "OS" }), code: "identity_mismatch" },
+    ];
+    for (const { result, code } of cases) {
       const db = new FakeDb(execution());
       const ml = fakeMl([response("COMPLETED", result)]);
 
-      const outcome = await processor(db, ml)(job());
+      const failure = processor(db, ml)(job());
 
-      expect(outcome.status).toBe("FAILED");
-      expect(db.saves[0]?.status).toBe("FAILED");
-      expect(db.saves[0]?.predictedClass).toBeNull();
-      expect(db.saves[0]?.modelVersions).toEqual({});
-      expect(db.saves[0]?.modelPredictions).toEqual({});
-      expect(db.saves[0]?.modelVersion).not.toBe("v1");
+      await expect(failure).rejects.toBeInstanceOf(InferenceTerminalError);
+      await expect(failure).rejects.toMatchObject({ message: code });
+      expect(db.saves).toEqual([]);
     }
   });
 
@@ -710,13 +845,11 @@ describe("worker inference processor (C)", () => {
         response("COMPLETED", completedResult({ modelPredictions })),
       ]);
 
-      const outcome = await processor(db, ml)(job());
+      const outcome = processor(db, ml)(job());
 
-      expect(outcome.status).toBe("FAILED");
-      expect(db.saves[0]?.status).toBe("FAILED");
-      expect(db.saves[0]?.predictedClass).toBeNull();
-      expect(db.saves[0]?.modelVersions).toEqual({});
-      expect(db.saves[0]?.modelPredictions).toEqual({});
+      await expect(outcome).rejects.toBeInstanceOf(InferenceTerminalError);
+      await expect(outcome).rejects.toMatchObject({ message: "invalid_result" });
+      expect(db.saves).toEqual([]);
     },
   );
 
@@ -734,10 +867,11 @@ describe("worker inference processor (C)", () => {
       ),
     ]);
 
-    const result = await processor(db, ml)(job());
+    const failure = processor(db, ml)(job());
 
-    expect(result.status).toBe("FAILED");
-    expect(db.saves[0]?.status).toBe("FAILED");
+    await expect(failure).rejects.toBeInstanceOf(InferenceTerminalError);
+    await expect(failure).rejects.toMatchObject({ message: "invalid_result" });
+    expect(db.saves).toEqual([]);
   });
 
   it("skips a duplicate terminal job without calling ML or overwriting", async () => {
@@ -805,7 +939,7 @@ describe("worker inference processor (C)", () => {
     expect(db.saves[0]?.status).toBe("COMPLETED");
   });
 
-  it("retries 429/5xx/timeout and persists terminal 4xx safely", async () => {
+  it("retries 429/5xx/timeout and maps terminal 4xx to a no-retry error", async () => {
     const retryDb = new FakeDb(execution());
     const retryMl = fakeMl([]);
     retryMl.submitInference.mockRejectedValueOnce(new MlClientHttpError(503));
@@ -824,12 +958,13 @@ describe("worker inference processor (C)", () => {
     const terminalDb = new FakeDb(execution());
     const terminalMl = fakeMl([]);
     terminalMl.submitInference.mockRejectedValueOnce(new MlClientHttpError(422));
-    const terminal = await processor(terminalDb, terminalMl)(job());
-    expect(terminal.status).toBe("FAILED");
-    expect(terminalDb.saves[0]?.status).toBe("FAILED");
+    const terminal = processor(terminalDb, terminalMl)(job());
+    await expect(terminal).rejects.toBeInstanceOf(InferenceTerminalError);
+    await expect(terminal).rejects.toMatchObject({ message: "ml_rejected" });
+    expect(terminalDb.saves).toEqual([]);
   });
 
-  it("stops a bounded poll with a safe failure", async () => {
+  it("treats poll exhaustion as retryable without writing FAILED", async () => {
     const db = new FakeDb(execution());
     const ml = fakeMl([
       response("QUEUED"),
@@ -837,10 +972,10 @@ describe("worker inference processor (C)", () => {
       response("QUEUED"),
     ]);
 
-    const result = await processor(db, ml)(job());
-
-    expect(result.status).toBe("FAILED");
-    expect(db.saves[0]?.status).toBe("FAILED");
+    await expect(processor(db, ml)(job())).rejects.toBeInstanceOf(
+      InferenceRetryableError,
+    );
+    expect(db.saves).toEqual([]);
   });
 
   it("does not overwrite when the compare-and-set loses a race", async () => {
@@ -859,16 +994,11 @@ describe("worker inference processor (C)", () => {
     const ml = fakeMl([]);
     ml.submitInference.mockRejectedValueOnce(new MlClientHttpError(409));
 
-    const outcome = await processor(db, ml)(job());
+    const terminal = processor(db, ml)(job());
 
-    expect(outcome.status).toBe("FAILED");
-    expect(db.saves[0]).toMatchObject({
-      status: "FAILED",
-      predictedClass: null,
-      confidence: null,
-      probabilities: {},
-      artifacts: {},
-    });
+    await expect(terminal).rejects.toBeInstanceOf(InferenceTerminalError);
+    await expect(terminal).rejects.toMatchObject({ message: "ml_rejected" });
+    expect(db.saves).toEqual([]);
     expect(ml.getJobStatus).not.toHaveBeenCalled();
   });
 
@@ -888,7 +1018,7 @@ describe("worker inference processor (C)", () => {
     expect(db.saves).toEqual([]);
   });
 
-  it("discards REVIEW_REQUIRED results with a foreign identity without persisting their data", async () => {
+  it("treats REVIEW_REQUIRED results with a foreign identity as terminal failure", async () => {
     for (const foreign of [
       { inferenceId: "99999999-9999-4999-8999-999999999999" },
       { eyeSide: "OS" as const },
@@ -911,17 +1041,13 @@ describe("worker inference processor (C)", () => {
         ),
       ]);
 
-      const outcome = await processor(db, ml)(job());
+      const failure = processor(db, ml)(job());
 
-      expect(outcome.status).not.toBe("COMPLETED");
-      const saved = db.saves[0];
-      expect(saved?.status).not.toBe("COMPLETED");
-      expect(saved?.predictedClass).toBeNull();
-      expect(saved?.confidence).toBeNull();
-      expect(saved?.probabilities).toEqual({});
-      expect(saved?.artifacts).toEqual({});
-      expect(saved?.modelVersions).toEqual({});
-      expect(saved?.modelPredictions).toEqual({});
+      await expect(failure).rejects.toBeInstanceOf(InferenceTerminalError);
+      await expect(failure).rejects.toMatchObject({
+        message: "identity_mismatch",
+      });
+      expect(db.saves).toEqual([]);
     }
   });
 
@@ -934,10 +1060,10 @@ describe("worker inference processor (C)", () => {
       status: "QUEUED" as const,
     });
 
-    const outcome = await processor(db, ml)(job());
+    const failure = processor(db, ml)(job());
 
-    expect(outcome.status).toBe("FAILED");
-    expect(db.saves[0]?.status).toBe("FAILED");
-    expect(db.saves[0]?.predictedClass).toBeNull();
+    await expect(failure).rejects.toBeInstanceOf(InferenceTerminalError);
+    await expect(failure).rejects.toMatchObject({ message: "identity_mismatch" });
+    expect(db.saves).toEqual([]);
   });
 });

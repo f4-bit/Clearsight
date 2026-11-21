@@ -445,23 +445,21 @@ describe("POST /inferences idempotent replay", () => {
 });
 
 describe("POST /inferences idempotent resume", () => {
-  it("resumes the same execution after storage failure without re-preparing", async () => {
+  it("resumes the same execution after a queue failure without re-preparing", async () => {
     const study = await makeCase(doctor.id);
     const key = randomUUID();
     const payload = { imageId: study.image.id, eyeSide: "OD" };
     const ml = countingMlClient();
     const target = await buildTestApp(prisma, { mlClient: ml.client });
 
-    vi.mocked(StorageService.getMlDownloadUrl).mockRejectedValueOnce(
-      new Error("storage down"),
-    );
+    vi.mocked(enqueueInference).mockRejectedValueOnce(new Error("redis down"));
     const failed = await post(target, payload, key);
     expect(failed.statusCode).toBe(503);
     expect(await counts()).toEqual({ inferences: 1, snapshots: 1, records: 1 });
-    expect(enqueueInference).not.toHaveBeenCalled();
     expect(ml.calls()).toBe(1);
     const pending = await prisma.idempotencyRecord.findFirstOrThrow();
     expect(pending.state).toBe("PENDING");
+    vi.mocked(enqueueInference).mockClear();
     const expectedHash = buildIdempotencyPayloadHash({
       imageId: study.image.id,
       eyeSide: "OD",
@@ -478,12 +476,6 @@ describe("POST /inferences idempotent resume", () => {
       },
     });
 
-    vi.mocked(StorageService.getMlDownloadUrl).mockClear();
-    // The retry signs a fresh URL; only the DB-pinned snapshot/model versions/
-    // context survive the resume, and the payload hash must be identical.
-    vi.mocked(StorageService.getMlDownloadUrl).mockResolvedValueOnce(
-      "http://minio:9000/retina-fresh.jpg",
-    );
     // A different current ML default must not matter on resume: the saved
     // snapshot/model versions/pin are the authority, and prepare is not called.
     const drifted = await buildTestApp(prisma, {
@@ -498,12 +490,11 @@ describe("POST /inferences idempotent resume", () => {
     expect(body.inferenceId).toBe(pending.inferenceId);
     expect(ml.calls()).toBe(1);
     expect(await counts()).toEqual({ inferences: 1, snapshots: 1, records: 1 });
-    expect(StorageService.getMlDownloadUrl).toHaveBeenCalledTimes(1);
+    expect(StorageService.getMlDownloadUrl).not.toHaveBeenCalled();
     expect(enqueueInference).toHaveBeenCalledTimes(1);
     expect(vi.mocked(enqueueInference).mock.calls[0]![0]).toMatchObject({
       inferenceId: pending.inferenceId,
       imageId: study.image.id,
-      imageUrl: "http://minio:9000/retina-fresh.jpg",
       eyeSide: "OD",
       clinicalFeatures: FEATURES,
       modelVersion: FAKE_MANIFEST_VERSION,
@@ -512,6 +503,9 @@ describe("POST /inferences idempotent resume", () => {
         fingerprintSha256: FAKE_FINGERPRINT,
       },
     });
+    expect(vi.mocked(enqueueInference).mock.calls[0]![0]).not.toHaveProperty(
+      "imageUrl",
+    );
     const afterResume = await prisma.idempotencyRecord.findFirstOrThrow();
     expect(afterResume.state).toBe("ACCEPTED");
     expect(afterResume.payloadHash).toBe(expectedHash);
@@ -561,7 +555,6 @@ describe("POST /inferences idempotent resume", () => {
     };
     const key = randomUUID();
     let failMark = true;
-    let signs = 0;
     let enqueues = 0;
     const access = createClinicalAccessService(prisma);
     const service = createInferenceCreationService({
@@ -569,10 +562,6 @@ describe("POST /inferences idempotent resume", () => {
       access,
       authService: { verifySession: async () => principal },
       mlClient: createFakeMlClient(),
-      signMlDownloadUrl: async () => {
-        signs += 1;
-        return "http://minio:9000/retina.jpg";
-      },
       enqueue: async () => {
         enqueues += 1;
         return { id: "mock-job-id" };
@@ -612,12 +601,10 @@ describe("POST /inferences idempotent resume", () => {
     expect(
       (await prisma.idempotencyRecord.findFirstOrThrow()).state,
     ).toBe("PENDING");
-    expect(signs).toBe(1);
     expect(enqueues).toBe(1);
 
     const resumed = await service.create(input);
     expect(resumed.status).toBe("QUEUED");
-    expect(signs).toBe(2);
     expect(enqueues).toBe(2);
     expect(
       (await prisma.idempotencyRecord.findFirstOrThrow()).state,
@@ -625,15 +612,13 @@ describe("POST /inferences idempotent resume", () => {
     expect(await counts()).toEqual({ inferences: 1, snapshots: 1, records: 1 });
   });
 
-  it("marks a terminal PENDING record accepted without signing or enqueueing", async () => {
+  it("marks a terminal PENDING record accepted without enqueueing", async () => {
     const study = await makeCase(doctor.id);
     const key = randomUUID();
     const payload = { imageId: study.image.id, eyeSide: "OD" };
     const target = await buildTestApp(prisma);
 
-    vi.mocked(StorageService.getMlDownloadUrl).mockRejectedValueOnce(
-      new Error("storage down"),
-    );
+    vi.mocked(enqueueInference).mockRejectedValueOnce(new Error("redis down"));
     const failed = await post(target, payload, key);
     expect(failed.statusCode).toBe(503);
     const record = await prisma.idempotencyRecord.findFirstOrThrow();
@@ -915,9 +900,7 @@ describe("idempotency SQL schema binding under search_path decoys", () => {
     const payload = { imageId: study.image.id, eyeSide: "OD" };
     const target = await buildTestApp(prisma);
 
-    vi.mocked(StorageService.getMlDownloadUrl).mockRejectedValueOnce(
-      new Error("storage down"),
-    );
+    vi.mocked(enqueueInference).mockRejectedValueOnce(new Error("redis down"));
     const failed = await post(target, payload, key);
     expect(failed.statusCode).toBe(503);
     const pending = await prisma.idempotencyRecord.findFirstOrThrow();

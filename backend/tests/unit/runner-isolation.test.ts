@@ -20,6 +20,7 @@ const INTEGRATION_INCLUDE = [
   "tests/artifact-downloads.integration.test.ts",
   "tests/inference-creation.integration.test.ts",
   "tests/inference-idempotency.integration.test.ts",
+  "tests/inference-dispatch.integration.test.ts",
   "tests/inference-worker.integration.test.ts",
   "tests/migration-deploy.integration.test.ts",
   "tests/admin-bootstrap.integration.test.ts",

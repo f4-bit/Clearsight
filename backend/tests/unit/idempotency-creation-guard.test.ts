@@ -15,7 +15,6 @@ interface SeamCalls {
   verifySession: number;
   getOwnedImageContext: number;
   prepareClinicalSnapshot: number;
-  signMlDownloadUrl: number;
   enqueue: number;
   transaction: number;
 }
@@ -29,7 +28,6 @@ function stubDeps() {
     verifySession: 0,
     getOwnedImageContext: 0,
     prepareClinicalSnapshot: 0,
-    signMlDownloadUrl: 0,
     enqueue: 0,
     transaction: 0,
   };
@@ -59,15 +57,10 @@ function stubDeps() {
         throw new Error("mlClient.prepareClinicalSnapshot must not run");
       }),
     },
-    signMlDownloadUrl: vi.fn(async () => {
-      calls.signMlDownloadUrl += 1;
-      throw new Error("signMlDownloadUrl must not run");
-    }),
     enqueue: vi.fn(async () => {
       calls.enqueue += 1;
       throw new Error("enqueue must not run");
-    }),
-  };
+    }),  };
   return { deps: deps as unknown as InferenceCreationDeps, calls };
 }
 
@@ -114,7 +107,6 @@ describe("creation service never defaults or generates an Idempotency-Key", () =
         verifySession: 0,
         getOwnedImageContext: 0,
         prepareClinicalSnapshot: 0,
-        signMlDownloadUrl: 0,
         enqueue: 0,
         transaction: 0,
       });
@@ -131,7 +123,6 @@ describe("creation service never defaults or generates an Idempotency-Key", () =
       verifySession: 0,
       getOwnedImageContext: 0,
       prepareClinicalSnapshot: 0,
-      signMlDownloadUrl: 0,
       enqueue: 0,
       transaction: 0,
     });

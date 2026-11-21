@@ -10,7 +10,15 @@ import {
   FAKE_MANIFEST_VERSION,
   makePreparedSnapshot,
 } from "./helpers/ml.js";
-import { createInferenceProcessor } from "../src/workers/inference.processor.js";
+import {
+  createInferenceProcessor,
+  InferenceRetryableError,
+  InferenceTerminalError,
+} from "../src/workers/inference.processor.js";
+import {
+  createInferenceJobHandler,
+  persistInferenceFailure,
+} from "../src/workers/inference.worker.js";
 import type { InferenceJobData } from "../src/workers/inference.contracts.js";
 
 const prisma = createTestPrisma();
@@ -178,10 +186,14 @@ function mlClient(
   };
 }
 
-function processor(ml: Pick<MlClient, "submitInference" | "getJobStatus">) {
+function processor(
+  ml: Pick<MlClient, "submitInference" | "getJobStatus">,
+  signMlDownloadUrl = vi.fn(async () => "https://signed.test/image.png"),
+) {
   return createInferenceProcessor({
     db: createInferenceRunRepository(prisma),
     mlClient: ml,
+    signMlDownloadUrl,
     sleep: async () => {},
     now: () => new Date("2026-11-20T00:00:00.000Z"),
     pollIntervalMs: 1,
@@ -229,6 +241,110 @@ describe("worker inference processor integration (C)", () => {
       eyeSide: "OD",
       clinicalFeatures: FEATURES,
     });
+  });
+
+  it("signs from trusted storagePath before ML and ignores a stale job imageUrl", async () => {
+    const execution = await createExecution();
+    const ml = mlClient(
+      execution,
+      response(execution, "COMPLETED", result(execution)),
+    );
+    const signMlDownloadUrl = vi.fn(
+      async () => "https://signed.test/fresh.png",
+    );
+
+    const outcome = await processor(ml, signMlDownloadUrl)({
+      ...execution.job,
+      imageUrl: "https://legacy.test/stale.png",
+    });
+
+    expect(outcome.status).toBe("COMPLETED");
+    expect(signMlDownloadUrl).toHaveBeenCalledWith(execution.image.storagePath);
+    expect(ml.submitInference).toHaveBeenCalledWith(
+      expect.objectContaining({
+        image_url: "https://signed.test/fresh.png",
+      }),
+    );
+    expect(ml.submitInference).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        image_url: "https://legacy.test/stale.png",
+      }),
+    );
+  });
+
+  it("persists FAILED once with safe empty fields when attempts are exhausted", async () => {
+    const execution = await createExecution();
+    const repository = createInferenceRunRepository(prisma);
+    const finalJob = {
+      attemptsMade: 3,
+      opts: { attempts: 3 },
+      data: execution.job,
+    } as never;
+
+    await expect(
+      persistInferenceFailure(repository, finalJob, new Error("exhausted")),
+    ).resolves.toBe(true);
+
+    const failed = await prisma.inference.findUniqueOrThrow({
+      where: { id: execution.inference.id },
+    });
+    expect(failed).toMatchObject({
+      status: "FAILED",
+      predictedClass: null,
+      confidence: null,
+      probabilities: {},
+      modelVersions: {},
+      modelPredictions: {},
+      cdr: null,
+      cdrVertical: null,
+      quality: {},
+      artifacts: {},
+      elapsedSeconds: null,
+      gradcamPath: null,
+    });
+    expect(failed.modelVersion).toBe(FAKE_MANIFEST_VERSION);
+
+    await prisma.inference.update({
+      where: { id: execution.inference.id },
+      data: { status: "COMPLETED" },
+    });
+    await expect(
+      persistInferenceFailure(repository, finalJob, new Error("exhausted")),
+    ).resolves.toBe(false);
+    const preserved = await prisma.inference.findUniqueOrThrow({
+      where: { id: execution.inference.id },
+    });
+    expect(preserved.status).toBe("COMPLETED");
+  });
+
+  it("keeps a JIT signing failure retryable without ML submit or a FAILED write", async () => {
+    const execution = await createExecution();
+    const ml = mlClient(
+      execution,
+      response(execution, "COMPLETED", result(execution)),
+    );
+    const signMlDownloadUrl = vi.fn(async () => {
+      throw new Error("storage signing down");
+    });
+    const handler = createInferenceJobHandler(processor(ml, signMlDownloadUrl));
+
+    const failure = handler({ data: execution.job } as never);
+    await expect(failure).rejects.toBeInstanceOf(InferenceRetryableError);
+    const error: unknown = await failure.catch((cause: unknown) => cause);
+
+    expect(signMlDownloadUrl).toHaveBeenCalledWith(execution.image.storagePath);
+    expect(ml.submitInference).not.toHaveBeenCalled();
+    await expect(
+      persistInferenceFailure(
+        createInferenceRunRepository(prisma),
+        { attemptsMade: 1, opts: { attempts: 3 }, data: execution.job } as never,
+        error,
+      ),
+    ).resolves.toBe(false);
+    const stored = await prisma.inference.findUniqueOrThrow({
+      where: { id: execution.inference.id },
+    });
+    expect(stored.status).toBe("QUEUED");
   });
 
   it("round-trips own prototype-named JSON keys through Prisma without mutating inputs", async () => {
@@ -606,7 +722,7 @@ describe("worker inference processor integration (C)", () => {
     expect(stored.elapsedSeconds).toBe(1.2);
   });
 
-  it("persists empty result details for REVIEW_REQUIRED with foreign identity", async () => {
+  it("rejects REVIEW_REQUIRED with a foreign identity without persisting it", async () => {
     const execution = await createExecution();
     const foreign = result(execution, {
       inferenceId: "99999999-9999-4999-8999-999999999999",
@@ -632,12 +748,16 @@ describe("worker inference processor integration (C)", () => {
       response(execution, "REVIEW_REQUIRED", foreign),
     );
 
-    const outcome = await processor(ml)(execution.job);
-    expect(outcome.status).toBe("REVIEW_REQUIRED");
+    const failure = processor(ml)(execution.job);
+    await expect(failure).rejects.toBeInstanceOf(InferenceTerminalError);
+    await expect(failure).rejects.toMatchObject({
+      message: "identity_mismatch",
+    });
 
     const stored = await prisma.inference.findUniqueOrThrow({
       where: { id: execution.inference.id },
     });
+    expect(stored.status).toBe("QUEUED");
     expect(stored.modelVersions).toEqual({});
     expect(stored.modelPredictions).toEqual({});
     expect(stored.artifacts).toEqual({});

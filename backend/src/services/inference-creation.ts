@@ -1,9 +1,5 @@
-import { isDeepStrictEqual } from "node:util";
 import type { JwtPayload } from "../schemas/auth.js";
-import {
-  CLINICAL_FEATURE_NAMES,
-  type ClinicalFeatures,
-} from "../schemas/clinical.js";
+import type { ClinicalFeatures } from "../schemas/clinical.js";
 import {
   assertPreparedSnapshotConsistent,
   PreparedClinicalSnapshotResponseSchema,
@@ -37,12 +33,16 @@ import { AuthSessionError, type AuthSessionService, type SafePrincipal } from ".
 import type { ClinicalAccessService, ClinicalSubject } from "./clinical-access.js";
 import {
   buildIdempotencyPayloadHash,
-  canonicalizeClinicalFeatures,
   IDEMPOTENCY_SCOPE,
   parseAcceptedResponse,
   parseIdempotencyKey,
   type AcceptedIdempotencyResponse,
 } from "./idempotency.js";
+import {
+  loadPendingExecution as loadPendingExecutionData,
+  PendingExecutionError,
+  type PendingExecution,
+} from "./inference-dispatch.js";
 import {
   MlClientHttpError,
   type ClinicalContextPreparer,
@@ -74,7 +74,6 @@ export interface InferenceCreationDeps {
   access: ClinicalAccessService;
   authService: Pick<AuthSessionService, "verifySession">;
   mlClient: ClinicalContextPreparer;
-  signMlDownloadUrl: (storagePath: string) => Promise<string>;
   enqueue: (data: InferenceJobData) => Promise<{ id?: string }>;
   databaseSchema?: string;
   now?: () => Date;
@@ -100,7 +99,6 @@ interface LockedImageContext {
   readonly id: string;
   readonly consultationId: string;
   readonly eyeSide: "OD" | "OS";
-  readonly storagePath: string;
 }
 
 export interface InferenceCreationService {
@@ -120,20 +118,6 @@ interface ExistingExecutionTx {
 }
 
 type ExecutionTxResult = CreatedExecutionTx | ExistingExecutionTx;
-
-interface PendingExecution {
-  readonly inference: {
-    readonly id: string;
-    readonly status: string | null;
-  };
-  readonly image: LockedImageContext;
-  readonly clinicalFeatures: ClinicalFeatures;
-  readonly modelVersion: string;
-  readonly expectedContext: {
-    readonly schemaVersion: string;
-    readonly fingerprintSha256: string;
-  };
-}
 
 /** Unique-index final guard when the advisory lock is bypassed by a race. */
 class IdempotencyRaceError extends Error {
@@ -370,11 +354,9 @@ async function dispatchPending(
     );
   }
 
-  const imageUrl = await signDownloadOrPending(deps, pending.image.storagePath);
   await enqueueOrPending(deps, {
     inferenceId: pending.inference.id,
     imageId: pending.image.id,
-    imageUrl,
     eyeSide: pending.image.eyeSide,
     clinicalFeatures: pending.clinicalFeatures,
     modelVersion: pending.modelVersion,
@@ -440,113 +422,18 @@ async function loadPendingExecution(
   input: InferenceCreationInput,
   record: IdempotencyRecord,
 ): Promise<PendingExecution> {
-  let inference: Prisma.InferenceGetPayload<{
-    include: { image: true; snapshot: true };
-  }> | null;
   try {
-    inference = await deps.prisma.inference.findUnique({
-      where: { id: record.inferenceId },
-      include: { image: true, snapshot: true },
-    });
-  } catch {
-    throw serviceUnavailable("Idempotency replay is temporarily unavailable");
-  }
-
-  if (inference === null || inference.snapshot === null) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  const image = inference.image;
-  const snapshot = inference.snapshot;
-
-  if (
-    inference.id !== record.inferenceId ||
-    record.actorUserId !== input.subject.id ||
-    record.scope !== IDEMPOTENCY_SCOPE ||
-    inference.imageId !== image.id ||
-    inference.snapshotId !== snapshot.id ||
-    inference.eyeSide !== image.eyeSide ||
-    (inference.consultationId !== null &&
-      inference.consultationId !== snapshot.consultationId) ||
-    snapshot.consultationId !== image.consultationId
-  ) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-
-  const rawPayload = snapshot.rawPayload;
-  if (
-    rawPayload === null ||
-    typeof rawPayload !== "object" ||
-    Array.isArray(rawPayload)
-  ) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  const raw = rawPayload as Record<string, unknown>;
-  if (raw.eyeSide !== image.eyeSide) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  let clinicalFeatures: ClinicalFeatures;
-  try {
-    clinicalFeatures = canonicalizeClinicalFeatures(raw.clinicalFeatures);
-  } catch {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  for (const name of CLINICAL_FEATURE_NAMES) {
-    if (clinicalFeatures[name] !== input.clinicalFeatures[name]) {
+    return await loadPendingExecutionData(
+      deps.prisma,
+      record,
+      input.clinicalFeatures,
+    );
+  } catch (error) {
+    if (error instanceof PendingExecutionError && error.code !== "load_failed") {
       throw serviceUnavailable("Idempotency record is inconsistent");
     }
+    throw serviceUnavailable("Idempotency replay is temporarily unavailable");
   }
-
-  const normalizedPayload = snapshot.normalizedPayload;
-  if (
-    normalizedPayload === null ||
-    typeof normalizedPayload !== "object" ||
-    Array.isArray(normalizedPayload)
-  ) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  const normalized = normalizedPayload as Record<string, unknown>;
-  if (normalized.eyeSide !== image.eyeSide) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  const { eyeSide: _storedEyeSide, ...preparedNormalized } = normalized;
-
-  let prepared: PreparedClinicalSnapshotResponse;
-  try {
-    prepared = PreparedClinicalSnapshotResponseSchema.parse({
-      rawCanonical: { clinicalFeatures },
-      normalizedPayload: preparedNormalized,
-      schemaVersion: snapshot.schemaVersion,
-      modelVersions: snapshot.modelVersions,
-      contextFingerprintSha256: preparedNormalized.contextFingerprintSha256,
-    });
-    assertPreparedSnapshotConsistent(prepared, input.clinicalFeatures);
-  } catch {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-
-  if (!isDeepStrictEqual(snapshot.modelVersions, record.resolvedModelVersions)) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-  const modelVersion = prepared.modelVersions.manifest;
-  if (typeof modelVersion !== "string" || modelVersion.length === 0) {
-    throw serviceUnavailable("Idempotency record is inconsistent");
-  }
-
-  return {
-    inference: { id: inference.id, status: inference.status },
-    image: {
-      id: image.id,
-      consultationId: image.consultationId,
-      eyeSide: image.eyeSide as "OD" | "OS",
-      storagePath: image.storagePath,
-    },
-    clinicalFeatures,
-    modelVersion,
-    expectedContext: {
-      schemaVersion: prepared.schemaVersion,
-      fingerprintSha256: prepared.contextFingerprintSha256,
-    },
-  };
 }
 
 async function loadParentForOwnership(
@@ -771,7 +658,6 @@ async function createExecutionTx(
           id: lockedImage.id,
           consultationId: lockedImage.consultationId,
           eyeSide: lockedImage.eyeSide as "OD" | "OS",
-          storagePath: lockedImage.storagePath,
         },
         record,
       };
@@ -900,17 +786,6 @@ async function lockImage(
   );
   if (images[0] === undefined) {
     throw notFound("Image");
-  }
-}
-
-async function signDownloadOrPending(
-  deps: InferenceCreationDeps,
-  storagePath: string,
-): Promise<string> {
-  try {
-    return await deps.signMlDownloadUrl(storagePath);
-  } catch {
-    throw serviceUnavailable("Inference was created but dispatch is pending");
   }
 }
 

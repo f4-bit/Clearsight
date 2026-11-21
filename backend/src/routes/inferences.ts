@@ -58,13 +58,6 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
     authService: opts.authService,
     mlClient: opts.mlClient,
     databaseSchema: opts.databaseSchema,
-    signMlDownloadUrl: async (storagePath) => {
-      const location = resolveLocation(storagePath, "image");
-      return storage.getMlDownloadUrl(
-        location.bucketOrContainer,
-        location.key,
-      );
-    },
     enqueue: enqueueInference,
   });
 

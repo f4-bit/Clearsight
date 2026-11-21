@@ -36,6 +36,8 @@ export interface ProcessInferenceOutcome {
 export interface InferenceProcessorDeps {
   db: InferenceRunRepository;
   mlClient: Pick<MlClient, "submitInference" | "getJobStatus">;
+  /** Trusted signer backed by the same StorageService/allowlist as 4.1. */
+  signMlDownloadUrl: (storagePath: string) => Promise<string>;
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
   pollIntervalMs?: number;
@@ -62,6 +64,7 @@ export class InferenceTerminalError extends Error {
 
 class InvalidJobContextError extends Error {}
 class InvalidResultError extends Error {}
+class IdentityMismatchError extends Error {}
 
 interface ResolvedJobContext {
   readonly clinicalFeatures: ClinicalFeatures;
@@ -107,11 +110,13 @@ export function createInferenceProcessor(
       return outcome(deps, beforeSubmit.id, beforeSubmit.status, true);
     }
 
+    const imageUrl = await resolveImageUrl(deps, beforeSubmit, data);
+
     let accepted;
     try {
       accepted = await deps.mlClient.submitInference({
         inference_id: execution.id,
-        image_url: data.imageUrl,
+        image_url: imageUrl,
         eye_side: data.eyeSide,
         clinical_features: context.clinicalFeatures,
         model_version: context.modelVersion,
@@ -123,17 +128,17 @@ export function createInferenceProcessor(
           : undefined,
       });
     } catch (error) {
-      return handleUpstreamError(deps, execution.id, error);
+      return handleUpstreamError(error);
     }
     if (accepted.inferenceId !== execution.id) {
-      return persistTerminal(deps, execution.id, failedUpdate());
+      throw new InferenceTerminalError("identity_mismatch");
     }
 
     let statusResponse: JobResponse;
     try {
       statusResponse = await deps.mlClient.getJobStatus(accepted.jobId);
     } catch (error) {
-      return handleUpstreamError(deps, execution.id, error);
+      return handleUpstreamError(error);
     }
 
     let polls = 0;
@@ -142,14 +147,14 @@ export function createInferenceProcessor(
       try {
         statusResponse = await deps.mlClient.getJobStatus(accepted.jobId);
       } catch (error) {
-        return handleUpstreamError(deps, execution.id, error);
+        return handleUpstreamError(error);
       }
       polls += 1;
     }
 
     if (!isTerminalInferenceStatus(statusResponse.status)) {
-      // 4.7 remains the owner of timeout semantics; this is a safe bounded stop.
-      return persistTerminal(deps, execution.id, failedUpdate());
+      // Timeout is retryable; BullMQ persists FAILED only when attempts run out.
+      throw new InferenceRetryableError();
     }
 
     const latest = await deps.db.findExecution(execution.id);
@@ -169,9 +174,6 @@ function resolveJobContext(
   data: InferenceJobData,
   execution: InferenceRunExecution,
 ): ResolvedJobContext {
-  if (data.imageUrl.trim() === "") {
-    throw new InvalidJobContextError();
-  }
   if (execution.imageId !== data.imageId || execution.image.id !== data.imageId) {
     throw new InvalidJobContextError();
   }
@@ -301,16 +303,26 @@ function updateForTerminal(
     try {
       return completedUpdate(statusResponse, execution, context);
     } catch (error) {
+      if (error instanceof IdentityMismatchError) {
+        throw new InferenceTerminalError("identity_mismatch");
+      }
       if (error instanceof InvalidResultError) {
-        return failedUpdate();
+        throw new InferenceTerminalError("invalid_result");
       }
       throw error;
     }
   }
   if (statusResponse.status === "REVIEW_REQUIRED") {
-    return reviewUpdate(statusResponse, execution, context);
+    try {
+      return reviewUpdate(statusResponse, execution, context);
+    } catch (error) {
+      if (error instanceof IdentityMismatchError) {
+        throw new InferenceTerminalError("identity_mismatch");
+      }
+      throw error;
+    }
   }
-  return failedUpdate();
+  return failedTerminalUpdate();
 }
 
 function completedUpdate(
@@ -439,7 +451,7 @@ function reviewUpdate(
   };
 }
 
-function failedUpdate(): TerminalInferenceUpdate {
+export function failedTerminalUpdate(): TerminalInferenceUpdate {
   return {
     status: "FAILED",
     predictedClass: null,
@@ -472,15 +484,31 @@ async function persistTerminal(
   throw new InferenceTerminalError("terminal_conflict");
 }
 
-async function handleUpstreamError(
+async function resolveImageUrl(
   deps: InferenceProcessorDeps,
-  inferenceId: string,
-  error: unknown,
-): Promise<ProcessInferenceOutcome> {
+  execution: InferenceRunExecution,
+  data: InferenceJobData,
+): Promise<string> {
+  const storagePath = execution.image.storagePath;
+  if (typeof storagePath === "string" && storagePath.trim() !== "") {
+    try {
+      return await deps.signMlDownloadUrl(storagePath);
+    } catch {
+      // Signing is retried; BullMQ writes FAILED only after attempts run out.
+      throw new InferenceRetryableError();
+    }
+  }
+  if (typeof data.imageUrl === "string" && data.imageUrl.trim() !== "") {
+    return data.imageUrl;
+  }
+  throw new InferenceRetryableError();
+}
+
+function handleUpstreamError(error: unknown): never {
   if (isRetryableMlError(error)) {
     throw new InferenceRetryableError();
   }
-  return persistTerminal(deps, inferenceId, failedUpdate());
+  throw new InferenceTerminalError("ml_rejected");
 }
 
 function isRetryableMlError(error: unknown): boolean {
@@ -513,7 +541,7 @@ function assertResultIdentity(
   eyeSide: "OD" | "OS",
 ): void {
   if (result.inferenceId !== execution.id || result.eyeSide !== eyeSide) {
-    throw new InvalidResultError();
+    throw new IdentityMismatchError();
   }
 }
 

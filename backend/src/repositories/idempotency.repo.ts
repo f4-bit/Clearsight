@@ -25,6 +25,40 @@ export interface AcceptedIdempotencyResponseBody {
   readonly status: "QUEUED";
 }
 
+export interface DispatchOutcomeInput {
+  readonly dispatched: boolean;
+  readonly lastErrorCode?: string | null;
+}
+
+const DISPATCH_CLAIM_LEASE_SECONDS = 60;
+const DISPATCH_ERROR_CODE_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
+
+function assertDispatchErrorCode(code: string): void {
+  if (!DISPATCH_ERROR_CODE_PATTERN.test(code)) {
+    throw new Error("dispatch error code must be a safe 1..64 character code");
+  }
+}
+
+async function markAcceptedRecord(
+  db: Db,
+  databaseSchema: string,
+  id: string,
+  responseBody: AcceptedIdempotencyResponseBody,
+): Promise<number> {
+  return db.$executeRawUnsafe(
+    `UPDATE "${databaseSchema}".idempotency_records
+        SET state = 'ACCEPTED',
+            response_status = 202,
+            response_body = $2::jsonb,
+            accepted_at = GREATEST(created_at, pg_catalog.statement_timestamp()),
+            lease_until = NULL
+      WHERE id = $1::uuid
+        AND state = 'PENDING'`,
+    id,
+    JSON.stringify(responseBody),
+  );
+}
+
 /**
  * Durable idempotency access for task 4.4. The family/hash/execution identity
  * is immutable in SQL; the only allowed transition is PENDING -> ACCEPTED.
@@ -88,22 +122,93 @@ export function createIdempotencyRepository(
      * PostgreSQL (`pg_catalog.statement_timestamp()`), never by the app clock.
      * `GREATEST` is a SQL conditional expression, not a pg_catalog function, so
      * it stays unqualified (it cannot be shadowed); it keeps
-     * `accepted_at >= created_at`.
+     * `accepted_at >= created_at`. The dispatch lease is cleared on acceptance.
      */
-    async markAccepted(
+    markAccepted: (
       id: string,
       responseBody: AcceptedIdempotencyResponseBody,
+    ): Promise<number> =>
+      markAcceptedRecord(db, databaseSchema, id, responseBody),
+
+    async claimPendingDispatchBatch(limit: number): Promise<IdempotencyRecord[]> {
+      if (!Number.isInteger(limit) || limit <= 0 || limit > 1_000) {
+        throw new Error("dispatch batch limit must be a positive integer <= 1000");
+      }
+      return db.$queryRawUnsafe<IdempotencyRecord[]>(
+        `WITH candidates AS (
+            SELECT id
+              FROM "${databaseSchema}".idempotency_records
+             WHERE state = 'PENDING'
+               AND (lease_until IS NULL OR lease_until < pg_catalog.statement_timestamp())
+               AND next_dispatch_at <= pg_catalog.statement_timestamp()
+             ORDER BY next_dispatch_at ASC, created_at ASC
+             LIMIT $1
+               FOR UPDATE SKIP LOCKED
+         )
+         UPDATE "${databaseSchema}".idempotency_records AS records
+            SET lease_until = pg_catalog.statement_timestamp()
+                + pg_catalog.make_interval(secs => $2::double precision)
+           FROM candidates
+          WHERE records.id = candidates.id
+            AND records.state = 'PENDING'
+          RETURNING records.id,
+                    records.actor_user_id AS "actorUserId",
+                    records.scope,
+                    records.key,
+                    records.payload_hash AS "payloadHash",
+                    records.inference_id AS "inferenceId",
+                    records.resolved_model_versions AS "resolvedModelVersions",
+                    records.state,
+                    records.response_status AS "responseStatus",
+                    records.response_body AS "responseBody",
+                    records.accepted_at AS "acceptedAt",
+                    records.created_at AS "createdAt",
+                    records.dispatch_attempts AS "dispatchAttempts",
+                    records.next_dispatch_at AS "nextDispatchAt",
+                    records.lease_until AS "leaseUntil",
+                    records.last_error_code AS "lastErrorCode"`,
+        limit,
+        DISPATCH_CLAIM_LEASE_SECONDS,
+      );
+    },
+
+    async markDispatchOutcome(
+      recordId: string,
+      outcome: DispatchOutcomeInput,
     ): Promise<number> {
+      if (outcome.dispatched) {
+        const record = await db.idempotencyRecord.findUnique({
+          where: { id: recordId },
+          select: { inferenceId: true },
+        });
+        if (record === null) {
+          return 0;
+        }
+        return markAcceptedRecord(db, databaseSchema, recordId, {
+          inferenceId: record.inferenceId,
+          jobId: record.inferenceId,
+          status: "QUEUED",
+        });
+      }
+
+      const errorCode = outcome.lastErrorCode ?? "dispatch_failed";
+      assertDispatchErrorCode(errorCode);
       return db.$executeRawUnsafe(
         `UPDATE "${databaseSchema}".idempotency_records
-            SET state = 'ACCEPTED',
-                response_status = 202,
-                response_body = $2::jsonb,
-                accepted_at = GREATEST(created_at, pg_catalog.statement_timestamp())
+            SET dispatch_attempts = dispatch_attempts + 1,
+                next_dispatch_at = pg_catalog.statement_timestamp()
+                  + pg_catalog.make_interval(
+                      secs => LEAST(
+                          2 * pg_catalog.power(2, dispatch_attempts),
+                          120
+                      )::double precision
+                    ),
+                lease_until = NULL,
+                last_error_code = $2
           WHERE id = $1::uuid
             AND state = 'PENDING'`,
-        id,
-        JSON.stringify(responseBody),
+        recordId,
+        errorCode,
       );
     },
   };

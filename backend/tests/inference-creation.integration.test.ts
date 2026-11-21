@@ -193,10 +193,7 @@ describe("POST /inferences creation (2.2 B)", () => {
     expect(consultation.requiredSetVersion).toBeNull();
     expect(consultation.requiredSetFrozenAt).toBeNull();
 
-    expect(StorageService.getMlDownloadUrl).toHaveBeenCalledWith(
-      "raw-retinas",
-      study.image.storagePath,
-    );
+    expect(StorageService.getMlDownloadUrl).not.toHaveBeenCalled();
     expect(enqueueInference).toHaveBeenCalledTimes(1);
     expect(vi.mocked(enqueueInference).mock.calls[0]![0]).toMatchObject({
       inferenceId: body.inferenceId,
@@ -209,9 +206,12 @@ describe("POST /inferences creation (2.2 B)", () => {
         fingerprintSha256: makePreparedSnapshot(FEATURES).contextFingerprintSha256,
       },
     });
+    expect(vi.mocked(enqueueInference).mock.calls[0]![0]).not.toHaveProperty(
+      "imageUrl",
+    );
   });
 
-  it("parses a legacy URI before signing and preserves the exact key", async () => {
+  it("does not parse or sign a legacy storage path before enqueueing", async () => {
     const study = await makeCase(doctor.id);
     const exactPath = "s3://raw-retinas/folder/a b%20c#d?e|f.png";
     await prisma.image.update({
@@ -221,13 +221,14 @@ describe("POST /inferences creation (2.2 B)", () => {
 
     const response = await post(app, { imageId: study.image.id, eyeSide: "OD" });
     expect(response.statusCode).toBe(202);
-    expect(StorageService.getMlDownloadUrl).toHaveBeenCalledWith(
-      "raw-retinas",
-      "folder/a b%20c#d?e|f.png",
+    expect(StorageService.getMlDownloadUrl).not.toHaveBeenCalled();
+    expect(enqueueInference).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueInference).mock.calls[0]![0]).not.toHaveProperty(
+      "imageUrl",
     );
   });
 
-  it("returns safe 503 without signing on a corrupt server reference", async () => {
+  it("does not resolve or sign a server reference during creation", async () => {
     const study = await makeCase(doctor.id);
     await prisma.image.update({
       where: { id: study.image.id },
@@ -235,11 +236,10 @@ describe("POST /inferences creation (2.2 B)", () => {
     });
 
     const response = await post(app, { imageId: study.image.id, eyeSide: "OD" });
-    expect(response.statusCode).toBe(503);
+    expect(response.statusCode).toBe(202);
     expect(response.body).not.toContain("secret.example");
     expect(StorageService.getMlDownloadUrl).not.toHaveBeenCalled();
-    expect(enqueueInference).not.toHaveBeenCalled();
-    // 4.6 owns post-commit dispatch recovery; 3.3 does not claim rollback.
+    expect(enqueueInference).toHaveBeenCalledTimes(1);
     expect(
       await prisma.inference.count({
         where: { imageId: study.image.id, status: "QUEUED" },
@@ -569,37 +569,21 @@ describe("POST /inferences creation (2.2 B)", () => {
     expect(parentAfter.snapshotId).toBeNull();
   });
 
-  it("keeps a durable QUEUED row when signing or enqueue fails after commit", async () => {
+  it("keeps a durable QUEUED row when enqueue fails after commit", async () => {
     const study = await makeCase(doctor.id);
 
-    vi.mocked(StorageService.getMlDownloadUrl).mockRejectedValueOnce(
-      new Error("storage down"),
-    );
-    const storageFailure = await post(app, {
-      imageId: study.image.id,
-      eyeSide: "OD",
-    });
-    expect(storageFailure.statusCode).toBe(503);
-    expect(await prisma.inference.count()).toBe(1);
-    expect(await prisma.clinicalSnapshot.count()).toBe(1);
-    const queued = await prisma.inference.findFirstOrThrow();
-    expect(queued.status).toBe("QUEUED");
-    expect(queued.jobId).toBeNull();
-    expect(enqueueInference).not.toHaveBeenCalled();
-
-    await resetDb(prisma);
-    doctor = await makeUser(prisma, "OFTALMOLOGO");
-    headers = await bearer(app, prisma, doctor);
-    const second = await makeCase(doctor.id);
     vi.mocked(enqueueInference).mockRejectedValueOnce(new Error("redis down"));
     const queueFailure = await post(app, {
-      imageId: second.image.id,
+      imageId: study.image.id,
       eyeSide: "OD",
     });
     expect(queueFailure.statusCode).toBe(503);
     expect(await prisma.inference.count()).toBe(1);
     expect(await prisma.clinicalSnapshot.count()).toBe(1);
-    expect((await prisma.inference.findFirstOrThrow()).status).toBe("QUEUED");
+    const queued = await prisma.inference.findFirstOrThrow();
+    expect(queued.status).toBe("QUEUED");
+    expect(queued.jobId).toBeNull();
+    expect(StorageService.getMlDownloadUrl).not.toHaveBeenCalled();
   });
 
   it("rolls back snapshot+inference with a real transaction fault", async () => {
@@ -655,7 +639,6 @@ describe("POST /inferences creation (2.2 B)", () => {
       access,
       authService: { verifySession: async () => principal },
       mlClient: createFakeMlClient(),
-      signMlDownloadUrl: async () => "http://minio:9000/retina.jpg",
       enqueue: async () => ({ id: "mock-job-id" }),
       now: () => new Date(),
     });
