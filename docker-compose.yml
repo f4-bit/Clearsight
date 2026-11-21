@@ -10,6 +10,7 @@ x-backend-environment: &backend-environment
   MLFLOW_TRACKING_URI: http://mlflow:5000
   MINIO_ENDPOINT: minio
   MINIO_PORT: "9000"
+  MINIO_BROWSER_ORIGIN: ${MINIO_BROWSER_ORIGIN:-http://localhost:9000}
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   MINIO_SECURE: "false"
@@ -20,6 +21,7 @@ x-backend-environment: &backend-environment
   AZURE_STORAGE_ACCOUNT_NAME: ${AZURE_STORAGE_ACCOUNT_NAME:-}
   AZURE_STORAGE_ACCOUNT_KEY: ${AZURE_STORAGE_ACCOUNT_KEY:-}
   JWT_SECRET: ${JWT_SECRET:-replace-me}
+  AUTH_PUBLIC_ORIGIN: ${AUTH_PUBLIC_ORIGIN:-http://localhost:3000}
   # HMAC secret used to pseudonymize doctor ids in gold-standard exports.
   EXPORT_HMAC_SECRET: ${EXPORT_HMAC_SECRET:-replace-me-too}
   DATABASE_URL: postgresql://${POSTGRES_USER:-clearsight}:${POSTGRES_PASSWORD:-clearsight}@postgres:5432/${POSTGRES_DB:-clearsight}
@@ -182,7 +184,6 @@ services:
       dockerfile: docker/frontend.Dockerfile
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
       API_INTERNAL_URL: http://backend:8000
     ports:
       - "3000:3000"

@@ -807,6 +807,27 @@ describe("MinIO provider", () => {
     presignClient.destroy();
   });
 
+  it("signs browser downloads for the configured public origin without using it for storage reads", async () => {
+    const config = resolveStorageProviderConfig({
+      ...MINIO_ENV,
+      MINIO_BROWSER_ORIGIN: "https://retinas.example.invalid:9443",
+    });
+    const client = new FakeS3Client(async () => ({ ContentLength: 3, ContentType: "image/png" }));
+    const provider = new MinioStorageProvider(config.minio, config.storageId, { client });
+    const url = new URL(await provider.sign("raw-retinas", "overlay.png", 90, "internal"));
+    const mlUrl = new URL(await provider.sign("raw-retinas", "overlay.png", 90, "ml"));
+
+    expect(url.origin).toBe("https://retinas.example.invalid:9443");
+    expect(url.pathname).toBe("/raw-retinas/overlay.png");
+    expect(url.searchParams.get("X-Amz-Signature")).toBeTruthy();
+    expect(mlUrl.origin).toBe("http://minio-ml:9001");
+    expect(client.calls.map(commandName)).toEqual(["HeadObjectCommand", "HeadObjectCommand"]);
+    expect(() => resolveStorageProviderConfig({
+      ...MINIO_ENV,
+      MINIO_BROWSER_ORIGIN: "https://retinas.example.invalid/clinical",
+    })).toThrow(StorageProviderError);
+  });
+
   it("returns object_missing before signing and distinguishes permission errors", async () => {
     const missingSigner = vi.fn<S3Presigner>();
     const missing = minioProvider({

@@ -46,9 +46,9 @@ function endpointFor(config: MinioStorageConfig, mlEndpoint: boolean): string {
   return `${protocol}://${config.endpoint}:${config.port}`;
 }
 
-function createS3Client(config: MinioStorageConfig, mlEndpoint: boolean): S3Client {
+function createS3Client(config: MinioStorageConfig, mlEndpoint: boolean, origin?: string): S3Client {
   return new S3Client({
-    endpoint: endpointFor(config, mlEndpoint),
+    endpoint: origin ?? endpointFor(config, mlEndpoint),
     region: "us-east-1",
     credentials: {
       accessKeyId: config.accessKey,
@@ -162,6 +162,7 @@ export class MinioStorageProvider implements StorageProvider {
   readonly storageId: string;
   private readonly client: S3CommandClient;
   private readonly mlClient: S3CommandClient;
+  private readonly browserClient: S3CommandClient;
   private readonly signer: S3Presigner;
 
   constructor(
@@ -172,6 +173,7 @@ export class MinioStorageProvider implements StorageProvider {
     this.storageId = storageId;
     this.client = deps.client ?? createS3Client(config, false);
     this.mlClient = deps.mlClient ?? createS3Client(config, true);
+    this.browserClient = config.browserOrigin ? createS3Client(config, false, config.browserOrigin) : this.client;
     this.signer = deps.signer ?? defaultSigner;
   }
 
@@ -257,10 +259,9 @@ export class MinioStorageProvider implements StorageProvider {
     assertMinioBucketName(bucket);
     assertValidStorageKey(key);
     const ttl = resolveStorageTtlSeconds(expiresInSeconds, expiresInSeconds);
-    const client = endpoint === "ml" ? this.mlClient : this.client;
+    const client = endpoint === "ml" ? this.mlClient : this.browserClient;
 
-    // Existence is checked against the internal endpoint; only the presigned URL
-    // is generated for the ML-reachable host.
+    // Check object existence internally and sign for the consuming client.
     if (!(await this.existsWith(this.client, bucket, key))) {
       throw new StorageProviderError("storage_object_missing");
     }

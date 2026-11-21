@@ -68,6 +68,7 @@ export interface MinioStorageConfig {
   accessKey: string;
   secretKey: string;
   mlPublicHost: string | null;
+  browserOrigin?: string;
 }
 
 export interface AzureStorageConfig {
@@ -90,6 +91,7 @@ export interface StorageEnvInput {
   STORAGE_ALLOWED_BUCKETS?: string | undefined;
   STORAGE_DOWNLOAD_TTL_SECONDS?: number | undefined;
   MINIO_ENDPOINT: string;
+  MINIO_BROWSER_ORIGIN?: string | undefined;
   MINIO_PORT: number;
   MINIO_ACCESS_KEY: string;
   MINIO_SECRET_KEY: string;
@@ -341,6 +343,21 @@ export function assertBody(body: Buffer | Uint8Array): number {
   return body.byteLength;
 }
 
+function parseBrowserOrigin(value: string | undefined): string | undefined {
+  const origin = value?.trim();
+  if (!origin) return undefined;
+  try {
+    const url = new URL(origin);
+    if ((url.protocol === "http:" || url.protocol === "https:") &&
+        (origin === url.origin || origin === `${url.origin}/`)) {
+      return url.origin;
+    }
+  } catch {
+    // Expose a safe configuration error without echoing the value.
+  }
+  throw new StorageProviderError("storage_invalid_config");
+}
+
 export function resolveStorageProviderConfig(
   input: StorageEnvInput,
 ): StorageProviderConfig {
@@ -353,6 +370,7 @@ export function resolveStorageProviderConfig(
   const configuredTtl = input.STORAGE_DOWNLOAD_TTL_SECONDS ?? DEFAULT_STORAGE_TTL_SECONDS;
   const downloadTtlSeconds = resolveStorageTtlSeconds(undefined, configuredTtl);
   const storageId = resolveStorageLogicalId(provider, input.STORAGE_ID);
+  const browserOrigin = provider === "minio" ? parseBrowserOrigin(input.MINIO_BROWSER_ORIGIN) : undefined;
 
   const minio: MinioStorageConfig = {
     endpoint: assertMinioHost(input.MINIO_ENDPOINT),
@@ -361,6 +379,7 @@ export function resolveStorageProviderConfig(
     accessKey: input.MINIO_ACCESS_KEY,
     secretKey: input.MINIO_SECRET_KEY,
     mlPublicHost: parseMlPublicHost(input.ML_PUBLIC_HOST),
+    ...(browserOrigin ? { browserOrigin } : {}),
   };
   if (
     !Number.isInteger(minio.port) ||
