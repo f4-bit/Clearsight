@@ -12,13 +12,10 @@ import {
 } from "./helpers/ml.js";
 import {
   createInferenceProcessor,
+  failedTerminalUpdate,
   InferenceRetryableError,
   InferenceTerminalError,
 } from "../src/workers/inference.processor.js";
-import {
-  createInferenceJobHandler,
-  persistInferenceFailure,
-} from "../src/workers/inference.worker.js";
 import type { InferenceJobData } from "../src/workers/inference.contracts.js";
 
 const prisma = createTestPrisma();
@@ -272,17 +269,15 @@ describe("worker inference processor integration (C)", () => {
     );
   });
 
-  it("persists FAILED once with safe empty fields when attempts are exhausted", async () => {
+  it("persists FAILED through the repository CAS exactly once", async () => {
     const execution = await createExecution();
     const repository = createInferenceRunRepository(prisma);
-    const finalJob = {
-      attemptsMade: 3,
-      opts: { attempts: 3 },
-      data: execution.job,
-    } as never;
 
     await expect(
-      persistInferenceFailure(repository, finalJob, new Error("exhausted")),
+      repository.saveTerminalResult(
+        execution.inference.id,
+        failedTerminalUpdate(),
+      ),
     ).resolves.toBe(true);
 
     const failed = await prisma.inference.findUniqueOrThrow({
@@ -309,7 +304,10 @@ describe("worker inference processor integration (C)", () => {
       data: { status: "COMPLETED" },
     });
     await expect(
-      persistInferenceFailure(repository, finalJob, new Error("exhausted")),
+      repository.saveTerminalResult(
+        execution.inference.id,
+        failedTerminalUpdate(),
+      ),
     ).resolves.toBe(false);
     const preserved = await prisma.inference.findUniqueOrThrow({
       where: { id: execution.inference.id },
@@ -326,21 +324,14 @@ describe("worker inference processor integration (C)", () => {
     const signMlDownloadUrl = vi.fn(async () => {
       throw new Error("storage signing down");
     });
-    const handler = createInferenceJobHandler(processor(ml, signMlDownloadUrl));
+    const processorUnderTest = processor(ml, signMlDownloadUrl);
 
-    const failure = handler({ data: execution.job } as never);
-    await expect(failure).rejects.toBeInstanceOf(InferenceRetryableError);
-    const error: unknown = await failure.catch((cause: unknown) => cause);
+    await expect(processorUnderTest(execution.job)).rejects.toBeInstanceOf(
+      InferenceRetryableError,
+    );
 
     expect(signMlDownloadUrl).toHaveBeenCalledWith(execution.image.storagePath);
     expect(ml.submitInference).not.toHaveBeenCalled();
-    await expect(
-      persistInferenceFailure(
-        createInferenceRunRepository(prisma),
-        { attemptsMade: 1, opts: { attempts: 3 }, data: execution.job } as never,
-        error,
-      ),
-    ).resolves.toBe(false);
     const stored = await prisma.inference.findUniqueOrThrow({
       where: { id: execution.inference.id },
     });

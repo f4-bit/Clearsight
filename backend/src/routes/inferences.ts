@@ -77,7 +77,7 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
       preHandler: [authenticate, requireRole("OFTALMOLOGO")],
       schema: {
         tags: ["Inferences"],
-        summary: "Dispatch asynchronous ML inference job via BullMQ",
+        summary: "Dispatch asynchronous ML inference via the PostgreSQL queue",
         body: inferenceCreateSchema,
         response: {
           202: jobAcceptedSchema,

@@ -31,8 +31,9 @@ const envSchema = z
     .string()
     .default("postgresql://clearsight:clearsight@localhost:5432/clearsight"),
 
-  // Redis / BullMQ
-  REDIS_URL: z.string().default("redis://localhost:6379/0"),
+  // Optional legacy setting. The inference queue is PostgreSQL-backed and the
+  // backend never connects to Redis; an absent value must not break startup.
+  REDIS_URL: z.string().optional(),
 
   // MinIO / S3
   MINIO_ENDPOINT: z.string().default("localhost"),

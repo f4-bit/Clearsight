@@ -40,6 +40,30 @@ npx prisma db seed                   # datos sintéticos (nunca en production)
 npm run dev
 ```
 
+## Cola de inferencia (PostgreSQL)
+
+- `POST /inferences` crea la ejecución `QUEUED` y `enqueueInference` solo la marca
+  lista (`next_process_at`). No hay BullMQ ni conexión a Redis: `REDIS_URL` queda
+  como variable opcional sin uso y el backend arranca aunque falte.
+- `npm run worker` (o `startInferenceWorker()`) corre en el mismo proceso un poller
+  PostgreSQL con `SELECT ... FOR UPDATE SKIP LOCKED` (batch 4), lease explícito de
+  300 s (`process_lease_until`) para que dos pollers no reclamen la misma fila,
+  reintentos exponenciales (2s * 2^attempts, cap 120s, 3 intentos) y persistencia
+  terminal `FAILED` por el compare-and-set existente. `COMPLETED`/`REVIEW_REQUIRED`
+  los persiste el processor y nunca se sobrescriben. `markReady` no re-arma una fila
+  con lease vivo.
+- El reconciliador de dispatch/publicación (idempotencia) sigue corriendo junto al
+  poller. La inferencia se re-firma JIT desde `storagePath`; el payload no lleva
+  `imageUrl`.
+- **HITO29 QA PASSED:** unit **46 files / 714 tests**, integración **32 files / 600
+  tests**, `typecheck`/`build` **0**, Docker limpio. Runbook:
+  `docs/hito29-inference-postgres-queue-runbook.md`.
+- **Límites:** un lease expirado con el processor vivo puede repetir trabajo (solo
+  desperdicio; el CAS garantiza un único resultado terminal y no hay `lease_id` por
+  intento). Filas legacy sin snapshot terminan `FAILED invalid_job_context`.
+  `enqueueInference` usa el `prisma` global/schema `public`; schema no-public queda
+  pendiente. REG-002/003/004/008 no se declaran resueltos (cierre humano).
+
 ## Storage provider (3.2)
 
 - `STORAGE_PROVIDER=minio` es el default retrocompatible y `azure` es explícito; cualquier otro valor falla cerrado. `STORAGE_ID` es lógico y por defecto es `minio-local` o `azure-blob-default` según el provider.
@@ -209,7 +233,7 @@ Idempotency-Key: 6f1c2d7e-3b4a-4c8d-9e2f-1a2b3c4d5e6f
 Content-Type: application/json
 ```
 
-Si el `202` se pierde, reintente con **la misma key y el mismo payload** para recuperar el mismo `inferenceId`/`jobId`; si cambia el payload, use una key nueva. Un `400` de header no crea nada; `401`/`403` prevalecen. Un `503` deja la ejecución `PENDING` reanudable con la misma key. No se promete outbox, recuperación automática ni de-duplicación eterna; eso queda en 4.6/4.7/4.8.
+Si el `202` se pierde, reintente con **la misma key y el mismo payload** para recuperar el mismo `inferenceId`/`jobId`; si cambia el payload, use una key nueva. Un `400` de header no crea nada; `401`/`403` prevalecen. Un `503` deja la ejecución `PENDING` reanudable con la misma key. La reconciliación de dispatch (4.6), el cierre de reintentos (4.7) y la firma JIT (4.8) están implementados sobre la cola PostgreSQL (4.11); no se promete outbox transaccional ni de-duplicación eterna.
 
 ## ETL de reentrenamiento
 
@@ -227,7 +251,7 @@ python ../scripts/retrain_cycle.py --samples data/gold.csv
 El runner está dividido en dos allowlists explícitas:
 
 ```bash
-npm test                 # runner unitario por defecto (seguro, sin DB/Redis/red)
+npm test                 # runner unitario por defecto (seguro, sin DB/red)
 npm run test:unit        # idéntico: schemas, sanitizer y tests/unit/**
 npm run test:watch       # watch del runner unitario
 npm run test:integration # explícito; requiere Docker/Testcontainers
@@ -245,7 +269,7 @@ npm run test:integration # explícito; requiere Docker/Testcontainers
 - `tests/migration-deploy.integration.test.ts` cubre el wrapper real (Prisma CLI incluido) sobre
   schemas independientes: schema vacío, baseline poblado, repetición sin resolve, historial fallido o
   con checksum alterado y matriz de divergencias.
-- Límites: el runner unitario no cubre flujos de negocio/seguridad ni Prisma/Redis/SQL. La
+- Límites: el runner unitario no cubre flujos de negocio/seguridad ni Prisma/SQL. La
   integración real se ejecutó con Docker/Testcontainers en PostgreSQL 16; no se probó Azure ni una
   base de producción.
 

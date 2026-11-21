@@ -57,7 +57,7 @@ rows written with the old mapping must be recomputed or discarded (DB stores
   `58c40af` "feat: secure ML service contract").
 - Per-profile CORS (`production` deny-all when `CORS_ORIGIN` unset; development allow-all).
 - `force: false` removed in `sanitizeImage` (always output JPEG).
-- `ioredis` instance for BullMQ (with `maxRetriesPerRequest: null`).
+- `ioredis` instance for BullMQ (with `maxRetriesPerRequest: null`). Superseded by the PostgreSQL-backed inference queue (task 4.11 / HITO29): the durable `inferences` row is the queue (`SKIP LOCKED` + 300 s lease + backoff + terminal CAS) and the backend no longer connects to Redis.
 - JWT tests (auth smoke + expiry), RBAC smoke tests (10), and the E2E runbook.
 - Cross-cutting integration fixes from commits `ebde419`, `a044d08`, `d77d7f2`, `544495c`,
   `f9a36ca`, `a68a726`.
