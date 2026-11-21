@@ -1,25 +1,20 @@
-import "dotenv/config";
 import { buildApp } from "./app.js";
-import { parseEnv } from "./config/env.js";
-import { createPrismaClient } from "./lib/prisma.js";
+import { env } from "./config/env.js";
 
-const env = parseEnv();
-const prisma = createPrismaClient(env.DATABASE_URL);
-const app = buildApp({ env, prisma, logger: true });
+async function main() {
+  const app = await buildApp();
 
-const shutdown = async (signal: string) => {
-  app.log.info({ signal }, "shutting down");
-  await app.close();
-  await prisma.$disconnect();
-  process.exit(0);
-};
-process.on("SIGINT", () => void shutdown("SIGINT"));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-
-try {
-  await app.listen({ host: env.HOST, port: env.PORT });
-} catch (error) {
-  app.log.error(error);
-  await prisma.$disconnect();
-  process.exit(1);
+  try {
+    const address = await app.listen({
+      port: env.PORT,
+      host: env.PORT === 8000 ? "0.0.0.0" : env.HOST,
+    });
+    console.log(`Clearsight Backend listening at ${address}`);
+    console.log(`Swagger OpenAPI docs available at ${address}/docs`);
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
 }
+
+main();

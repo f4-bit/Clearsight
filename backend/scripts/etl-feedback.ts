@@ -18,6 +18,7 @@ import { parseArgs } from "node:util";
 import { createPrismaClient, type PrismaClient } from "../src/lib/prisma.js";
 import { createFeedbackRepository } from "../src/repositories/feedback.repo.js";
 import { CLASS_LABELS } from "../src/schemas/common.js";
+import { assertProductionExportHmacSecret } from "../src/services/export-policy.js";
 import { buildGoldStandardExport, toCsv } from "../src/services/gold-standard-export.js";
 
 export interface EtlOptions {
@@ -69,6 +70,9 @@ export async function runEtl(prisma: PrismaClient, options: EtlOptions): Promise
     since,
     limit: options.limit ?? 50_000,
     hmacSecret: options.hmacSecret,
+    // The operator-run ETL is an explicitly trusted offline whole-dataset job;
+    // it is never an HTTP scope and takes no interactive principal.
+    scope: { kind: "trusted-offline" },
   });
 
   const classDistribution: Record<string, number> = Object.fromEntries(CLASS_LABELS.map((label) => [label, 0]));
@@ -118,6 +122,9 @@ async function main(): Promise<number> {
 
   const hmacSecret = process.env.EXPORT_HMAC_SECRET;
   if (!hmacSecret) throw new Error("EXPORT_HMAC_SECRET is required (it pseudonymizes doctor ids)");
+  // Fail closed on a known/short/placeholder secret when the offline ETL runs
+  // with a production profile, mirroring the HTTP config boundary.
+  assertProductionExportHmacSecret(hmacSecret, process.env.NODE_ENV);
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
 

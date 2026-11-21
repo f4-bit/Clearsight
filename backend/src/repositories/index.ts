@@ -1,4 +1,6 @@
 import type { Db } from "./types.js";
+import { createArtifactReadRepository } from "./artifact.repo.js";
+import { createClinicalSnapshotRepository } from "./clinical-snapshot.repo.js";
 import { createConsultationRepository } from "./consultation.repo.js";
 import { createFeedbackRepository } from "./feedback.repo.js";
 import { createImageRepository } from "./image.repo.js";
@@ -12,9 +14,15 @@ export function createRepositories(db: Db) {
     users: createUserRepository(db),
     patients: createPatientRepository(db),
     consultations: createConsultationRepository(db),
+    snapshots: createClinicalSnapshotRepository(db),
     images: createImageRepository(db),
     inferences: createInferenceRepository(db),
+    artifacts: createArtifactReadRepository(db),
     feedback: createFeedbackRepository(db),
   };
 }
 export type Repositories = ReturnType<typeof createRepositories>;
+
+/** Schema-bound idempotency access; instantiate with the active schema. */
+export { createIdempotencyRepository } from "./idempotency.repo.js";
+export type { IdempotencyRepository } from "./idempotency.repo.js";

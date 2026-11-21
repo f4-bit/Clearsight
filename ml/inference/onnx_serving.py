@@ -8,7 +8,9 @@ import numpy as np
 from ml.config import Settings
 from ml.inference.classification import (
     ClassifierPrediction,
+    ResolvedClinicalParameters,
     normalize_clinical_features,
+    resolve_clinical_parameters,
 )
 
 _ONNX_TYPE_TO_NUMPY: dict[str, type[np.floating[Any]]] = {
@@ -74,17 +76,10 @@ class OnnxClassificationRunner:
 
         self.ort = ort
         self.class_names = tuple(manifest["class_names"])
-        self.clinical_features = tuple(manifest["clinical_features"])
-        clinical_mean = settings.clinical_mean or manifest.get("clinical_mean")
-        clinical_std = settings.clinical_std or manifest.get("clinical_std")
-        if not clinical_mean or not clinical_std:
-            raise RuntimeError("clinical_mean and clinical_std are required")
-        if len(clinical_mean) != len(self.clinical_features):
-            raise RuntimeError("clinical_mean length does not match feature schema")
-        if len(clinical_std) != len(self.clinical_features):
-            raise RuntimeError("clinical_std length does not match feature schema")
-        self.clinical_mean: list[float] = [float(value) for value in clinical_mean]
-        self.clinical_std: list[float] = [float(value) for value in clinical_std]
+        self.parameters = resolve_clinical_parameters(settings, manifest)
+        self.clinical_features = self.parameters.feature_names
+        self.clinical_mean = self.parameters.mean
+        self.clinical_std = self.parameters.std
 
         available = ort.get_available_providers()
         providers = ["CPUExecutionProvider"]
@@ -102,6 +97,10 @@ class OnnxClassificationRunner:
             self.input_types[model_type] = {
                 item.name: _numpy_dtype(item.type) for item in session.get_inputs()
             }
+
+    @property
+    def resolved_parameters(self) -> ResolvedClinicalParameters:
+        return self.parameters
 
     def _clinical_vector(self, features: dict[str, float]) -> np.ndarray:
         normalized = normalize_clinical_features(

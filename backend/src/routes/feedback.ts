@@ -9,10 +9,13 @@ import {
   GoldStandardQuery,
   type FeedbackRead,
 } from "../schemas/feedback.js";
+import type { ClinicalAccessService } from "../services/clinical-access.js";
+import { subjectFromRequest } from "../services/clinical-access.js";
 import { buildGoldStandardExport, toCsv } from "../services/gold-standard-export.js";
 
 export interface FeedbackRoutesOptions {
   repos: Repositories;
+  access: ClinicalAccessService;
   exportHmacSecret: string;
 }
 
@@ -36,7 +39,7 @@ export function toFeedbackRead(row: FeedbackRow): FeedbackRead {
 }
 
 export const feedbackRoutes: FastifyPluginAsync<FeedbackRoutesOptions> = async (app, opts) => {
-  const { repos, exportHmacSecret } = opts;
+  const { repos, access, exportHmacSecret } = opts;
 
   /**
    * Doctor validates / rectifies / marks as inconclusive a model inference.
@@ -89,13 +92,18 @@ export const feedbackRoutes: FastifyPluginAsync<FeedbackRoutesOptions> = async (
   );
 
   /**
-   * Anonymized gold-standard batch for retraining (JSON or CSV).
-   * Researchers/auditors and admins only.
+   * Pseudonymized gold-standard batch for retraining (JSON or CSV).
+   * Researchers/auditors and admins need at least one active CAN_EXPORT grant;
+   * the export is limited to the exact inference/consultation pairs approved.
    */
   app.get(
     "/export/gold-standard",
     { preHandler: [authenticate, requireRole("INVESTIGADOR", "ADMIN")] },
     async (request, reply) => {
+      const subject = subjectFromRequest(request);
+      await access.assertExportGrant(subject);
+      const pairs = await access.listActiveExportPairs(subject);
+
       const query = GoldStandardQuery.parse(request.query);
       const since = query.since ? new Date(query.since) : undefined;
 
@@ -103,6 +111,7 @@ export const feedbackRoutes: FastifyPluginAsync<FeedbackRoutesOptions> = async (
         since,
         limit: query.limit,
         hmacSecret: exportHmacSecret,
+        scope: { kind: "approved-inferences", pairs },
       });
 
       reply.header("x-has-more", String(hasMore));

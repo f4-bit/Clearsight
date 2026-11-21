@@ -8,6 +8,7 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { createPrismaClient } from "../src/lib/prisma.js";
+import { PASSWORD_BCRYPT_COST } from "../src/services/password-policy.js";
 import { CLASS_LABELS } from "../src/schemas/common.js";
 import { CLINICAL_FEATURE_NAMES, type ClinicalFeatureName } from "../src/schemas/clinical.js";
 import type { UserRole } from "../src/generated/prisma/enums.js";
@@ -69,7 +70,7 @@ function clinicalFor(diagnosticClass: number): Record<string, number> {
 const prisma = createPrismaClient(databaseUrl);
 
 async function main() {
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, PASSWORD_BCRYPT_COST);
 
   const users: { n: number; email: string; fullName: string; role: UserRole }[] = [
     { n: 1, email: "doctor1@clearsight.test", fullName: "Dra. Seed Uno", role: "OFTALMOLOGO" },
@@ -96,8 +97,28 @@ async function main() {
       gender: clinical["Gender"] === 1 ? "M" : "F",
       clinicalHistoryFlags: { family_history: i % 4 === 0 },
       clinicalData: {},
+      ownerDoctorId: doctorId,
     };
-    await prisma.patient.upsert({ where: { id: patientId }, create: { id: patientId, ...patientData }, update: patientData });
+    await prisma.patient.upsert({
+      where: { id: patientId },
+      create: { id: patientId, ...patientData },
+      // The owner is only (re)assigned when it is still NULL or already the
+      // same doctor; the trigger rejects any real reassignment.
+      update: {
+        externalCode: patientData.externalCode,
+        age: patientData.age,
+        gender: patientData.gender,
+        clinicalHistoryFlags: patientData.clinicalHistoryFlags,
+        clinicalData: patientData.clinicalData,
+      },
+    });
+    await prisma.patient.updateMany({
+      where: {
+        id: patientId,
+        OR: [{ ownerDoctorId: null }, { ownerDoctorId: doctorId }],
+      },
+      data: { ownerDoctorId: doctorId },
+    });
 
     const consultationId = uuid("consultation", i);
     const consultationData = {

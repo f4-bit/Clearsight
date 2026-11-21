@@ -1,0 +1,703 @@
+{
+  "sourceMigration": "0_init",
+  "sourceSha256": "0e6e51bdb110d70a9bc979e1e94d99bf0195e5120e366c9efe4c34b167028502",
+  "tables": [
+    {
+      "name": "clinical_feedback",
+      "columns": [
+        {
+          "ordinal": 1,
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 2,
+          "name": "consultation_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 3,
+          "name": "inference_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 4,
+          "name": "doctor_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 5,
+          "name": "predicted_class",
+          "type": "integer",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 6,
+          "name": "validated_class",
+          "type": "integer",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 7,
+          "name": "confidence",
+          "type": "double precision",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 8,
+          "name": "agreement",
+          "type": "boolean",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 9,
+          "name": "doctor_notes",
+          "type": "text",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 10,
+          "name": "is_gold_standard",
+          "type": "boolean",
+          "nullable": false,
+          "default": "false",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 11,
+          "name": "clinical_data",
+          "type": "jsonb",
+          "nullable": false,
+          "default": "'{}'::jsonb",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 12,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": "",
+          "generated": ""
+        }
+      ],
+      "constraints": [
+        {
+          "type": "f",
+          "name": "clinical_feedback_consultation_id_fkey",
+          "columns": [
+            "consultation_id"
+          ],
+          "referencedTable": "consultations",
+          "referencedColumns": [
+            "id"
+          ],
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "matchType": "SIMPLE",
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        },
+        {
+          "type": "f",
+          "name": "clinical_feedback_inference_id_fkey",
+          "columns": [
+            "inference_id"
+          ],
+          "referencedTable": "inferences",
+          "referencedColumns": [
+            "id"
+          ],
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "matchType": "SIMPLE",
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        },
+        {
+          "type": "p",
+          "name": "clinical_feedback_pkey",
+          "columns": [
+            "id"
+          ],
+          "referencedTable": null,
+          "referencedColumns": [],
+          "onUpdate": null,
+          "onDelete": null,
+          "matchType": null,
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "clinical_feedback_pkey",
+          "unique": true,
+          "primary": true,
+          "method": "btree",
+          "definition": "CREATE UNIQUE INDEX clinical_feedback_pkey ON clinical_feedback USING btree (id)"
+        },
+        {
+          "name": "idx_clinical_feedback_consultation_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_clinical_feedback_consultation_id ON clinical_feedback USING btree (consultation_id)"
+        },
+        {
+          "name": "idx_clinical_feedback_doctor_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_clinical_feedback_doctor_id ON clinical_feedback USING btree (doctor_id)"
+        },
+        {
+          "name": "idx_clinical_feedback_gold_standard",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_clinical_feedback_gold_standard ON clinical_feedback USING btree (is_gold_standard)"
+        },
+        {
+          "name": "idx_clinical_feedback_inference_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_clinical_feedback_inference_id ON clinical_feedback USING btree (inference_id)"
+        }
+      ],
+      "triggers": []
+    },
+    {
+      "name": "consultations",
+      "columns": [
+        {
+          "ordinal": 1,
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 2,
+          "name": "patient_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 3,
+          "name": "doctor_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 4,
+          "name": "status",
+          "type": "character varying(32)",
+          "nullable": false,
+          "default": "'PENDIENTE'::character varying",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 5,
+          "name": "clinical_data",
+          "type": "jsonb",
+          "nullable": false,
+          "default": "'{}'::jsonb",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 6,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": "",
+          "generated": ""
+        }
+      ],
+      "constraints": [
+        {
+          "type": "f",
+          "name": "consultations_patient_id_fkey",
+          "columns": [
+            "patient_id"
+          ],
+          "referencedTable": "patients",
+          "referencedColumns": [
+            "id"
+          ],
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "matchType": "SIMPLE",
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        },
+        {
+          "type": "p",
+          "name": "consultations_pkey",
+          "columns": [
+            "id"
+          ],
+          "referencedTable": null,
+          "referencedColumns": [],
+          "onUpdate": null,
+          "onDelete": null,
+          "matchType": null,
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "consultations_pkey",
+          "unique": true,
+          "primary": true,
+          "method": "btree",
+          "definition": "CREATE UNIQUE INDEX consultations_pkey ON consultations USING btree (id)"
+        },
+        {
+          "name": "idx_consultations_doctor_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_consultations_doctor_id ON consultations USING btree (doctor_id)"
+        },
+        {
+          "name": "idx_consultations_patient_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_consultations_patient_id ON consultations USING btree (patient_id)"
+        },
+        {
+          "name": "idx_consultations_status",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_consultations_status ON consultations USING btree (status)"
+        }
+      ],
+      "triggers": []
+    },
+    {
+      "name": "images",
+      "columns": [
+        {
+          "ordinal": 1,
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 2,
+          "name": "consultation_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 3,
+          "name": "eye_side",
+          "type": "character varying(2)",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 4,
+          "name": "storage_path",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 5,
+          "name": "hash_md5",
+          "type": "character varying(32)",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 6,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": "",
+          "generated": ""
+        }
+      ],
+      "constraints": [
+        {
+          "type": "f",
+          "name": "images_consultation_id_fkey",
+          "columns": [
+            "consultation_id"
+          ],
+          "referencedTable": "consultations",
+          "referencedColumns": [
+            "id"
+          ],
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "matchType": "SIMPLE",
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        },
+        {
+          "type": "c",
+          "name": "images_eye_side_check",
+          "columns": [
+            "eye_side"
+          ],
+          "referencedTable": null,
+          "referencedColumns": [],
+          "onUpdate": null,
+          "onDelete": null,
+          "matchType": null,
+          "deferrable": false,
+          "deferred": false,
+          "definition": "CHECK (((eye_side)::text = ANY ((ARRAY['OD'::character varying, 'OS'::character varying])::text[])))"
+        },
+        {
+          "type": "p",
+          "name": "images_pkey",
+          "columns": [
+            "id"
+          ],
+          "referencedTable": null,
+          "referencedColumns": [],
+          "onUpdate": null,
+          "onDelete": null,
+          "matchType": null,
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_images_consultation_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_images_consultation_id ON images USING btree (consultation_id)"
+        },
+        {
+          "name": "idx_images_hash_md5",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_images_hash_md5 ON images USING btree (hash_md5)"
+        },
+        {
+          "name": "images_pkey",
+          "unique": true,
+          "primary": true,
+          "method": "btree",
+          "definition": "CREATE UNIQUE INDEX images_pkey ON images USING btree (id)"
+        }
+      ],
+      "triggers": []
+    },
+    {
+      "name": "inferences",
+      "columns": [
+        {
+          "ordinal": 1,
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 2,
+          "name": "image_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 3,
+          "name": "predicted_class",
+          "type": "integer",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 4,
+          "name": "confidence",
+          "type": "double precision",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 5,
+          "name": "probabilities",
+          "type": "jsonb",
+          "nullable": false,
+          "default": "'{}'::jsonb",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 6,
+          "name": "gradcam_path",
+          "type": "text",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 7,
+          "name": "model_version",
+          "type": "character varying(128)",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 8,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": "",
+          "generated": ""
+        }
+      ],
+      "constraints": [
+        {
+          "type": "f",
+          "name": "inferences_image_id_fkey",
+          "columns": [
+            "image_id"
+          ],
+          "referencedTable": "images",
+          "referencedColumns": [
+            "id"
+          ],
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "matchType": "SIMPLE",
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        },
+        {
+          "type": "p",
+          "name": "inferences_pkey",
+          "columns": [
+            "id"
+          ],
+          "referencedTable": null,
+          "referencedColumns": [],
+          "onUpdate": null,
+          "onDelete": null,
+          "matchType": null,
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_inferences_image_id",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_inferences_image_id ON inferences USING btree (image_id)"
+        },
+        {
+          "name": "idx_inferences_predicted_class",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_inferences_predicted_class ON inferences USING btree (predicted_class)"
+        },
+        {
+          "name": "inferences_pkey",
+          "unique": true,
+          "primary": true,
+          "method": "btree",
+          "definition": "CREATE UNIQUE INDEX inferences_pkey ON inferences USING btree (id)"
+        }
+      ],
+      "triggers": []
+    },
+    {
+      "name": "patients",
+      "columns": [
+        {
+          "ordinal": 1,
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 2,
+          "name": "external_code",
+          "type": "character varying(64)",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 3,
+          "name": "age",
+          "type": "integer",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 4,
+          "name": "gender",
+          "type": "character varying(16)",
+          "nullable": true,
+          "default": null,
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 5,
+          "name": "clinical_history_flags",
+          "type": "jsonb",
+          "nullable": false,
+          "default": "'{}'::jsonb",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 6,
+          "name": "clinical_data",
+          "type": "jsonb",
+          "nullable": false,
+          "default": "'{}'::jsonb",
+          "identity": "",
+          "generated": ""
+        },
+        {
+          "ordinal": 7,
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": "",
+          "generated": ""
+        }
+      ],
+      "constraints": [
+        {
+          "type": "p",
+          "name": "patients_pkey",
+          "columns": [
+            "id"
+          ],
+          "referencedTable": null,
+          "referencedColumns": [],
+          "onUpdate": null,
+          "onDelete": null,
+          "matchType": null,
+          "deferrable": false,
+          "deferred": false,
+          "definition": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_patients_external_code",
+          "unique": false,
+          "primary": false,
+          "method": "btree",
+          "definition": "CREATE INDEX idx_patients_external_code ON patients USING btree (external_code)"
+        },
+        {
+          "name": "patients_pkey",
+          "unique": true,
+          "primary": true,
+          "method": "btree",
+          "definition": "CREATE UNIQUE INDEX patients_pkey ON patients USING btree (id)"
+        }
+      ],
+      "triggers": []
+    }
+  ],
+  "enums": [],
+  "unexpectedObjects": []
+}

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CLINICAL_FEATURE_NAMES } from "../src/schemas/clinical.js";
@@ -11,14 +12,32 @@ const repos = createRepositories(prisma);
 let app: FastifyInstance;
 
 beforeAll(async () => {
-  app = buildTestApp(prisma);
-  await app.ready();
+  app = await buildTestApp(prisma);
 });
 beforeEach(() => resetDb(prisma));
 afterAll(async () => {
   await app.close();
   await prisma.$disconnect();
 });
+
+interface Study {
+  inference: { id: string };
+  consultation: { id: string };
+}
+
+/** Explicit active export approval for exactly one inference/consultation pair. */
+async function grantExport(recipientUserId: string, study: Study): Promise<void> {
+  await prisma.inferenceAccessGrant.create({
+    data: {
+      inferenceId: study.inference.id,
+      consultationId: study.consultation.id,
+      recipientUserId,
+      approvalReference: `EXPORT-${randomUUID()}`,
+      canExportGoldStandard: true,
+      expiresAt: new Date(Date.now() + 3_600_000),
+    },
+  });
+}
 
 async function seedFeedback(
   doctorId: string,
@@ -35,34 +54,51 @@ async function seedFeedback(
   return study;
 }
 
-const get = (query: string, user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" }) =>
-  app.inject({ method: "GET", url: `/export/gold-standard${query}`, headers: bearer(app, user) });
+const get = async (
+  query: string,
+  user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" },
+) =>
+  app.inject({
+    method: "GET",
+    url: `/export/gold-standard${query}`,
+    headers: await bearer(app, prisma, user),
+  });
 
 describe("GET /export/gold-standard", () => {
-  it("401 anonymous, 403 for ophthalmologists, 200 for researchers and admins", async () => {
+  it("401 anonymous, 403 for ophthalmologists, 403 without grant, 200 with an active grant", async () => {
     const doctor = await makeUser(prisma, "OFTALMOLOGO");
     const researcher = await makeUser(prisma, "INVESTIGADOR");
     const admin = await makeUser(prisma, "ADMIN");
+    const study = await seedFeedback(doctor.id, { validated: 0, gold: true, predicted: 0 });
 
     expect((await app.inject({ method: "GET", url: "/export/gold-standard" })).statusCode).toBe(401);
     expect((await get("", doctor)).statusCode).toBe(403);
+    expect((await get("", researcher)).statusCode).toBe(403);
+    expect((await get("", admin)).statusCode).toBe(403);
+
+    await grantExport(researcher.id, study);
+    await grantExport(admin.id, study);
     expect((await get("", researcher)).statusCode).toBe(200);
     expect((await get("", admin)).statusCode).toBe(200);
   });
 
-  it("422 on invalid query parameters", async () => {
+  it("422 on invalid query parameters for an authorized dataset account", async () => {
+    const doctor = await makeUser(prisma, "OFTALMOLOGO");
     const researcher = await makeUser(prisma, "INVESTIGADOR");
+    const study = await seedFeedback(doctor.id, { validated: 1, gold: true });
+    await grantExport(researcher.id, study);
     for (const q of ["?format=xml", "?limit=0", "?limit=999999", "?since=yesterday"]) {
       expect((await get(q, researcher)).statusCode, q).toBe(422);
     }
   });
 
-  it("returns only gold-standard rows, anonymized, with features and labels", async () => {
+  it("returns only approved gold-standard rows, anonymized, with features and labels", async () => {
     const doctor = await makeUser(prisma, "OFTALMOLOGO");
     const researcher = await makeUser(prisma, "INVESTIGADOR");
     const gold = await seedFeedback(doctor.id, { validated: 2, gold: true, predicted: 1, notes: "paciente Juan Perez, HC 123" });
     await seedFeedback(doctor.id, { validated: 1, gold: false });
     await seedFeedback(doctor.id, { validated: null, gold: false });
+    await grantExport(researcher.id, gold);
 
     const res = await get("", researcher);
     expect(res.statusCode).toBe(200);
@@ -85,11 +121,60 @@ describe("GET /export/gold-standard", () => {
     expect(Object.keys(item.features)).toEqual([...CLINICAL_FEATURE_NAMES]);
     expect(item.doctor_id).toBe(pseudonymize(TEST_ENV.EXPORT_HMAC_SECRET, doctor.id));
 
-    // Nothing that identifies a person or links back to the civil record.
     const raw = res.body;
     for (const secret of [doctor.id, gold.consultation.id, gold.patient.id, "Juan Perez", "doctor_notes"]) {
       expect(raw, secret).not.toContain(secret);
     }
+  });
+
+  it("never exports a gold row whose inference is not explicitly approved", async () => {
+    const doctor = await makeUser(prisma, "OFTALMOLOGO");
+    const researcher = await makeUser(prisma, "INVESTIGADOR");
+    const approved = await seedFeedback(doctor.id, { validated: 0, gold: true });
+    const unapproved = await seedFeedback(doctor.id, { validated: 1, gold: true });
+    await grantExport(researcher.id, approved);
+
+    const body = (await get("", researcher)).json();
+    expect(body.count).toBe(1);
+    expect(body.items[0].inference_id).toBe(approved.inference.id);
+    expect(body.items[0].inference_id).not.toBe(unapproved.inference.id);
+  });
+
+  it("never exports a cross-case legacy feedback row even if both ids are individually approved", async () => {
+    const doctor = await makeUser(prisma, "OFTALMOLOGO");
+    const researcher = await makeUser(prisma, "INVESTIGADOR");
+    const studyA = await seedFeedback(doctor.id, { validated: 0, gold: true });
+    const studyB = await seedFeedback(doctor.id, { validated: 1, gold: true });
+    // Legacy mismatch: the feedback row keeps inference A but is re-pointed to
+    // consultation B. Approving both pairs must not export the cross-case row.
+    await prisma.clinicalFeedback.updateMany({
+      where: { inferenceId: studyA.inference.id },
+      data: { consultationId: studyB.consultation.id },
+    });
+    await grantExport(researcher.id, studyA);
+    await grantExport(researcher.id, studyB);
+
+    const body = (await get("", researcher)).json();
+    expect(body.items.map((i: { inference_id: string }) => i.inference_id)).toEqual([
+      studyB.inference.id,
+    ]);
+  });
+
+  it("ignores client-supplied scope ids instead of expanding the approved set", async () => {
+    const doctor = await makeUser(prisma, "OFTALMOLOGO");
+    const researcher = await makeUser(prisma, "INVESTIGADOR");
+    const approved = await seedFeedback(doctor.id, { validated: 0, gold: true });
+    const unapproved = await seedFeedback(doctor.id, { validated: 1, gold: true });
+    await grantExport(researcher.id, approved);
+
+    const body = (
+      await get(
+        `?ids=${unapproved.inference.id}&inferenceId=${unapproved.inference.id}&consultationId=${unapproved.consultation.id}`,
+        researcher,
+      )
+    ).json();
+    expect(body.count).toBe(1);
+    expect(body.items[0].inference_id).toBe(approved.inference.id);
   });
 
   it("falls back to the consultation's clinical data when the feedback snapshot is empty", async () => {
@@ -97,6 +182,7 @@ describe("GET /export/gold-standard", () => {
     const researcher = await makeUser(prisma, "INVESTIGADOR");
     const s = await seedFeedback(doctor.id, { validated: 0, gold: true });
     await prisma.clinicalFeedback.updateMany({ where: { inferenceId: s.inference.id }, data: { clinicalData: {} } });
+    await grantExport(researcher.id, s);
 
     const [item] = (await get("", researcher)).json().items;
     expect(item.features.Age).toBe(FEATURES.Age);
@@ -106,18 +192,23 @@ describe("GET /export/gold-standard", () => {
     const d1 = await makeUser(prisma, "OFTALMOLOGO");
     const d2 = await makeUser(prisma, "OFTALMOLOGO");
     const researcher = await makeUser(prisma, "INVESTIGADOR");
-    await seedFeedback(d1.id, { validated: 0, gold: true });
-    await seedFeedback(d1.id, { validated: 1, gold: true });
-    await seedFeedback(d2.id, { validated: 1, gold: true });
+    const s1 = await seedFeedback(d1.id, { validated: 0, gold: true });
+    const s2 = await seedFeedback(d1.id, { validated: 1, gold: true });
+    const s3 = await seedFeedback(d2.id, { validated: 1, gold: true });
+    await grantExport(researcher.id, s1);
+    await grantExport(researcher.id, s2);
+    await grantExport(researcher.id, s3);
 
     const ids = (await get("", researcher)).json().items.map((i: { doctor_id: string }) => i.doctor_id);
     expect(new Set(ids).size).toBe(2);
   });
 
-  it("honours limit (has_more) and since", async () => {
+  it("honours the approved scope before limit/has_more and since", async () => {
     const doctor = await makeUser(prisma, "OFTALMOLOGO");
     const researcher = await makeUser(prisma, "INVESTIGADOR");
-    for (let i = 0; i < 3; i++) await seedFeedback(doctor.id, { validated: i % 3, gold: true });
+    const studies = [];
+    for (let i = 0; i < 3; i++) studies.push(await seedFeedback(doctor.id, { validated: i % 3, gold: true }));
+    for (const study of studies) await grantExport(researcher.id, study);
 
     const page = (await get("?limit=2", researcher)).json();
     expect(page).toMatchObject({ count: 2, has_more: true });
@@ -131,7 +222,8 @@ describe("GET /export/gold-standard", () => {
   it("CSV: headers match what scripts/retrain_cycle.py reads", async () => {
     const doctor = await makeUser(prisma, "OFTALMOLOGO");
     const researcher = await makeUser(prisma, "INVESTIGADOR");
-    await seedFeedback(doctor.id, { validated: 0, gold: true, predicted: 0 });
+    const study = await seedFeedback(doctor.id, { validated: 0, gold: true, predicted: 0 });
+    await grantExport(researcher.id, study);
 
     const res = await get("?format=csv", researcher);
     expect(res.statusCode).toBe(200);
@@ -141,7 +233,6 @@ describe("GET /export/gold-standard", () => {
     const [header, line] = res.body.trim().split("\n") as [string, string];
     const columns = header.split(",");
     expect(columns).toEqual([...CSV_COLUMNS]);
-    // Columns retrain_cycle.py / FeedbackSample need, with the eleven features by their real names.
     for (const needed of ["inference_id", "validated_class", "predicted_class", "doctor_id", "agreement", "is_gold_standard", ...CLINICAL_FEATURE_NAMES]) {
       expect(columns).toContain(needed);
     }

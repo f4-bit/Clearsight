@@ -74,6 +74,21 @@ def test_host_is_allowed_supports_azure_blob_wildcard() -> None:
     assert not host_is_allowed("blob.core.windows.net", "blob.core.windows.net", patterns)
 
 
+def test_host_is_allowed_empty_allowlist_fails_closed() -> None:
+    assert not host_is_allowed("minio", "minio:9000", ())
+    assert not host_is_allowed(
+        "clearsight.blob.core.windows.net",
+        "clearsight.blob.core.windows.net",
+        (),
+    )
+
+
+def test_host_is_allowed_preserves_exact_host_and_host_port_semantics() -> None:
+    assert host_is_allowed("example.test", "example.test:443", ("example.test",))
+    assert host_is_allowed("minio", "minio:9000", ("minio:9000",))
+    assert not host_is_allowed("minio", "minio:9001", ("minio:9000",))
+
+
 def test_database_feedback_source_loads_gold_standard_rows() -> None:
     sqlalchemy = pytest.importorskip("sqlalchemy")
     from sqlalchemy import text

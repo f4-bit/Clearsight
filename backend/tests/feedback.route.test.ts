@@ -8,8 +8,7 @@ const prisma = createTestPrisma();
 let app: FastifyInstance;
 
 beforeAll(async () => {
-  app = buildTestApp(prisma);
-  await app.ready();
+  app = await buildTestApp(prisma);
 });
 beforeEach(() => resetDb(prisma));
 afterAll(async () => {
@@ -20,8 +19,16 @@ afterAll(async () => {
 async function setup(over: Parameters<typeof makeStudy>[1] extends infer T ? Partial<T> : never = {}) {
   const doctor = await makeUser(prisma, "OFTALMOLOGO");
   const study = await makeStudy(prisma, { doctorId: doctor.id, ...over });
-  const post = (payload: unknown, user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" } = doctor) =>
-    app.inject({ method: "POST", url: "/feedback", headers: bearer(app, user), payload: payload as object });
+  const post = async (
+    payload: unknown,
+    user: { id: string; role: "OFTALMOLOGO" | "INVESTIGADOR" | "ADMIN" } = doctor,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: "/feedback",
+      headers: await bearer(app, prisma, user),
+      payload: payload as object,
+    });
   const body = (extra: object = {}) => ({
     consultation_id: study.consultation.id,
     inference_id: study.inference.id,
@@ -139,6 +146,6 @@ describe("POST /feedback", () => {
 
 describe("GET /health", () => {
   it("is public", async () => {
-    expect((await app.inject({ method: "GET", url: "/health" })).json()).toEqual({ status: "ok" });
+    expect((await app.inject({ method: "GET", url: "/health" })).json()).toMatchObject({ status: "ok" });
   });
 });

@@ -1,4 +1,18 @@
+import type { Prisma } from "../generated/prisma/client.js";
 import type { Db, JsonObject } from "./types.js";
+
+/**
+ * Mandatory export scope. `trusted-offline` is only for the operator-run ETL;
+ * every HTTP export must use the explicit active-grant pairs so a query can
+ * never silently widen to the whole dataset (an empty pair list exports
+ * nothing, never everything).
+ */
+export type GoldStandardScope =
+  | {
+      readonly kind: "approved-inferences";
+      readonly pairs: ReadonlyArray<{ inferenceId: string; consultationId: string }>;
+    }
+  | { readonly kind: "trusted-offline" };
 
 export interface FeedbackVerdictInput {
   consultationId: string;
@@ -61,14 +75,35 @@ export function createFeedbackRepository(db: Db) {
 
     /**
      * Gold-standard rows for retraining, oldest-updated first. Fetches
-     * `limit + 1` so callers can tell whether more rows exist.
+     * `limit + 1` so callers can tell whether more rows exist. The scope is
+     * mandatory and is applied in SQL before `since`/order/take.
      */
-    listGoldStandard: (opts: { since?: Date; limit: number }) =>
-      db.clinicalFeedback.findMany({
+    listGoldStandard: async (opts: {
+      since?: Date;
+      limit: number;
+      scope: GoldStandardScope;
+    }) => {
+      let scopeWhere: Prisma.ClinicalFeedbackWhereInput = {};
+      if (opts.scope.kind === "approved-inferences") {
+        if (opts.scope.pairs.length === 0) {
+          return [];
+        }
+        // Paired predicate: a legacy feedback row whose inference/consultation
+        // cross cases is never exported by two individually approved ids.
+        scopeWhere = {
+          OR: opts.scope.pairs.map((pair) => ({
+            inferenceId: pair.inferenceId,
+            consultationId: pair.consultationId,
+          })),
+        };
+      }
+
+      return db.clinicalFeedback.findMany({
         where: {
           isGoldStandard: true,
           validatedClass: { not: null },
           ...(opts.since && { updatedAt: { gt: opts.since } }),
+          ...scopeWhere,
         },
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
         take: opts.limit + 1,
@@ -89,7 +124,8 @@ export function createFeedbackRepository(db: Db) {
             },
           },
         },
-      }),
+      });
+    },
 
     delete: (id: string) => db.clinicalFeedback.delete({ where: { id } }),
   };

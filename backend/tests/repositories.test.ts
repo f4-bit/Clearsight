@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { Client } from "pg";
+import { ZodError } from "zod";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createRepositories } from "../src/repositories/index.js";
-import { createTestPrisma, makeStudy, makeUser, resetDb } from "./helpers/db.js";
+import {
+  createInferenceRunRepository,
+  type TerminalInferenceUpdate,
+} from "../src/repositories/inference-run.repo.js";
+import { createTestPrisma, makeStudy, makeUser, resetDb, testDatabaseUrl } from "./helpers/db.js";
 
 const prisma = createTestPrisma();
 const repos = createRepositories(prisma);
@@ -70,7 +76,12 @@ describe("consultations / images / inferences", () => {
   it("defaults status to QUEUED and rejects statuses outside the shared vocabulary", async () => {
     const doctor = await makeUser(prisma);
     const patient = await repos.patients.create({});
-    const consultation = await repos.consultations.create({ patientId: patient.id, doctorId: doctor.id });
+    const consultation = await repos.consultations.create({
+      patientId: patient.id,
+      doctorId: doctor.id,
+      status: "QUEUED",
+      clinicalData: {},
+    });
     expect(consultation.status).toBe("QUEUED");
 
     expect((await repos.consultations.updateStatus(consultation.id, "REVIEW_REQUIRED")).status).toBe("REVIEW_REQUIRED");
@@ -90,24 +101,164 @@ describe("consultations / images / inferences", () => {
     await expect(prisma.image.create({ data: { consultationId: consultation.id, eyeSide: "XX", storagePath: "b.jpg" } })).rejects.toThrow();
   });
 
-  it("stores the ML result and resolves inferences by job id", async () => {
+  it("stores the ML result through CAS and resolves inferences by job id", async () => {
     const doctor = await makeUser(prisma);
     const { image } = await makeStudy(prisma, { doctorId: doctor.id });
     const jobId = randomUUID();
     const created = await repos.inferences.create({ imageId: image.id, jobId });
 
-    const saved = await repos.inferences.saveResult(created.id, {
-      predictedClass: 2, confidence: 0.72,
-      probabilities: { Glaucoma: 0.1, Non_Glaucoma: 0.18, Suspicious_Glaucoma: 0.72 },
-      cdr: 0.61, cdrVertical: 0.66, quality: { review_required: false }, artifacts: { gradcam_url: "x" },
-      elapsedSeconds: 2.4, gradcamPath: "g.png", modelVersion: "v1",
+    expect(created.modelVersions).toEqual({});
+    expect(created.modelPredictions).toEqual({});
+
+    const modelVersions = {
+      manifest: "2026-09-24",
+      backend: "pytorch",
+      efficientnet_b3: "repo/efficientnet_b3@revision-efficientnet_b3",
+      resnet50: "repo/resnet50@revision-resnet50",
+    };
+    const modelPredictions = {
+      efficientnet_b3: {
+        probabilities: { Glaucoma: 0.8, Non_Glaucoma: 0.2 },
+        predictedClass: "Glaucoma",
+        confidence: 0.8,
+      },
+    };
+    const saved = await createInferenceRunRepository(prisma).saveTerminalResult(
+      created.id,
+      {
+        status: "COMPLETED",
+        predictedClass: 2,
+        confidence: 0.72,
+        probabilities: {
+          Glaucoma: 0.1,
+          Non_Glaucoma: 0.18,
+          Suspicious_Glaucoma: 0.72,
+        },
+        modelVersions,
+        modelPredictions,
+        cdr: 0.61,
+        cdrVertical: 0.66,
+        quality: { review_required: false },
+        artifacts: { gradcam_url: "x" },
+        elapsedSeconds: 2.4,
+        gradcamPath: "g.png",
+        modelVersion: "2026-09-24",
+      },
+    );
+    expect(saved).toBe(true);
+
+    const stored = await repos.inferences.findById(created.id);
+    expect(stored).toMatchObject({
+      status: "COMPLETED",
+      predictedClass: 2,
+      cdr: 0.61,
+      cdrVertical: 0.66,
+      modelVersion: "2026-09-24",
+      modelVersions,
+      modelPredictions,
     });
-    expect(saved).toMatchObject({ predictedClass: 2, cdr: 0.61, cdrVertical: 0.66, modelVersion: "v1" });
     expect((await repos.inferences.findByJobId(jobId))?.id).toBe(created.id);
 
     const ctx = await repos.inferences.findWithContext(created.id);
     expect(ctx?.image.consultation.doctorId).toBe(doctor.id);
     await expect(repos.inferences.create({ imageId: image.id, jobId })).rejects.toMatchObject({ code: "P2002" });
+  });
+
+  it("does not duplicate or overwrite terminal result/evidence on repeated persistence", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const runRepository = createInferenceRunRepository(prisma);
+    const terminal: TerminalInferenceUpdate = {
+      status: "COMPLETED",
+      predictedClass: 1,
+      confidence: 0.91,
+      probabilities: {
+        Glaucoma: 0.05,
+        Non_Glaucoma: 0.91,
+        Suspicious_Glaucoma: 0.04,
+      },
+      modelVersions: { manifest: "2026-09-24" },
+      modelPredictions: {},
+      cdr: 0.4,
+      cdrVertical: 0.45,
+      quality: {},
+      artifacts: { mask: "s3://masks/mask.png" },
+      elapsedSeconds: 1.2,
+      gradcamPath: null,
+      modelVersion: "2026-09-24",
+    };
+
+    expect(
+      await runRepository.saveTerminalResult(study.inference.id, terminal),
+    ).toBe(true);
+    const firstRow = await prisma.inference.findUniqueOrThrow({
+      where: { id: study.inference.id },
+    });
+
+    await prisma.artifactRecord.create({
+      data: {
+        inferenceId: study.inference.id,
+        artifactType: "mask",
+        version: 1,
+        status: "PENDING",
+      },
+    });
+    await prisma.pdfReport.create({
+      data: { inferenceId: study.inference.id, version: 1, dataVersion: "v1" },
+    });
+    await prisma.clinicalFeedback.create({
+      data: {
+        consultationId: study.consultation.id,
+        inferenceId: study.inference.id,
+        doctorId: doctor.id,
+      },
+    });
+
+    expect(
+      await runRepository.saveTerminalResult(study.inference.id, {
+        ...terminal,
+        predictedClass: 2,
+        confidence: 0.1,
+        artifacts: { overlay: "s3://overlays/other.png" },
+      }),
+    ).toBe(false);
+
+    const after = await prisma.inference.findUniqueOrThrow({
+      where: { id: study.inference.id },
+    });
+    expect(after).toEqual(firstRow);
+    expect(await prisma.artifactRecord.count()).toBe(1);
+    expect(await prisma.pdfReport.count()).toBe(1);
+    expect(await prisma.clinicalFeedback.count()).toBe(1);
+
+    await expect(
+      prisma.artifactRecord.create({
+        data: {
+          inferenceId: study.inference.id,
+          artifactType: "mask",
+          version: 1,
+          status: "PENDING",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+    await expect(
+      prisma.pdfReport.create({
+        data: {
+          inferenceId: study.inference.id,
+          version: 1,
+          dataVersion: "v1",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+    await expect(
+      prisma.clinicalFeedback.create({
+        data: {
+          consultationId: study.consultation.id,
+          inferenceId: study.inference.id,
+          doctorId: doctor.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
   });
 });
 
@@ -160,8 +311,233 @@ describe("feedback", () => {
       await repos.feedback.upsertVerdict(verdict({ c: s.consultation.id, i: s.inference.id, d: doctor.id }, { isGoldStandard: gold }));
     }
     expect(await repos.feedback.countGoldStandard()).toBe(3);
-    expect(await repos.feedback.listGoldStandard({ limit: 10 })).toHaveLength(3);
-    expect(await repos.feedback.listGoldStandard({ limit: 2 })).toHaveLength(3); // limit + 1 sentinel
-    expect(await repos.feedback.listGoldStandard({ since: new Date(Date.now() + 60_000), limit: 10 })).toHaveLength(0);
+    const trusted = { kind: "trusted-offline" } as const;
+    expect(await repos.feedback.listGoldStandard({ limit: 10, scope: trusted })).toHaveLength(3);
+    expect(await repos.feedback.listGoldStandard({ limit: 2, scope: trusted })).toHaveLength(3); // limit + 1 sentinel
+    expect(
+      await repos.feedback.listGoldStandard({
+        since: new Date(Date.now() + 60_000),
+        limit: 10,
+        scope: trusted,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("an empty approved pair scope returns nothing, never the whole dataset", async () => {
+    const doctor = await makeUser(prisma);
+    for (let i = 0; i < 2; i++) {
+      const s = await makeStudy(prisma, { doctorId: doctor.id });
+      await repos.feedback.upsertVerdict(verdict({ c: s.consultation.id, i: s.inference.id, d: doctor.id }, { isGoldStandard: true }));
+    }
+    expect(await repos.feedback.countGoldStandard()).toBe(2);
+    expect(
+      await repos.feedback.listGoldStandard({ limit: 10, scope: { kind: "approved-inferences", pairs: [] } }),
+    ).toEqual([]);
+  });
+
+  it("an approved pair scope matches exact (inference, consultation) pairs and excludes cross-case rows", async () => {
+    const doctor = await makeUser(prisma);
+    const a = await makeStudy(prisma, { doctorId: doctor.id });
+    const b = await makeStudy(prisma, { doctorId: doctor.id });
+    await repos.feedback.upsertVerdict(verdict({ c: a.consultation.id, i: a.inference.id, d: doctor.id }, { isGoldStandard: true }));
+    await repos.feedback.upsertVerdict(verdict({ c: b.consultation.id, i: b.inference.id, d: doctor.id }, { isGoldStandard: true }));
+    // Legacy mismatch: the feedback row keeps inference A but is re-pointed to
+    // consultation B, so the (A.inference, A.consultation) pair no longer holds.
+    await prisma.clinicalFeedback.updateMany({
+      where: { inferenceId: a.inference.id },
+      data: { consultationId: b.consultation.id },
+    });
+
+    const onlyA = await repos.feedback.listGoldStandard({
+      limit: 10,
+      scope: { kind: "approved-inferences", pairs: [{ inferenceId: a.inference.id, consultationId: a.consultation.id }] },
+    });
+    expect(onlyA).toEqual([]);
+
+    const both = await repos.feedback.listGoldStandard({
+      limit: 10,
+      scope: {
+        kind: "approved-inferences",
+        pairs: [
+          { inferenceId: a.inference.id, consultationId: a.consultation.id },
+          { inferenceId: b.inference.id, consultationId: b.consultation.id },
+        ],
+      },
+    });
+    expect(both.map((row) => row.inferenceId)).toEqual([b.inference.id]);
+  });
+});
+
+describe("clinical snapshots", () => {
+  const snapshotInput = (consultationId: string) => ({
+    consultationId,
+    rawPayload: {
+      age: 63,
+      laterality: "OD",
+      nested: { values: [1, "x", null, true] },
+    },
+    normalizedPayload: {
+      age: 63,
+      features: { cdr: 0.4 },
+    },
+    schemaVersion: "clinical-v1",
+    modelVersions: {
+      classifier: { name: "efficientnet", version: "2026-09-24" },
+      segmenter: { versions: ["v1", "v2"] },
+    },
+  });
+
+  it("round-trips raw, normalized and nested model versions exactly", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const input = snapshotInput(study.consultation.id);
+
+    const created = await repos.snapshots.create(input);
+    expect(created.consultationId).toBe(study.consultation.id);
+    expect(created.schemaVersion).toBe("clinical-v1");
+    expect(created.createdAt).toBeInstanceOf(Date);
+
+    const found = await repos.snapshots.findById(created.id);
+    expect(found).not.toBeNull();
+    expect(found?.rawPayload).toEqual(input.rawPayload);
+    expect(found?.normalizedPayload).toEqual(input.normalizedPayload);
+    expect(found?.modelVersions).toEqual(input.modelVersions);
+  });
+
+  it("stores an omitted modelVersions as the unresolved empty object", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const { modelVersions: _modelVersions, ...input } = snapshotInput(study.consultation.id);
+
+    const created = await repos.snapshots.create(input);
+
+    expect(created.modelVersions).toEqual({});
+    expect((await repos.snapshots.findById(created.id))?.modelVersions).toEqual({});
+  });
+
+  it("keeps the snapshot intact when consultation data or the input object changes", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const input = snapshotInput(study.consultation.id);
+    const originalRaw = structuredClone(input.rawPayload);
+    const originalNormalized = structuredClone(input.normalizedPayload);
+    const originalVersions = structuredClone(input.modelVersions);
+
+    const created = await repos.snapshots.create(input);
+    await repos.consultations.updateClinicalData(study.consultation.id, { changed: true });
+    input.rawPayload.age = 99;
+    input.rawPayload.nested.values.push("mutated");
+    input.normalizedPayload.features.cdr = 0.9;
+    input.modelVersions.classifier.version = "changed";
+
+    expect(created.rawPayload).toEqual(originalRaw);
+    const found = await repos.snapshots.findById(created.id);
+    expect(found?.rawPayload).toEqual(originalRaw);
+    expect(found?.normalizedPayload).toEqual(originalNormalized);
+    expect(found?.modelVersions).toEqual(originalVersions);
+  });
+
+  it("rejects invalid payloads and versions before any insert", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const valid = snapshotInput(study.consultation.id);
+
+    await expect(
+      repos.snapshots.create({ ...valid, rawPayload: [] } as unknown as typeof valid),
+    ).rejects.toThrow(ZodError);
+    await expect(
+      repos.snapshots.create({
+        ...valid,
+        normalizedPayload: { deep: { date: new Date() } },
+      } as unknown as typeof valid),
+    ).rejects.toThrow(ZodError);
+    await expect(
+      repos.snapshots.create({ ...valid, schemaVersion: "   " }),
+    ).rejects.toThrow(ZodError);
+    const { schemaVersion: _schemaVersion, ...withoutVersion } = valid;
+    await expect(
+      repos.snapshots.create(withoutVersion as unknown as typeof valid),
+    ).rejects.toThrow(ZodError);
+
+    expect(await prisma.clinicalSnapshot.count()).toBe(0);
+  });
+
+  it("returns null for malformed and unknown UUIDs", async () => {
+    expect(await repos.snapshots.findById("not-a-uuid")).toBeNull();
+    expect(await repos.snapshots.findById("")).toBeNull();
+    expect(await repos.snapshots.findById(randomUUID())).toBeNull();
+  });
+
+  it("works with a transaction client and rolls back with the caller", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    let snapshotId: string | undefined;
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        const txRepos = createRepositories(tx);
+        const created = await txRepos.snapshots.create(snapshotInput(study.consultation.id));
+        snapshotId = created.id;
+        expect(await txRepos.snapshots.findById(created.id)).not.toBeNull();
+        throw new Error("rollback snapshot");
+      }),
+    ).rejects.toThrow("rollback snapshot");
+
+    expect(snapshotId).toBeDefined();
+    expect(await repos.snapshots.findById(snapshotId as string)).toBeNull();
+  });
+
+  it("denies direct UPDATE/DELETE for the application role", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const created = await repos.snapshots.create(snapshotInput(study.consultation.id));
+
+    const app = new Client({ connectionString: testDatabaseUrl() });
+    await app.connect();
+    try {
+      await app.query("SET ROLE clearsight_app");
+      await expect(
+        app.query("UPDATE clinical_snapshots SET schema_version = 'changed' WHERE id = $1", [created.id]),
+      ).rejects.toThrow(/permission denied for table clinical_snapshots/);
+      await expect(
+        app.query("DELETE FROM clinical_snapshots WHERE id = $1", [created.id]),
+      ).rejects.toThrow(/permission denied for table clinical_snapshots/);
+    } finally {
+      await app.query("RESET ROLE");
+      await app.end();
+    }
+
+    expect((await repos.snapshots.findById(created.id))?.schemaVersion).toBe("clinical-v1");
+  });
+
+  it("keeps the database trigger rejecting owner updates and deletes", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const created = await repos.snapshots.create(snapshotInput(study.consultation.id));
+
+    const owner = new Client({ connectionString: testDatabaseUrl() });
+    await owner.connect();
+    try {
+      await expect(
+        owner.query("UPDATE clinical_snapshots SET created_at = $2 WHERE id = $1", [created.id, new Date(0)]),
+      ).rejects.toThrow(/clinical_snapshots are immutable/);
+      await expect(
+        owner.query("DELETE FROM clinical_snapshots WHERE id = $1", [created.id]),
+      ).rejects.toThrow(/clinical_snapshots are immutable/);
+    } finally {
+      await owner.end();
+    }
+  });
+
+  it("resetDb clears snapshots through the consultations cascade", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    await repos.snapshots.create(snapshotInput(study.consultation.id));
+    expect(await prisma.clinicalSnapshot.count()).toBe(1);
+
+    await resetDb(prisma);
+
+    expect(await prisma.clinicalSnapshot.count()).toBe(0);
+    expect(await prisma.consultation.count()).toBe(0);
   });
 });

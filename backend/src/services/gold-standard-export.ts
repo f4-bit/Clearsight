@@ -1,5 +1,8 @@
 import { createHmac } from "node:crypto";
-import type { FeedbackRepository } from "../repositories/feedback.repo.js";
+import type {
+  FeedbackRepository,
+  GoldStandardScope,
+} from "../repositories/feedback.repo.js";
 import {
   CLINICAL_FEATURE_NAMES,
   extractClinicalFeatures,
@@ -40,9 +43,26 @@ export function pseudonymize(secret: string, value: string): string {
  */
 export async function buildGoldStandardExport(
   feedback: FeedbackRepository,
-  opts: { since?: Date; limit: number; hmacSecret: string },
+  opts: {
+    since?: Date;
+    limit: number;
+    hmacSecret: string;
+    scope: GoldStandardScope;
+  },
 ): Promise<GoldStandardExport> {
-  const found = await feedback.listGoldStandard({ since: opts.since, limit: opts.limit });
+  if (
+    opts.scope.kind === "approved-inferences" &&
+    opts.scope.pairs.length === 0
+  ) {
+    // Hard limit: no approved pairs means an empty export, never a global one.
+    return { rows: [], hasMore: false };
+  }
+
+  const found = await feedback.listGoldStandard({
+    since: opts.since,
+    limit: opts.limit,
+    scope: opts.scope,
+  });
   const hasMore = found.length > opts.limit;
 
   const rows = found.slice(0, opts.limit).map((row): GoldStandardRow => {
