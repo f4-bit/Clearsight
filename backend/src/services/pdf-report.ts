@@ -20,6 +20,8 @@ const MAX_IMAGE_INPUT_BYTES = 25 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 2000;
 const MAX_IMAGE_PIXELS = 24_000_000;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
+/** Fixed, generic running header. No real institution or logo is embedded. */
+const RUNNING_HEADER = "Clearsight - Informe de apoyo a la investigación";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -756,10 +758,21 @@ async function addImagePage(
   });
 }
 
-function addPageNumbers(doc: PDFDocument, font: PDFFont): void {
+function addRunningHeaderAndPageNumbers(
+  doc: PDFDocument,
+  font: PDFFont,
+): void {
   const pages = doc.getPages();
   const total = pages.length;
   pages.forEach((page, index) => {
+    const header = toPdfText(RUNNING_HEADER);
+    page.drawText(header, {
+      x: MARGIN,
+      y: A4_HEIGHT - MARGIN / 2,
+      size: 8,
+      font,
+      color: rgb(0.35, 0.35, 0.35),
+    });
     const text = `Página ${index + 1} de ${total}`;
     page.drawText(text, {
       x: A4_WIDTH - MARGIN - font.widthOfTextAtSize(text, 8),
@@ -987,7 +1000,7 @@ export async function renderBasicPdf(
       await addImagePage(doc, fonts, overlay, "Overlay de segmentación");
     }
 
-    addPageNumbers(doc, fonts.body);
+    addRunningHeaderAndPageNumbers(doc, fonts.body);
     const bytes = Buffer.from(await doc.save());
     if (bytes.byteLength > MAX_PDF_BYTES) {
       fail("pdf_report_too_large");

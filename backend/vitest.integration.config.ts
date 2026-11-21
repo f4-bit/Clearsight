@@ -24,6 +24,7 @@ export default defineConfig({
       "tests/artifact-downloads.integration.test.ts",
       "tests/artifact-publication.integration.test.ts",
       "tests/consultation-completion.integration.test.ts",
+      "tests/e2e-clinical.integration.test.ts",
       "tests/inference-creation.integration.test.ts",
       "tests/inference-idempotency.integration.test.ts",
       "tests/inference-dispatch.integration.test.ts",

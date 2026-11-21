@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14); 3.6/6.3 QA PASSED (§4.15); HITO28 2.3/2.4/2.5/2.6/4.10 QA PASSED (§4.16/§4.17); 0.2/1.7/7.1/7.3 QA PASSED (§4.18) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14); 3.6/6.3 QA PASSED (§4.15); HITO28 2.3/2.4/2.5/2.6/4.10 QA PASSED (§4.16/§4.17); 0.2/1.7/7.1/7.3 QA PASSED; QA final de desarrollo PASSED: 0.2/1.7/6.4/7.1/7.2/7.3/7.5 [x] (unit 45/710, integración 31/587, typecheck/build 0, Docker limpio) (§4.18) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -1299,25 +1299,51 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 
 - `scripts/benchmark_latency.py` existe, pero mide **forward** de clasificadores (PyTorch vs ONNX) con un checkpoint; no mide el flujo completo carga→resultado.
 - No se usa como evidencia del p95 del SRS ni de concurrencia.
+- `backend/scripts/benchmark-pdf.ts` (6.4) y `backend/scripts/benchmark-rnf.ts` (7.5) están implementados pero **no ejecutados**; no producen evidencia por sí solos.
+- El p95 full-flow depende del E2E clínico local 7.2 (`backend/tests/e2e-clinical.integration.test.ts`), que sí cubre el recorrido carga→entrega con storage/ML/queue mock y PostgreSQL efímero.
+- QA final de desarrollo **PASSED** sobre la suite completa: unit **45 files / 710 tests**, integración **31 files / 587 tests** (incluye E2E clínico **1/1**), `typecheck`/`build` **0**, Docker limpio (`redkeep_db` intacto). La suite no ejecuta los benchmarks.
 
 **FUTURO:**
 
-- benchmark de p95 **full-flow** (carga→resultado) con volumen y entorno declarados;
-- 50 solicitudes concurrentes;
-- PDF HU08 (≤15 s) con plantilla/numeración;
+- ejecutar el benchmark de p95 **full-flow** en un entorno aprobado y registrar valores observados;
+- 50 solicitudes concurrentes (default del script `benchmark-rnf.ts`);
+- PDF HU08 (≤15 s) con plantilla/numeración mediante `benchmark-pdf.ts`;
 - cobertura, AUC y disponibilidad con metodología explícita.
+
+**Comandos (NO EJECUTADOS en este cierre; solo referencia):**
+
+```powershell
+npm --prefix backend exec -- tsx scripts/benchmark-pdf.ts --iterations 20 --image-size 768
+npm --prefix backend exec -- tsx scripts/benchmark-rnf.ts --base-url <url-aprobada> --access-token <token> --patient-id <uuid> --clinical-features <features.json> --concurrency 50 --iterations 50
+```
+
+No se versionan tokens, pacientes ni valores clínicos reales; el script RNF exige un paciente/entorno sintético y no debe apuntar a producción.
 
 **Regla:** reportar valores observados, entorno y límites; no afirmar cumplimiento sin evidencia.
 
+### 9.1 Cierre 6.4 / 7.5 / 7.2 y QA final (foco verificado)
+
+| Elemento | Resultado |
+|---|---|
+| 6.4 encabezado/numeración | `pdf-report.ts` dibuja “Clearsight - Informe de apoyo a la investigación” y “Página N de M” en todas las páginas. Unit `tests/unit/pdf-report.test.ts` verifica encabezado por página y numeración. |
+| 6.4 medición HU08 | `backend/scripts/benchmark-pdf.ts` implementado; **no ejecutado**. La medición real y el criterio ≤15 s quedan pendientes, sin declarar cumplimiento. |
+| 7.5 metodología RNF | `scripts/benchmark_latency.py` sigue siendo baseline forward-only. `backend/scripts/benchmark-rnf.ts` implementa p95 carga→resultado con concurrencia 50 y salida observada; **no ejecutado**, sin afirmar cumplimiento. |
+| 7.2 E2E clínico | `tests/e2e-clinical.integration.test.ts`: bootstrap ADMIN, alta/login OFTALMOLOGO, paciente, consulta, upload sanitizado, `POST /inferences` idempotente, polling, persistencia COMPLETED, publicación mask/overlay/PDF, freeze, agregados COMPLETE, delivery sin `Retry-After`, feedback, export y URLs de artefactos/report. PostgreSQL efímero con ownership; storage/queue mock; sin Azure, MinIO, Redis ni ML reales. |
+| Allowlist | El nuevo archivo E2E está en `vitest.integration.config.ts` y en `tests/unit/runner-isolation.test.ts`; el runner unitario no se amplía. |
+| QA final de desarrollo | Suite completa **PASSED**: unit **45 files / 710 tests**, integración **31 files / 587 tests** (incluye `e2e-clinical.integration.test.ts` **1/1**), `typecheck`/`build` **0**, Docker limpio (`redkeep_db` intacto). Cierre documental sin source/test edits, reruns ni commit. |
+
+**Nota:** la suite completa no ejecuta `benchmark-pdf.ts` ni `benchmark-rnf.ts`; siguen sin evidencia de HU08 ≤15 s ni p95 full-flow y no se declara cumplimiento de RNF. REG-002/003/004/008 requieren cierre humano; 8.x/7.4 y 9.2-9.7 siguen pendientes.
+
 ## 10. Inventario de comandos: CURRENT vs FUTURO
 
-> **Lectura de cifras:** 31/437 y 25/469 son baseline QA **pre-H1** reutilizado; 45 ML, 15 unit B y 30 integración B+ACL son foco post-H1. No se ejecutó full 469 post-H1 ni se suman como “full final”.
+> **Lectura de cifras:** 31/437 y 25/469 son baseline QA **pre-H1** reutilizado; 45 ML, 15 unit B y 30 integración B+ACL son foco post-H1; 44/698 y 30/586 son el full QA previo HITO27/28. El **QA final de desarrollo** es unit **45 files / 710 tests** e integración **31 files / 587 tests** (incluye `e2e-clinical.integration.test.ts` 1/1). Los recuentos focales no se suman como si fueran el full final.
 
 | Comando | Estado | Seguridad |
 |---|---|---|
 | `node --version`, `npm --version`, `python --version`, `docker --version`, `az version` | CURRENT | Seguro, read-only. |
 | `openspec validate consolidate-backend-ml-azure --strict` | CURRENT | Seguro, documental. |
 | `npm --prefix backend run typecheck` | CURRENT | Estático, sin DB. |
+| QA final de desarrollo (suite completa) | PASSED | Unit **45 files / 710 tests**; integración **31 files / 587 tests** (incluye E2E clínico **1/1**); `typecheck`/`build` **0**; Docker limpio (`redkeep_db` intacto). Sin source/test edits ni reruns en el cierre documental. |
 | `npm --prefix backend run test` / `test:unit` | CURRENT | Runner unitario aislado: allowlist pura, sin `globalSetup`/DB/red. |
 | `npm --prefix backend run test:unit -- tests/schemas.test.ts` | CURRENT | Seguro; un filtro solo reduce la allowlist. |
 | `npm --prefix backend run test:watch` | CURRENT | Watch del runner unitario; sin DB. |
@@ -1372,8 +1398,11 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | Foco HITO27: `pdf-report`/`artifact-content`/publicación unit+integración | **QA PASSED** | 6.1 unit **6/131** + typecheck 0; 6.2/3.5 unit **3/67**, publication **20**, artifact-migrations **29**, migrations **28**, artifact-downloads **24**, build 0. Sin Azure/`.env`, PDF real de producción ni modelos. |
 | Foco 3.6/6.3: reconciliador de publicación + PDF de revisión | **QA PASSED** | unit **4/66**, publication **29**, artifact-migrations **31**, artifact-downloads **24**, `typecheck`/`build` **0**, Docker limpio; índice parcial de candidatos; sin ML. |
 | Foco HITO28: `consultation-completion`/freeze/agregados/polling unit+integración | **QA PASSED** | unit **22/22**, integración **16/16**; full QA unit **44 files / 698**, integración **30 files / 586**, `typecheck`/`build` **0**, Docker limpio; sin migración; owner-only en Consultation. |
+| `npm --prefix backend run test:integration -- tests/e2e-clinical.integration.test.ts` | CURRENT (7.2) | **1 file / 1 test**; PostgreSQL efímero/owned, storage/ML/queue mock, sin Azure/MinIO/Redis reales. |
+| `npm --prefix backend exec -- tsx scripts/benchmark-pdf.ts` | IMPLEMENTADO / NO EJECUTADO (6.4) | Mide N renders sintéticos (tiempo/entorno/tamaño/imágenes); no declarar cumplimiento sin ejecución aprobada. |
+| `npm --prefix backend exec -- tsx scripts/benchmark-rnf.ts` | IMPLEMENTADO / NO EJECUTADO (7.5) | Metodología p95 carga→resultado con concurrencia 50; no declarar cumplimiento sin ejecución aprobada. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
-| Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
+| Benchmark p95 full-flow | IMPLEMENTADO / NO EJECUTADO | `benchmark-rnf.ts` existe; requiere entorno aprobado y valores observados. |
 
 ## 11. Disciplina de entrega por fase
 

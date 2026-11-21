@@ -250,6 +250,22 @@ describe("renderBasicPdf", () => {
     }
   });
 
+  it("renders the fixed running header and page numbers on every page", async () => {
+    const input = await buildInput();
+    const pdf = await renderBasicPdf(input);
+    const extracted = await extractPdf(pdf);
+
+    const header = "Clearsight - Informe de apoyo a la investigación";
+    expect(extracted.pages).toBeGreaterThanOrEqual(4);
+    expect(extracted.text.match(new RegExp(header, "g"))).toHaveLength(
+      extracted.pages,
+    );
+    expect(extracted.text).toContain(`Página 1 de ${extracted.pages}`);
+    expect(extracted.text).toContain(
+      `Página ${extracted.pages} de ${extracted.pages}`,
+    );
+  });
+
   it("never renders storage paths, keys, signed URLs or EXIF metadata", async () => {
     const input = await buildInput();
     const pdf = await renderBasicPdf(input);
