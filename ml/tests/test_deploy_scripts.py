@@ -1266,6 +1266,59 @@ def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) 
 
 
 @requires_powershell
+def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path) -> None:
+    canary = "WorkloadProfileCanary1!x"
+    env = _stub_environment(tmp_path)
+    values = {
+        "SubscriptionId": SUBSCRIPTION,
+        "ResourceGroup": RESOURCE_GROUP,
+        "Location": "eastus2",
+        "Scope": f"rg:{RESOURCE_GROUP}",
+        "BudgetUsd": "20",
+        "DurationHours": "4",
+        "RunId": RUN_ID,
+        "Owner": "dev",
+        "ImageSha": "deadbeefcafe",
+        "ManifestRoot": str(tmp_path / "artifacts"),
+        "BootstrapAdminEmail": "qa-workload@example.test",
+    }
+    parts = [f"-{key} '{value}'" for key, value in values.items()]
+    parts += [
+        "-Apply",
+        "-SkipModelUpload",
+        f"-BootstrapAdminPassword (ConvertTo-SecureString '{canary}' -AsPlainText -Force)",
+    ]
+    command = f"& '{DEPLOY_SCRIPT}' " + " ".join(parts)
+    result = _run_powershell_command(command, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    entries = _read_log(tmp_path / "az-calls.jsonl")
+    env_create = _entry_with_name(
+        entries, ["containerapp", "env", "create"], "clearsight-run123-env"
+    )
+    assert "--enable-workload-profiles" in env_create["args"]
+
+    profile_creates = [
+        (["containerapp", "create"], "clearsight-run123-redis"),
+        (["containerapp", "create"], "clearsight-run123-ml"),
+        (["containerapp", "create"], "clearsight-run123-backend"),
+        (["containerapp", "create"], "clearsight-run123-worker"),
+        (["containerapp", "create"], "clearsight-run123-frontend"),
+        (["containerapp", "job", "create"], "clearsight-run123-migrate"),
+        (["containerapp", "job", "create"], "clearsight-run123-bootstrap"),
+    ]
+    for prefix, name in profile_creates:
+        entry = _entry_with_name(entries, prefix, name)
+        assert _option_values(entry, "--workload-profile-name") == ["Consumption"], name
+
+    assert any(
+        _args_start(entry, ["containerapp", "env", "show"])
+        and _option_values(entry, "--query") == ["properties.workloadProfiles"]
+        for entry in entries
+    )
+
+
+@requires_powershell
 @pytest.mark.parametrize(
     "live_tags",
     [{}, {"runId": "another-run"}],

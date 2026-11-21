@@ -242,6 +242,12 @@ $FrontendApp = "$RunPrefix-frontend"
 $MigrateJob = "$RunPrefix-migrate"
 $BootstrapJob = "$RunPrefix-bootstrap"
 
+# A workload-profiles (non-express) environment is required for TCP ingress.
+# The default profile is "Consumption"; the script verifies it after creating
+# the environment with:
+#   az containerapp env show ... --query properties.workloadProfiles -o json
+$WorkloadProfileName = "Consumption"
+
 $now = (Get-Date).ToUniversalTime()
 $createdAt = $now.ToString("o")
 try {
@@ -768,10 +774,27 @@ try {
             "--name", $EnvName,
             "--resource-group", $rgName,
             "--location", $Location,
+            "--enable-workload-profiles",
             "--tags"
         ) + $tagArgs + @("--output", "none")) -Operation "env create"
         $envId = Get-AzValue @("containerapp", "env", "show", "--name", $EnvName, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "env id"
         $script:CreatedAny = $true
+    }
+    $workloadProfilesJson = Get-AzValue @("containerapp", "env", "show", "--name", $EnvName, "--resource-group", $rgName, "--query", "properties.workloadProfiles", "-o", "json") -Operation "env workload profiles"
+    if ($workloadProfilesJson -and $workloadProfilesJson -ne "null") {
+        try {
+            $workloadProfiles = $workloadProfilesJson | ConvertFrom-Json
+        }
+        catch {
+            throw "No se pudo interpretar properties.workloadProfiles del entorno '$EnvName'."
+        }
+        $profileNames = @($workloadProfiles | ForEach-Object { $_.name })
+        if ($profileNames.Count -gt 0 -and $profileNames -notcontains $WorkloadProfileName) {
+            throw "El entorno '$EnvName' no expone el workload profile '$WorkloadProfileName' (disponibles: $($profileNames -join ', '))."
+        }
+    }
+    else {
+        Write-Warn "No se pudo confirmar properties.workloadProfiles; se asume '$WorkloadProfileName' (entorno creado con --enable-workload-profiles)."
     }
     Add-ManifestResource -Type "containerapp.env" -Name $EnvName -Id $envId -ResourceTags $tags
     Save-Manifest
@@ -799,6 +822,7 @@ try {
             "--memory", "0.5Gi",
             "--min-replicas", "1",
             "--max-replicas", "1",
+            "--workload-profile-name", $WorkloadProfileName,
             "--tags"
         ) + $tagArgs + @("--output", "none")) -Operation "containerapp create redis"
         $redisAppId = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis app id"
@@ -849,6 +873,7 @@ try {
         "--memory", "1.0Gi",
         "--secrets", "database-url=$databaseUrl",
         "--env-vars", "NODE_ENV=production", "DATABASE_URL=secretref:database-url",
+        "--workload-profile-name", $WorkloadProfileName,
         "--tags"
     ) + $tagArgs + @("--output", "none")) -Operation "job create migrate"
     $migrateJobId = Get-AzValue @("containerapp", "job", "show", "--name", $MigrateJob, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "job id migrate"
@@ -883,6 +908,7 @@ try {
             "--env-vars", "NODE_ENV=production", "DATABASE_URL=secretref:database-url",
             "BOOTSTRAP_ADMIN_EMAIL=$BootstrapAdminEmail",
             "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password",
+            "--workload-profile-name", $WorkloadProfileName,
             "--tags"
         ) + $tagArgs + @("--output", "none")) -Operation "job create bootstrap"
         $bootstrapJobId = Get-AzValue @("containerapp", "job", "show", "--name", $BootstrapJob, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "job id bootstrap"
@@ -942,7 +968,7 @@ try {
             "--min-replicas", "0",
             "--max-replicas", "1",
             "--secrets"
-        ) + $mlSecrets + @("--env-vars") + $mlEnv + @("--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create ml"
+        ) + $mlSecrets + @("--env-vars") + $mlEnv + @("--workload-profile-name", $WorkloadProfileName, "--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create ml"
         $mlAppId = Get-AzValue @("containerapp", "show", "--name", $MlApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "ml app id"
         $script:CreatedAny = $true
     }
@@ -992,7 +1018,7 @@ try {
             "--min-replicas", "1",
             "--max-replicas", "2",
             "--secrets"
-        ) + $backendSecrets + @("--env-vars") + $backendEnv + @("--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create backend"
+        ) + $backendSecrets + @("--env-vars") + $backendEnv + @("--workload-profile-name", $WorkloadProfileName, "--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create backend"
         $backendAppId = Get-AzValue @("containerapp", "show", "--name", $BackendApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "backend app id"
         $script:CreatedAny = $true
     }
@@ -1047,7 +1073,7 @@ try {
             "--min-replicas", "0",
             "--max-replicas", "1",
             "--secrets"
-        ) + $workerSecrets + @("--env-vars") + $workerEnv + @("--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create worker"
+        ) + $workerSecrets + @("--env-vars") + $workerEnv + @("--workload-profile-name", $WorkloadProfileName, "--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create worker"
         $workerAppId = Get-AzValue @("containerapp", "show", "--name", $WorkerApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "worker app id"
         $script:CreatedAny = $true
     }
@@ -1082,7 +1108,7 @@ try {
             "--min-replicas", "0",
             "--max-replicas", "1",
             "--env-vars"
-        ) + $frontendEnv + @("--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create frontend"
+        ) + $frontendEnv + @("--workload-profile-name", $WorkloadProfileName, "--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create frontend"
         $frontendAppId = Get-AzValue @("containerapp", "show", "--name", $FrontendApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "frontend app id"
         $script:CreatedAny = $true
     }

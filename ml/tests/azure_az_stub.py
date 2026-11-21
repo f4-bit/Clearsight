@@ -214,6 +214,8 @@ def query_value(kind: str, name: str, query: str | None) -> object:
         return f"{name}.{env_name}.azurecontainerapps.io"
     if kind == "env" and query == "defaultDomain":
         return f"{name}.azurecontainerapps.io"
+    if kind == "env" and query == "properties.workloadProfiles":
+        return [{"name": "Consumption", "workloadProfileType": "Consumption"}]
     return None
 
 
