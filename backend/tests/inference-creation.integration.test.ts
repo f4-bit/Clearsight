@@ -96,11 +96,16 @@ function post(
   target: FastifyInstance,
   payload: Record<string, unknown>,
   authHeaders = headers,
+  idempotencyKey = randomUUID(),
 ) {
   return target.inject({
     method: "POST",
     url: "/inferences",
-    headers: { ...authHeaders, "content-type": "application/json" },
+    headers: {
+      ...authHeaders,
+      "content-type": "application/json",
+      "idempotency-key": idempotencyKey,
+    },
     payload: { clinicalFeatures: FEATURES, ...payload },
   });
 }
@@ -137,6 +142,7 @@ describe("POST /inferences creation (2.2 B)", () => {
     expect(response.statusCode).toBe(202);
     const body = response.json() as { inferenceId: string; jobId: string; status: string };
     expect(body.status).toBe("QUEUED");
+    expect(body.jobId).toBe(body.inferenceId);
 
     const inference = await prisma.inference.findUniqueOrThrow({
       where: { id: body.inferenceId },
@@ -607,33 +613,42 @@ describe("POST /inferences creation (2.2 B)", () => {
       tokenVersion: doctor.tokenVersion,
     };
     const access = createClinicalAccessService(prisma);
-    const wrappedPrisma = {
-      $transaction: async <T>(callback: (tx: Prisma.TransactionClient) => Promise<T>) =>
-        prisma.$transaction((tx) =>
-          callback(
-            new Proxy(tx, {
-              get(target, property, receiver) {
-                if (property !== "inference") {
-                  return Reflect.get(target, property, receiver);
-                }
-                return new Proxy(target.inference, {
-                  get(model, method, modelReceiver) {
-                    if (method !== "create") {
-                      return Reflect.get(model, method, modelReceiver);
-                    }
-                    return async (...args: unknown[]) => {
-                      await (model.create as (...callArgs: unknown[]) => Promise<unknown>)(
-                        ...args,
-                      );
-                      throw new Error("forced inference failure");
-                    };
-                  },
-                });
-              },
-            }),
-          ),
-        ),
-    } as unknown as PrismaClient;
+    const wrappedPrisma = new Proxy(prisma, {
+      get(target, property) {
+        if (property !== "$transaction") {
+          return Reflect.get(target, property, target);
+        }
+        return async <T>(
+          callback: (tx: Prisma.TransactionClient) => Promise<T>,
+        ) =>
+          target.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(txTarget, txProperty) {
+                  if (txProperty !== "inference") {
+                    return Reflect.get(txTarget, txProperty, txTarget);
+                  }
+                  return new Proxy(txTarget.inference, {
+                    get(model, method) {
+                      if (method !== "create") {
+                        return Reflect.get(model, method, model);
+                      }
+                      return async (...args: unknown[]) => {
+                        await (
+                          model.create as (
+                            ...callArgs: unknown[]
+                          ) => Promise<unknown>
+                        )(...args);
+                        throw new Error("forced inference failure");
+                      };
+                    },
+                  });
+                },
+              }),
+            ),
+          );
+      },
+    }) as unknown as PrismaClient;
 
     const service = createInferenceCreationService({
       prisma: wrappedPrisma,
@@ -654,6 +669,7 @@ describe("POST /inferences creation (2.2 B)", () => {
           sessionId: session.id,
           tokenVersion: doctor.tokenVersion,
         },
+        idempotencyKey: randomUUID(),
         imageId: study.image.id,
         eyeSide: "OD",
         clinicalFeatures: FEATURES,

@@ -128,13 +128,25 @@ El cliente SHALL poder consultar el estado de una ejecución con un intervalo/ba
 
 ### Requirement: Idempotencia persistida del backend
 
-El backend SHALL implementar idempotencia persistida y resistente a concurrencia, con alcance autenticado durable por usuario o servicio y recurso. `Idempotency-Key` MUST ser obligatoria en `POST /inferences` y en cualquier alias de reanálisis; MUST NOT ser solo recomendada. La misma clave con el mismo payload MUST reproducir el mismo `202` con el mismo `inferenceId` y `jobId` de servidor. Si se pierde el `202`, el cliente MUST poder reintentar con la misma clave sin necesitar un ID que nunca recibió. La misma clave con un payload distinto MUST responder conflicto. El modelo resuelto en la primera solicitud MUST fijarse y MUST NOT cambiar por defaults de reintentos. La URL firmada dinámica MUST NOT formar parte del payload ni del fingerprint. La retención de registros de idempotencia, tombstones y vínculos de inferencia MUST NOT purgarse mientras B3 no esté aprobado; cuando se apruebe, podrá acotarse sin romper el horizonte de replay definido. No se promete replay eterno arbitrario, pero la política vigente es no purgar. El backend MUST NOT confiar en que el frontend deshabilite un botón para evitar duplicados.
+El backend SHALL implementar idempotencia persistida y resistente a concurrencia, con alcance autenticado durable por usuario y recurso, sobre `idempotency_records` (migración C) y sin migración nueva. `Idempotency-Key` MUST ser obligatoria en `POST /inferences` y en cualquier alias de reanálisis, y MUST aceptarse como un único valor ASCII que cumpla `^[A-Za-z0-9._:-]{1,128}$`. Cuando el header falta, está vacío, es solo whitespace, llega como array, viene duplicado unido por comas o no cumple el patrón, el backend MUST responder `400` seguro antes de cualquier llamada ML, acceso a red de modelos o creación de fila. El servidor MUST NOT generar ni completar la clave por el cliente. La autenticación y `requireRole("OFTALMOLOGO")` MUST ejecutarse en `preHandler` antes de la validación del header, de modo que un actor inválido reciba `401`, un rol incorrecto `403` y solo un actor autorizado con header inválido reciba `400`; el body MUST seguir siendo el schema estricto actual. El `scope` MUST ser fijo `inferences:create:v1` (versión del algoritmo de hash) y la identidad MUST ser la tupla `(actor, scope, key)`. El lookup de `PENDING`/`ACCEPTED` MUST ocurrir antes de `prepare` y de toda la red de modelos. Cada replay MUST revalidar sesión/`tokenVersion`/rol y ownership actual; MUST NOT consultar ni revelar el registro de otro usuario (`404` uniforme para recurso ajeno). Las respuestas, logs y errores de header/hash MUST NOT ecoar credenciales, tokens, URLs firmadas ni payload crudo. El hash MUST ser SHA-256 hexadecimal lowercase sobre un payload plano y cerrado, serializado en este orden exacto: `imageId` (UUID lowercase), `eyeSide`, `clinicalFeatures` (las once claves en el orden canónico, números finitos ya validados), `modelVersion` (`null` si se omite) y `reanalysisOf` (`null` si se omite; UUID lowercase); URLs firmadas, timestamps, IDs de servidor (`inferenceId`/`jobId`) y defaults resueltos MUST quedar fuera. Misma key + mismo hash MUST reproducir exactamente el mismo `202` con el mismo `inferenceId`/`jobId` y `status:"QUEUED"`. Misma key + hash distinto MUST responder `409` seguro antes de ML y MUST NOT mutar el registro previo. Un `202` perdido MUST poder recuperarse con la misma key sin exigir un ID que nunca se recibió. El primer request válido MUST guardar snapshot clínico + modelos resueltos + pin (`expectedContext`) inmutables; replay/resume MUST reconstruir desde DB (snapshot/modelos/pin), MUST NOT volver a llamar a `prepare`, MUST NOT generar un UUID nuevo ni cambiar defaults de versión. Un request sin registro existente MUST conservar el orden actual de 2.2: ownership de imagen, padre y lateralidad antes de `prepare`. La concurrencia MUST resolverse sin caché local ni lock sobre la preparación externa: dos requests pueden preparar antes de la TX (sin efecto de modelo); la TX MUST tomar un advisory lock `xact` determinista por `(purpose=hash, schema, actor, scope, key)`, locks de principal fresco, recheck de la key y, o bien leer el registro existente, o crear snapshot + inferencia + registro `PENDING` de forma atómica; el índice único `(actor_user_id, scope, key)` MUST ser el guard final y MUST NOT mantener locks DB durante preparación/storage/BullMQ. Tras el commit, un registro nuevo o `PENDING` MUST reconstruir el job desde DB (snapshot/modelos/pin, imagen fresca y `storagePath` de DB, nunca datos HTTP), firmar una URL nueva (excluida del hash) y encolar con el mismo `jobId` BullMQ = `inferenceId` (UUID); el `jobId` público MUST ser el `inferenceId` canónico e ignorar IDs arbitrarios del ML o de mocks, y el `jobId` string del ML MUST NOT persistirse en `Inference.jobId`. El estado `ACCEPTED` MUST marcarse solo después del ack de la cola mediante un `UPDATE` condicional `state='PENDING'`; si afecta 0 filas, MUST releer el registro inmutable `ACCEPTED` y devolver su respuesta exacta. `created_at` MUST usar time de sentencia DB y `accepted_at` MUST usar `GREATEST(created_at, statement_timestamp())` o un reloj confiable consistente, de modo que `accepted_at >= created_at`. Cualquier error SQL o fallo al marcar `ACCEPTED` MUST devolver `503` seguro y dejar `PENDING` con la misma ejecución reanudable, sin crear otra; fallo de storage/cola MUST devolver `503` y dejar `PENDING` sin cambios. El replay de `ACCEPTED` MUST ser read-only aunque ML/storage estén caídos, sin firmar ni encolar. Un `PENDING` con snapshot ausente/corrupto, modelos no fijados o contexto/payload inconsistente MUST devolver `503` sin fallback ni re-`prepare`. Si el `PENDING` ya tiene ejecución terminal validada y el snapshot coincide, MUST marcar `ACCEPTED` con el `202` original sin reenviar ni firmar, y MUST NOT prometer outbox/reconciliación de 4.6. La retención de registros `ACCEPTED`, tombstones y vínculos de inferencia MUST NOT purgarse mientras B3 no esté aprobado; el replay MUST NOT simular estado terminal y MUST devolver siempre el `202` original con `status:"QUEUED"` aunque el worker haya terminado. No se promete persistencia durable del job ML, outbox/auto-recuperación (4.6), agotamiento de reintentos (4.7), firma just-in-time antes del worker (4.8) ni de-duplicación eterna; BullMQ conserva `removeOnComplete: 1000`, un retry `PENDING` puede apoyarse en su deduplicación mientras el job exista y el CAS del worker protege la evidencia ya terminal.
+
+#### Scenario: Header ausente o inválido
+
+- **WHEN** `POST /inferences` llega sin `Idempotency-Key`, con valor vacío/whitespace, como array, duplicado por comas o fuera del patrón ASCII
+- **THEN** el backend responde `400` seguro antes de preparar, firmar, encolar o escribir una fila
+- **AND** no genera una clave por el cliente ni continúa con la creación.
+
+#### Scenario: Orden de rol y header
+
+- **WHEN** un actor no autenticado o con rol distinto de `OFTALMOLOGO` envía un header de idempotencia inválido
+- **THEN** el `preHandler` responde `401` o `403` antes del `400` del header
+- **AND** no se consulta la tabla de idempotencia.
 
 #### Scenario: Reintento idéntico
 
-- **WHEN** el cliente reenvía la misma solicitud con la misma clave de idempotencia y el mismo payload
-- **THEN** el backend reproduce el mismo `202` con el mismo `inferenceId` y `jobId`
-- **AND** no crea una segunda ejecución.
+- **WHEN** el cliente reenvía la misma solicitud con la misma clave de idempotencia y el mismo payload canónico
+- **THEN** el backend reproduce exactamente el mismo `202` con el mismo `inferenceId` y `jobId`
+- **AND** no crea una segunda ejecución ni vuelve a llamar a `prepare`.
 
 #### Scenario: Pérdida del `202`
 
@@ -144,25 +156,61 @@ El backend SHALL implementar idempotencia persistida y resistente a concurrencia
 
 #### Scenario: Misma clave con payload distinto
 
-- **WHEN** el cliente reenvía la misma clave con un payload diferente
-- **THEN** el backend responde `409 Conflict` con un código seguro
-- **AND** no reutiliza la ejecución anterior ni crea una nueva silenciosamente.
+- **WHEN** el cliente reenvía la misma clave con un body distinto o con otro `reanalysisOf`
+- **THEN** el backend responde `409 Conflict` con un código seguro antes de ML
+- **AND** no reutiliza la ejecución anterior, no muta el registro previo ni crea una nueva silenciosamente.
 
 #### Scenario: Dos solicitudes concurrentes con la misma clave
 
 - **WHEN** dos solicitudes válidas con la misma clave y payload llegan simultáneamente
-- **THEN** una sola ejecución queda persistida
-- **AND** ambas respuestas apuntan al mismo trabajo.
+- **THEN** ambas pueden preparar antes de la transacción, pero una sola ejecución y un solo registro `PENDING` quedan persistidos
+- **AND** ambas respuestas apuntan al mismo trabajo y el único `(actor, scope, key)` es el guard final.
 
 #### Scenario: Modelo fijado y URL dinámica
 
 - **WHEN** un reintento cambia la URL firmada o un default de modelo
-- **THEN** el trabajo y el modelo resuelto no cambian por ese reintento
-- **AND** la URL firmada dinámica no altera la identidad del payload.
+- **THEN** el trabajo, el snapshot, los modelos resueltos y el pin no cambian por ese reintento
+- **AND** la URL firmada dinámica no altera el hash canónico.
+
+#### Scenario: Replay después de que el worker terminó
+
+- **WHEN** el registro ya es `ACCEPTED` y la ejecución real está `COMPLETED`, `REVIEW_REQUIRED` o `FAILED`
+- **THEN** el replay devuelve el `202` original con `status:"QUEUED"` sin simular el estado terminal
+- **AND** no firma ni encola de nuevo.
+
+#### Scenario: Fallo postcommit de storage o cola
+
+- **WHEN** la ejecución quedó persistida pero falla la firma o el encolado
+- **THEN** se responde `503` y el registro queda `PENDING` sin cambiar la ejecución
+- **AND** un replay con la misma clave puede reanudar el mismo `inferenceId` sin crear otra.
+
+#### Scenario: Snapshot `PENDING` corrupto o inconsistente
+
+- **WHEN** un registro `PENDING` no tiene snapshot, modelos fijados o contexto verificable
+- **THEN** el backend responde `503` seguro sin fallback ni un nuevo `prepare`
+- **AND** no inventa una respuesta `202` ni un job nuevo.
+
+#### Scenario: Replay `ACCEPTED` con dependencias caídas
+
+- **WHEN** el registro es `ACCEPTED` y ML o storage no están disponibles
+- **THEN** el replay sigue siendo read-only y devuelve la respuesta exacta guardada
+- **AND** no intenta firmar, encolar ni consultar el modelo.
+
+#### Scenario: Auth u ownership cambian antes del replay
+
+- **WHEN** la sesión fue revocada, el rol ya no es `OFTALMOLOGO` o el recurso pertenece a otro usuario
+- **THEN** el backend responde `401`/`403`/`404` según corresponda antes de revelar el registro
+- **AND** no existe lookup cross-user ni mutación de un registro inmutable.
+
+#### Scenario: `PENDING` con ejecución ya terminal
+
+- **WHEN** el registro está `PENDING`, la ejecución ya es terminal y el snapshot validado coincide
+- **THEN** el backend marca `ACCEPTED` con el `202` original sin reenviar ni firmar
+- **AND** no depende de que BullMQ conserve el job antiguo.
 
 ### Requirement: Creación y reanálisis canónicos sin endpoints alternativos
 
-El sistema SHALL exponer un único contrato canónico para crear una ejecución: `POST /inferences` con `reanalysisOf` opcional para reanálisis. El sistema MUST NOT ofrecer `POST /inferences/:id/reanalysis` como un endpoint independiente con semántica distinta. Si se conserva como alias de compatibilidad, MUST delegar exactamente en el mismo caso de uso, la misma idempotencia obligatoria y el mismo `202`; el frontend MUST usar solo el canónico. El `imageId` MUST corresponder a la lateralidad almacenada y un `eyeSide` contradictorio MUST rechazarse con `422` sin confiar en el valor del cliente. Un reanálisis MUST NOT reabrir ni alterar automáticamente una consulta completada ni promover `requiredExecutionIds` tras el cierre; los reanálisis históricos no modifican el frozen set (B2).
+El sistema SHALL exponer un único contrato canónico para crear una ejecución: `POST /inferences` con `reanalysisOf` opcional para reanálisis. El sistema MUST NOT ofrecer `POST /inferences/:id/reanalysis` como un endpoint independiente con semántica distinta ni añadir un alias `/reanalysis`; si en el futuro se conservara uno por compatibilidad, MUST delegar exactamente en el mismo caso de uso, la misma idempotencia obligatoria y el mismo `202`, y el frontend MUST usar solo el canónico. El hash de idempotencia MUST incluir `reanalysisOf` normalizado (UUID lowercase) además del resto del payload. Misma key + mismo payload, incluido el padre, MUST reproducir el `202` existente; misma key + padre distinto MUST responder `409` antes de ML y MUST NOT crear una segunda ejecución; una key distinta MUST crear un reanálisis legítimo como ejecución nueva, con PDF independiente en el futuro (6.x), sin reabrir ni alterar la consulta. El `imageId` MUST corresponder a la lateralidad almacenada y un `eyeSide` contradictorio MUST rechazarse con `422` sin confiar en el valor del cliente. Un reanálisis MUST NOT reabrir ni alterar automáticamente una consulta completada ni promover `requiredExecutionIds` tras el cierre; `requiredSetVersion`, el frozen set y `consultation.status` MUST permanecer intactos (B2).
 
 #### Scenario: Reanálisis canónico
 
@@ -176,6 +224,24 @@ El sistema SHALL exponer un único contrato canónico para crear una ejecución:
 - **THEN** delega en el caso de uso canónico y exige la misma `Idempotency-Key`
 - **AND** no mantiene una segunda implementación divergente.
 
+#### Scenario: Misma key con padre distinto
+
+- **WHEN** el cliente reutiliza la misma `Idempotency-Key` con otro `reanalysisOf` o con otro body
+- **THEN** el backend responde `409` antes de ML
+- **AND** no crea un segundo reanálisis ni muta el registro original.
+
+#### Scenario: Key distinta crea reanálisis legítimo
+
+- **WHEN** el cliente envía una key nueva con un `reanalysisOf` válido y el mismo contexto
+- **THEN** se crea una ejecución nueva enlazada al padre
+- **AND** el fingerprint coincidente no bloquea la operación ni el frozen set cambia.
+
+#### Scenario: Frozen set intacto
+
+- **WHEN** se crea un reanálisis sobre una consulta ya cerrada
+- **THEN** `requiredExecutionIds`, `requiredSetVersion` y `consultation.status` no cambian
+- **AND** el reanálisis histórico no altera la completitud de la consulta.
+
 #### Scenario: Lateralidad contradictoria
 
 - **WHEN** `eyeSide` no coincide con la lateralidad almacenada para `imageId`
@@ -184,7 +250,7 @@ El sistema SHALL exponer un único contrato canónico para crear una ejecución:
 
 ### Requirement: Fingerprint y hash sin bloquear reanálisis legítimo
 
-El backend SHALL calcular SHA-256 sobre los bytes sanitizados para verificar el contenido exacto de la imagen. El fingerprint técnico MUST combinar imagen, lateralidad, snapshot clínico normalizado y versión/configuración de modelos. La URL firmada dinámica MUST NOT formar parte del fingerprint. El sistema MUST NOT usar el hash ni el fingerprint para negar un reanálisis legítimo ni para revelar a un usuario la existencia de una imagen o caso de otro usuario.
+El backend SHALL calcular SHA-256 sobre los bytes sanitizados para verificar el contenido exacto de la imagen. El fingerprint técnico MUST combinar imagen, lateralidad, snapshot clínico normalizado y versión/configuración de modelos. El hash de idempotencia de 4.4 es distinto del fingerprint técnico: MUST calcularse sobre el payload plano canónico de la request (incluido `reanalysisOf`) y MUST NOT incluir URLs firmadas, timestamps, IDs de servidor ni defaults resueltos. La URL firmada dinámica MUST NOT formar parte de ninguno de los dos. El sistema MUST NOT usar el hash ni el fingerprint para negar un reanálisis legítimo ni para revelar a un usuario la existencia de una imagen o caso de otro usuario.
 
 #### Scenario: Misma imagen enviada por otro usuario
 

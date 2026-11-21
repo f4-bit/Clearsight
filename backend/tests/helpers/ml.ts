@@ -75,9 +75,10 @@ export const FAKE_DESCRIPTOR: PreparedClinicalSnapshotResponse["normalizedPayloa
 };
 
 const FAKE_CANONICAL_JSON = JSON.stringify(FAKE_DESCRIPTOR);
-const FAKE_FINGERPRINT = createHash("sha256")
+export const FAKE_FINGERPRINT = createHash("sha256")
   .update(FAKE_CANONICAL_JSON, "utf8")
   .digest("hex");
+export const FAKE_SCHEMA_VERSION = "ml-zscore-f32-v1";
 
 export function makePreparedSnapshot(
   features: ClinicalFeatures,
@@ -92,7 +93,7 @@ export function makePreparedSnapshot(
       canonicalJson: FAKE_CANONICAL_JSON,
       contextFingerprintSha256: FAKE_FINGERPRINT,
     },
-    schemaVersion: "ml-zscore-f32-v1",
+    schemaVersion: FAKE_SCHEMA_VERSION,
     modelVersions: {
       manifest: FAKE_MANIFEST_VERSION,
       backend: "pytorch",

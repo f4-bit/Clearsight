@@ -353,7 +353,11 @@ describe("clinical ownership and grants", () => {
       app.inject({
         method: "POST",
         url: "/inferences",
-        headers: { ...headers, "content-type": "application/json" },
+        headers: {
+          ...headers,
+          "content-type": "application/json",
+          "idempotency-key": randomUUID(),
+        },
         payload: { imageId, eyeSide: "OD", clinicalFeatures: features, ...extra },
       });
 
@@ -406,7 +410,11 @@ describe("clinical ownership and grants", () => {
       app.inject({
         method: "POST",
         url: "/inferences",
-        headers: { ...headersA, "content-type": "application/json" },
+        headers: {
+          ...headersA,
+          "content-type": "application/json",
+          "idempotency-key": randomUUID(),
+        },
         payload: { imageId: own.image.id, eyeSide: "OD", clinicalFeatures: features, ...extra },
       });
 

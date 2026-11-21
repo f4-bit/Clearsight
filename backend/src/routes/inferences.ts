@@ -14,6 +14,7 @@ import { parseArtifactLocation } from "../services/artifact-reference.js";
 import type { ClinicalAccessService } from "../services/clinical-access.js";
 import { subjectFromRequest } from "../services/clinical-access.js";
 import { createInferenceCreationService } from "../services/inference-creation.js";
+import { parseIdempotencyKey } from "../services/idempotency.js";
 import type { ClinicalContextPreparer } from "../services/ml-client.js";
 import type { AuthSessionService } from "../services/session.js";
 import { StorageService, type ArtifactStoragePort } from "../services/storage.js";
@@ -88,9 +89,15 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
       },
     },
     async (request, reply) => {
+      // Header validation runs after authenticate + requireRole preHandlers,
+      // so 401/403 keep priority over the header's 400.
+      const idempotencyKey = parseIdempotencyKey(
+        request.headers["idempotency-key"],
+      );
       const result = await creation.create({
         subject: subjectFromRequest(request),
         claims: request.user,
+        idempotencyKey,
         imageId: request.body.imageId,
         eyeSide: request.body.eyeSide,
         clinicalFeatures: request.body.clinicalFeatures,

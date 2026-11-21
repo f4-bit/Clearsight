@@ -1,5 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
 import type { JwtPayload } from "../schemas/auth.js";
-import type { ClinicalFeatures } from "../schemas/clinical.js";
+import {
+  CLINICAL_FEATURE_NAMES,
+  type ClinicalFeatures,
+} from "../schemas/clinical.js";
 import {
   assertPreparedSnapshotConsistent,
   PreparedClinicalSnapshotResponseSchema,
@@ -7,6 +11,9 @@ import {
   type PreparedClinicalSnapshotResponse,
 } from "../schemas/clinical-context.js";
 import {
+  conflict,
+  forbidden,
+  HttpError,
   notFound,
   serviceUnavailable,
   unauthorized,
@@ -16,20 +23,39 @@ import {
   assertValidDatabaseSchema,
   DEFAULT_DATABASE_SCHEMA,
 } from "../lib/postgres-schema.js";
-import type { Prisma } from "../generated/prisma/client.js";
+import type {
+  IdempotencyRecord,
+  Prisma,
+} from "../generated/prisma/client.js";
 import type { PrismaClient } from "../lib/prisma.js";
 import { createRepositories } from "../repositories/index.js";
+import {
+  createIdempotencyRepository,
+  type IdempotencyRepository,
+} from "../repositories/idempotency.repo.js";
 import { AuthSessionError, type AuthSessionService, type SafePrincipal } from "./session.js";
 import type { ClinicalAccessService, ClinicalSubject } from "./clinical-access.js";
+import {
+  buildIdempotencyPayloadHash,
+  canonicalizeClinicalFeatures,
+  IDEMPOTENCY_SCOPE,
+  parseAcceptedResponse,
+  parseIdempotencyKey,
+  type AcceptedIdempotencyResponse,
+} from "./idempotency.js";
 import {
   MlClientHttpError,
   type ClinicalContextPreparer,
 } from "./ml-client.js";
-import type { InferenceJobData } from "../workers/inference.contracts.js";
+import {
+  isTerminalInferenceStatus,
+  type InferenceJobData,
+} from "../workers/inference.contracts.js";
 
 export interface InferenceCreationInput {
   subject: ClinicalSubject;
   claims: JwtPayload;
+  idempotencyKey: string;
   imageId: string;
   eyeSide: "OD" | "OS";
   clinicalFeatures: ClinicalFeatures;
@@ -52,6 +78,11 @@ export interface InferenceCreationDeps {
   enqueue: (data: InferenceJobData) => Promise<{ id?: string }>;
   databaseSchema?: string;
   now?: () => Date;
+  /** Trusted seam for focused tests of durable idempotency failures. */
+  idempotencyRepositoryFactory?: (
+    db: PrismaClient | Prisma.TransactionClient,
+    options: { databaseSchema?: string },
+  ) => IdempotencyRepository;
 }
 
 interface ParentInferenceContext {
@@ -76,6 +107,42 @@ export interface InferenceCreationService {
   create(input: InferenceCreationInput): Promise<InferenceCreationResult>;
 }
 
+interface CreatedExecutionTx {
+  readonly kind: "created";
+  readonly inference: { readonly id: string };
+  readonly image: LockedImageContext;
+  readonly record: IdempotencyRecord;
+}
+
+interface ExistingExecutionTx {
+  readonly kind: "existing";
+  readonly record: IdempotencyRecord;
+}
+
+type ExecutionTxResult = CreatedExecutionTx | ExistingExecutionTx;
+
+interface PendingExecution {
+  readonly inference: {
+    readonly id: string;
+    readonly status: string | null;
+  };
+  readonly image: LockedImageContext;
+  readonly clinicalFeatures: ClinicalFeatures;
+  readonly modelVersion: string;
+  readonly expectedContext: {
+    readonly schemaVersion: string;
+    readonly fingerprintSha256: string;
+  };
+}
+
+/** Unique-index final guard when the advisory lock is bypassed by a race. */
+class IdempotencyRaceError extends Error {
+  constructor() {
+    super("idempotency race");
+    this.name = "IdempotencyRaceError";
+  }
+}
+
 export function createInferenceCreationService(
   deps: InferenceCreationDeps,
 ): InferenceCreationService {
@@ -83,8 +150,38 @@ export function createInferenceCreationService(
   assertValidDatabaseSchema(databaseSchema);
   const now = deps.now ?? (() => new Date());
 
+  const repositoryFactory =
+    deps.idempotencyRepositoryFactory ?? createIdempotencyRepository;
+
   return {
     async create(input) {
+      if (input.subject.role !== "OFTALMOLOGO") {
+        throw forbidden("Clinical write requires the OFTALMOLOGO role");
+      }
+      const idempotencyKey = parseIdempotencyKey(input.idempotencyKey);
+      const payloadHash = buildIdempotencyPayloadHash(input);
+      const idempotencyRepository = repositoryFactory(deps.prisma, {
+        databaseSchema,
+      });
+
+      // A durable replay is answered before ownership reads, ML prepare,
+      // storage signing or queue dispatch.
+      const existing = await findExistingIdempotencyRecord(
+        idempotencyRepository,
+        input.subject.id,
+        idempotencyKey,
+      );
+      if (existing !== null) {
+        return replayExisting(
+          deps,
+          repositoryFactory,
+          databaseSchema,
+          input,
+          existing,
+          payloadHash,
+        );
+      }
+
       // Ownership and laterality are decided before the slow ML call.
       const { image, consultation } = await deps.access.getOwnedImageContext(
         input.subject,
@@ -106,37 +203,348 @@ export function createInferenceCreationService(
       }
 
       const prepared = await prepareSnapshot(deps.mlClient, input);
-      const resolvedModelVersion = prepared.modelVersions.manifest;
       const freshPrincipal = await revalidatePrincipal(deps.authService, input);
 
-      const created = await createExecutionTx(
+      let result: ExecutionTxResult;
+      try {
+        result = await createExecutionTx(
+          deps,
+          databaseSchema,
+          input,
+          prepared,
+          freshPrincipal,
+          now,
+          idempotencyKey,
+          payloadHash,
+          repositoryFactory,
+        );
+      } catch (error) {
+        if (!(error instanceof IdempotencyRaceError)) {
+          throw error;
+        }
+        const raced = await findExistingIdempotencyRecord(
+          idempotencyRepository,
+          input.subject.id,
+          idempotencyKey,
+        );
+        if (raced !== null) {
+          return replayExisting(
+            deps,
+            repositoryFactory,
+            databaseSchema,
+            input,
+            raced,
+            payloadHash,
+          );
+        }
+        throw serviceUnavailable("Inference creation is temporarily unavailable");
+      }
+
+      if (result.kind === "existing") {
+        return replayExisting(
+          deps,
+          repositoryFactory,
+          databaseSchema,
+          input,
+          result.record,
+          payloadHash,
+        );
+      }
+
+      // The created path reconstructs the job from the immutable DB snapshot,
+      // not from the prepared in-memory object. Both a first dispatch and any
+      // later resume use exactly the same validation/signing/enqueue path.
+      return dispatchPending(
         deps,
+        repositoryFactory,
         databaseSchema,
         input,
-        prepared,
-        freshPrincipal,
-        now,
+        result.record,
       );
+    },
+  };
+}
 
-      const imageUrl = await signDownloadOrPending(deps, created.image.storagePath);
-      const job = await enqueueOrPending(deps, {
-        inferenceId: created.inference.id,
-        imageId: created.image.id,
-        imageUrl,
-        eyeSide: created.image.eyeSide,
-        clinicalFeatures: input.clinicalFeatures,
-        modelVersion: resolvedModelVersion,
-        expectedContext: {
-          schemaVersion: prepared.schemaVersion,
-          fingerprintSha256: prepared.contextFingerprintSha256,
-        },
-      });
+async function findExistingIdempotencyRecord(
+  repository: IdempotencyRepository,
+  actorUserId: string,
+  key: string,
+): Promise<IdempotencyRecord | null> {
+  try {
+    return await repository.findByActorScopeKey(
+      actorUserId,
+      IDEMPOTENCY_SCOPE,
+      key,
+    );
+  } catch {
+    throw serviceUnavailable("Idempotency store is temporarily unavailable");
+  }
+}
 
-      return {
-        inferenceId: created.inference.id,
-        jobId: job.id ?? created.inference.id,
-        status: "QUEUED",
-      };
+async function replayExisting(
+  deps: InferenceCreationDeps,
+  repositoryFactory: NonNullable<
+    InferenceCreationDeps["idempotencyRepositoryFactory"]
+  >,
+  databaseSchema: string,
+  input: InferenceCreationInput,
+  record: IdempotencyRecord,
+  payloadHash: string,
+): Promise<InferenceCreationResult> {
+  if (record.payloadHash !== payloadHash) {
+    await authorizeReplay(deps, input, record);
+    throw conflict("Idempotency-Key was already used with a different payload");
+  }
+  if (record.state === "ACCEPTED") {
+    await authorizeReplay(deps, input, record);
+    return parseAcceptedResponse(record);
+  }
+  if (record.state === "PENDING") {
+    return dispatchPending(
+      deps,
+      repositoryFactory,
+      databaseSchema,
+      input,
+      record,
+    );
+  }
+  throw serviceUnavailable("Idempotency record is inconsistent");
+}
+
+async function authorizeReplay(
+  deps: InferenceCreationDeps,
+  input: InferenceCreationInput,
+  record: IdempotencyRecord,
+): Promise<SafePrincipal> {
+  const principal = await revalidatePrincipal(deps.authService, input);
+  if (principal.role !== "OFTALMOLOGO") {
+    throw forbidden("Clinical write requires the OFTALMOLOGO role");
+  }
+  if (principal.id !== record.actorUserId) {
+    throw notFound("Inference");
+  }
+  try {
+    await deps.access.getInferenceForRead(
+      { id: principal.id, role: principal.role },
+      record.inferenceId,
+      "readResult",
+    );
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw serviceUnavailable("Idempotency replay is temporarily unavailable");
+  }
+  return principal;
+}
+
+async function dispatchPending(
+  deps: InferenceCreationDeps,
+  repositoryFactory: NonNullable<
+    InferenceCreationDeps["idempotencyRepositoryFactory"]
+  >,
+  databaseSchema: string,
+  input: InferenceCreationInput,
+  record: IdempotencyRecord,
+): Promise<InferenceCreationResult> {
+  if (record.state !== "PENDING") {
+    if (record.state === "ACCEPTED") {
+      await authorizeReplay(deps, input, record);
+      return parseAcceptedResponse(record);
+    }
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+
+  // Fresh session/role/ownership before any signing or queue side effect.
+  await authorizeReplay(deps, input, record);
+  const pending = await loadPendingExecution(deps, input, record);
+
+  // A terminal execution is proof that the original 202 must be accepted
+  // without re-signing or re-enqueueing an already-consumed job.
+  if (isTerminalInferenceStatus(pending.inference.status)) {
+    return markAcceptedAndReturn(
+      deps,
+      repositoryFactory,
+      databaseSchema,
+      input,
+      record,
+      pending.inference.id,
+    );
+  }
+
+  const imageUrl = await signDownloadOrPending(deps, pending.image.storagePath);
+  await enqueueOrPending(deps, {
+    inferenceId: pending.inference.id,
+    imageId: pending.image.id,
+    imageUrl,
+    eyeSide: pending.image.eyeSide,
+    clinicalFeatures: pending.clinicalFeatures,
+    modelVersion: pending.modelVersion,
+    expectedContext: pending.expectedContext,
+  });
+
+  // The actor may have been revoked while signing/enqueueing. If so, leave the
+  // record PENDING and let a later legitimate session resume it.
+  await authorizeReplay(deps, input, record);
+
+  return markAcceptedAndReturn(
+    deps,
+    repositoryFactory,
+    databaseSchema,
+    input,
+    record,
+    pending.inference.id,
+  );
+}
+
+async function markAcceptedAndReturn(
+  deps: InferenceCreationDeps,
+  repositoryFactory: NonNullable<
+    InferenceCreationDeps["idempotencyRepositoryFactory"]
+  >,
+  databaseSchema: string,
+  input: InferenceCreationInput,
+  record: IdempotencyRecord,
+  inferenceId: string,
+): Promise<AcceptedIdempotencyResponse> {
+  const responseBody: AcceptedIdempotencyResponse = {
+    inferenceId,
+    jobId: inferenceId,
+    status: "QUEUED",
+  };
+  const repository = repositoryFactory(deps.prisma, { databaseSchema });
+
+  let affected: number;
+  try {
+    affected = await repository.markAccepted(record.id, responseBody);
+  } catch {
+    throw serviceUnavailable("Inference was created but dispatch is pending");
+  }
+
+  if (affected === 0) {
+    let current: IdempotencyRecord | null;
+    try {
+      current = await repository.findById(record.id);
+    } catch {
+      throw serviceUnavailable("Inference was created but dispatch is pending");
+    }
+    if (current !== null && current.state === "ACCEPTED") {
+      await authorizeReplay(deps, input, current);
+      return parseAcceptedResponse(current);
+    }
+    throw serviceUnavailable("Inference was created but dispatch is pending");
+  }
+  return responseBody;
+}
+
+async function loadPendingExecution(
+  deps: InferenceCreationDeps,
+  input: InferenceCreationInput,
+  record: IdempotencyRecord,
+): Promise<PendingExecution> {
+  let inference: Prisma.InferenceGetPayload<{
+    include: { image: true; snapshot: true };
+  }> | null;
+  try {
+    inference = await deps.prisma.inference.findUnique({
+      where: { id: record.inferenceId },
+      include: { image: true, snapshot: true },
+    });
+  } catch {
+    throw serviceUnavailable("Idempotency replay is temporarily unavailable");
+  }
+
+  if (inference === null || inference.snapshot === null) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  const image = inference.image;
+  const snapshot = inference.snapshot;
+
+  if (
+    inference.id !== record.inferenceId ||
+    record.actorUserId !== input.subject.id ||
+    record.scope !== IDEMPOTENCY_SCOPE ||
+    inference.imageId !== image.id ||
+    inference.snapshotId !== snapshot.id ||
+    inference.eyeSide !== image.eyeSide ||
+    (inference.consultationId !== null &&
+      inference.consultationId !== snapshot.consultationId) ||
+    snapshot.consultationId !== image.consultationId
+  ) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+
+  const rawPayload = snapshot.rawPayload;
+  if (
+    rawPayload === null ||
+    typeof rawPayload !== "object" ||
+    Array.isArray(rawPayload)
+  ) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  const raw = rawPayload as Record<string, unknown>;
+  if (raw.eyeSide !== image.eyeSide) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  let clinicalFeatures: ClinicalFeatures;
+  try {
+    clinicalFeatures = canonicalizeClinicalFeatures(raw.clinicalFeatures);
+  } catch {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  for (const name of CLINICAL_FEATURE_NAMES) {
+    if (clinicalFeatures[name] !== input.clinicalFeatures[name]) {
+      throw serviceUnavailable("Idempotency record is inconsistent");
+    }
+  }
+
+  const normalizedPayload = snapshot.normalizedPayload;
+  if (
+    normalizedPayload === null ||
+    typeof normalizedPayload !== "object" ||
+    Array.isArray(normalizedPayload)
+  ) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  const normalized = normalizedPayload as Record<string, unknown>;
+  if (normalized.eyeSide !== image.eyeSide) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  const { eyeSide: _storedEyeSide, ...preparedNormalized } = normalized;
+
+  let prepared: PreparedClinicalSnapshotResponse;
+  try {
+    prepared = PreparedClinicalSnapshotResponseSchema.parse({
+      rawCanonical: { clinicalFeatures },
+      normalizedPayload: preparedNormalized,
+      schemaVersion: snapshot.schemaVersion,
+      modelVersions: snapshot.modelVersions,
+      contextFingerprintSha256: preparedNormalized.contextFingerprintSha256,
+    });
+    assertPreparedSnapshotConsistent(prepared, input.clinicalFeatures);
+  } catch {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+
+  if (!isDeepStrictEqual(snapshot.modelVersions, record.resolvedModelVersions)) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+  const modelVersion = prepared.modelVersions.manifest;
+  if (typeof modelVersion !== "string" || modelVersion.length === 0) {
+    throw serviceUnavailable("Idempotency record is inconsistent");
+  }
+
+  return {
+    inference: { id: inference.id, status: inference.status },
+    image: {
+      id: image.id,
+      consultationId: image.consultationId,
+      eyeSide: image.eyeSide as "OD" | "OS",
+      storagePath: image.storagePath,
+    },
+    clinicalFeatures,
+    modelVersion,
+    expectedContext: {
+      schemaVersion: prepared.schemaVersion,
+      fingerprintSha256: prepared.contextFingerprintSha256,
     },
   };
 }
@@ -242,18 +650,43 @@ async function createExecutionTx(
   prepared: PreparedClinicalSnapshotResponse,
   principal: SafePrincipal,
   now: () => Date,
-): Promise<{
-  inference: { id: string };
-  image: LockedImageContext;
-}> {
+  idempotencyKey: string,
+  payloadHash: string,
+  repositoryFactory: NonNullable<
+    InferenceCreationDeps["idempotencyRepositoryFactory"]
+  >,
+): Promise<ExecutionTxResult> {
   try {
     return await deps.prisma.$transaction(async (tx) => {
+      const idempotency = repositoryFactory(tx, { databaseSchema });
+      // Serialize the whole create before taking the existing, ordered
+      // principal/session/image/parent locks. The unique index is the final
+      // guard if a race ever bypasses this advisory lock.
+      await idempotency.lock(
+        input.subject.id,
+        IDEMPOTENCY_SCOPE,
+        idempotencyKey,
+      );
       await lockPrincipal(tx, databaseSchema, principal, now);
       // Mirror the trigger lock order: parent inference -> parent image -> child image.
       if (input.reanalysisOf != null) {
         await lockParentContext(tx, databaseSchema, input.reanalysisOf);
       }
       await lockImage(tx, databaseSchema, input.imageId);
+
+      const existing = await idempotency.findByActorScopeKey(
+        input.subject.id,
+        IDEMPOTENCY_SCOPE,
+        idempotencyKey,
+      );
+      if (existing !== null) {
+        if (existing.payloadHash !== payloadHash) {
+          throw conflict(
+            "Idempotency-Key was already used with a different payload",
+          );
+        }
+        return { kind: "existing", record: existing };
+      }
 
       const repos = createRepositories(tx);
       const lockedImage = await tx.image.findFirst({
@@ -322,7 +755,17 @@ async function createExecutionTx(
         modelVersion: prepared.modelVersions.manifest,
       });
 
+      const record = await idempotency.createPending({
+        actorUserId: principal.id,
+        scope: IDEMPOTENCY_SCOPE,
+        key: idempotencyKey,
+        payloadHash,
+        inferenceId: inference.id,
+        resolvedModelVersions: prepared.modelVersions,
+      });
+
       return {
+        kind: "created",
         inference: { id: inference.id },
         image: {
           id: lockedImage.id,
@@ -330,6 +773,7 @@ async function createExecutionTx(
           eyeSide: lockedImage.eyeSide as "OD" | "OS",
           storagePath: lockedImage.storagePath,
         },
+        record,
       };
     });
   } catch (error) {
@@ -338,12 +782,21 @@ async function createExecutionTx(
 }
 
 function mapContextRaceError(error: unknown): never {
+  if (error instanceof HttpError) {
+    throw error;
+  }
   const code = extractPostgresCode(error);
   if (code === "23503" || code === "P2003") {
     throw notFound("Inference");
   }
   if (code === "23514" || code === "23001") {
     throw unprocessable("Inference context is no longer valid");
+  }
+  if (code === "23505" || code === "P2002") {
+    throw new IdempotencyRaceError();
+  }
+  if (code !== null) {
+    throw serviceUnavailable("Inference creation is temporarily unavailable");
   }
   throw error;
 }

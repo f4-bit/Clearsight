@@ -578,6 +578,36 @@
 | Clarificaciones | X1: `label`/`confidence` son diagnóstico, no segmentación. X2: Zod `record()` no usado en runtime puede ser hazard futuro 4.9; no se reclama refactor total. X3: per-model válido con aggregate probs `{}` deja label/conf global `null` y conserva metadata validada, sin autodiagnóstico. Columnas nuevas vacías = desconocido, no resultado inventado. |
 | Límites | No 4.4/4.6/4.7/4.9/PDF/poll implementados. REG-004 queda para cierre humano; `gradcam` `NOT_SUPPORTED` legítimo, sin sustituir por `mask`. |
 
+## 1.34 Registro HITO25 - preparación documental 4.4/4.5 (sin ejecución)
+
+> **Naturaleza:** solo documentación. No se implementó código, no se ejecutaron tests, no se usó Redis/ML/modelos/Azure/`.env` reales, SRS/PDF ni commit. En este turno histórico 4.4/4.5 seguían `[ ]`; actualización **QA PASSED** en §1.35/§4.11.
+
+| Elemento | Registro |
+|---|---|
+| Base | `6637a80` (source actual; no modificado en este turno). |
+| Documentos | `design.md` D26.1/D26.2/ADR-062..063 y riesgos; `specs/inference-orchestration/spec.md`; `tasks.md` 4.4/4.5; `contracts/frontend-api-contract.md` §1/§3.3/§6/§10/§11; este runbook §1.34/§4.11/§6/§10. |
+| 4.4 | Header obligatorio ASCII `[A-Za-z0-9._:-]{1,128}`, `400` antes de ML/fila, `401`/`403` antes del `400`; scope `inferences:create:v1`; hash SHA-256 plano canónico; replay exacto/`409`; snapshot+modelos+pin inmutables; advisory xact lock y único final; `ACCEPTED` solo tras ack con update condicional; `503`/`PENDING` reanudable; replay terminal sin reenvío; retención sin purga hasta B3. |
+| 4.5 | `POST /inferences` + `reanalysisOf`; sin alias `/reanalysis`; hash incluye padre; misma key+padre distinto `409`; key nueva crea reanálisis legítimo; frozen/consulta intactos; owner inmutable por trigger. |
+| Código/tests | Ninguno. Sin migración nueva, sin rutas/servicio/repos/queue/test edits. |
+| Límites | No QA, no evidencia de verde, no `openspec validate` afirmado. Sin Redis real, modelos, Azure/`.env`, SRS/PDF ni commit. La ejecución del script E2E contra DB compartida queda prohibida; solo se actualizará su caller en la implementación. |
+| Comandos | FUTURO en §4.11; no ejecutados en este turno. |
+| Actualización | 4.4/4.5 QA PASSED; ver §1.35/§4.11. |
+
+## 1.35 Evidencia HITO25 - 4.4/4.5 QA PASSED
+
+> **Naturaleza:** QA focal PASSED sobre source intacto. QAsolo tests+guard nuevos; revisor independiente con 2 LOW confirmados y corregidos. Sin suites completas, Azure/`.env` reales, SMTP, SRS/PDF, descargas de modelos, Redis real ni commit. **4.4/4.5 `[x]`.**
+
+| Elemento | Evidencia |
+|---|---|
+| Código | `backend/src/services/idempotency.ts` (header/hash/replay estricto), `backend/src/repositories/idempotency.repo.ts` (advisory lock y `ACCEPTED` schema-qualified; `pg_catalog` en lock/`statement_timestamp` y `GREATEST` como expresión SQL), `backend/src/services/inference-creation.ts` (lookup antes de prepare, TX con recheck, dispatch/resume desde DB), `backend/src/routes/inferences.ts` (header obligatorio después de auth/rol) y export en `backend/src/repositories/index.ts`. |
+| Contrato | Scope `inferences:create:v1`; hash plano canónico con `imageId`/`eyeSide`/11 features/`modelVersion`/`reanalysisOf`; replay exacto y `409` antes de ML; `PENDING` reanudable; `ACCEPTED` solo tras ack con update condicional; `jobId` público/BullMQ = `inferenceId`; sin migración nueva. |
+| Unit foco | QA focal **5 files / 62 tests** (idempotency/idempotency-repo/idempotency-creation-guard/schemas/runner-isolation); post-corrección **3 files / 16 tests**. |
+| Integración foco | QA focal **5 files / 82 tests** (inference-idempotency/inference-creation/clinical-access/rbac/identity-migrations); post-corrección **1 file / 19 tests** (decoy/advisory). |
+| Estático | `typecheck` **0**; build reutilizable con source intacto. |
+| Reviewer | 2 LOW confirmados y corregidos: `pg_catalog` en `pg_advisory_xact_lock`/`hashtext`/`statement_timestamp` (`GREATEST` es expresión SQL no shadowable) y comentario de lock honesto (namespace probabilístico; garantía por índice único + CAS). |
+| E2E | `scripts/e2e-backend.ps1` actualizado para enviar una key por intento; **no ejecutado** contra la DB de desarrollo compartida. |
+| Límites | 4.6 outbox/reconciliación, 4.7 retries/cancelación, 4.8 URL JIT, 4.9 y PDF/publicación pendientes; BullMQ `removeOnComplete:1000` sin dedup eterna; PENDING resume y `ACCEPTED` replay no reencolan job tras terminal (CAS worker protege); ventana post-dispatch enqueue→markAccepted sin cancelación atómica; sin TTL/borrado/tombstone hasta B3; `defects/regressions.md` no editado. `4.4/4.5 [x]`. |
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -915,6 +945,32 @@ npm --prefix backend run typecheck
 
 **Criterio de salida:** QA final focal PASSED sobre 4.1-4.3, con fix proto/review y evidencia de §1.33. 4.1-4.3 quedan `[x]`; no se marca suite completa.
 
+### 4.11 Fase específica HITO25 - 4.4/4.5 (CURRENT; QA PASSED)
+
+**Estado:** QA PASSED sobre source intacto. 4.4/4.5 `[x]`.
+
+**Objetivo:** verificar idempotencia obligatoria, replay exacto, resume y reanálisis canónico con foco, sin suite completa.
+
+**Precondiciones:** fase 1 y D26/ADR-062..063 revisados; `idempotency_records` de C aplicada; PostgreSQL owned de Testcontainers o DB aislada ya verificada; sin Redis real, modelos, Azure/`.env`, SRS/PDF ni commit. No usar la DB de desarrollo compartida.
+
+**Comandos (QA focal PASSED):**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/idempotency.test.ts tests/unit/idempotency-repo.test.ts tests/unit/idempotency-creation-guard.test.ts tests/schemas.test.ts tests/unit/runner-isolation.test.ts
+npm --prefix backend run test:integration -- tests/inference-idempotency.integration.test.ts tests/inference-creation.integration.test.ts tests/clinical-access.integration.test.ts tests/rbac.test.ts tests/identity-migrations.test.ts
+npm --prefix backend run typecheck
+```
+
+**Resultados:** unit **5 files / 62 tests**; integración **5 files / 82 tests**; `typecheck` **0**. Post-corrección reviewer: unit **3 files / 16**, integración **1 file / 19** (decoy/advisory), `typecheck` **0**; build reutilizable con source intacto.
+
+**Casos mínimos:** header ausente/vacío/whitespace/array/duplicado por comas ⇒ `400` antes de ML/fila; `401`/`403` antes del `400`; replay idéntico y `202` perdido; misma key con body/padre distinto ⇒ `409`; concurrencia misma/distinta key; `PENDING` resume y rollback DB; fallo storage/cola; `ACCEPTED` con ML/storage caídos; snapshot corrupto o contexto inconsistente; `PENDING` terminal sin enqueue; schema-qualified decoy y schema inválido; aislamiento de scope/usuario; auth revocada/ownership fresco; reanálisis congelado. Sin descargas de modelos ni Redis real: cola fake determinista y firma SDK offline ya cubierta por 3.x.
+
+**Script E2E:** actualizar el caller para enviar `Idempotency-Key` UUID y verificar replay/`409`; **no ejecutar** `scripts/e2e-backend.ps1` contra la DB de desarrollo compartida. No inyectar el header globalmente en tests (ocultaría el caso faltante); cada POST válido existente debe enviar una key UUID explícita y los mocks de enqueue verifican body canónico/`inferenceId` real.
+
+**Stop:** si el test exige Redis/ML/modelos reales, Azure/`.env`, PDF, suite completa, DB compartida, inyección global del header o modificar el contrato actual para pasar.
+
+**Criterio de salida:** QA focal PASSED con evidencia; 4.4/4.5 `[x]`. Límites: 4.6/4.7/4.8/4.9 y PDF/publicación pendientes; BullMQ `removeOnComplete:1000` sin dedup eterna; PENDING resume/`ACCEPTED` replay no reencolan job tras terminal (CAS worker protege); ventana post-dispatch sin cancelación atómica; sin TTL/B3; E2E no ejecutado; `defects/regressions.md` no editado.
+
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
 **Objetivo:** probar integración local de DB/cola/storage sin tocar recursos ajenos.
@@ -1005,6 +1061,8 @@ docker compose -p <proyecto-efimero-unico> -f <compose-test-only-verificado.yml>
 - Azure Blob stub (sin Azure real);
 - host no allowlisted, URL expirada, payload inválido, etiqueta desconocida;
 - 2.2 A: `prepare` 404/no soportado, timeout 15 s, versión solicitada inexistente, respuesta con `eyeSide`/features alteradas/huella inválida, `context_mismatch` al aceptar y en `run`, request legacy sin pin, tokens/rutas fuera de la respuesta y descarga no iniciada con pin inválido.
+- 4.4: header ausente/inválido/array/comas ⇒ `400` antes de ML/fila; `401`/`403` antes del `400`; replay idéntico y `202` perdido; misma key con body/padre distinto ⇒ `409`; concurrencia misma/distinta key; `PENDING` resume/rollback/fallo storage/cola; `ACCEPTED` con ML/storage caídos; snapshot corrupto; `PENDING` terminal sin enqueue; schema-qualified decoy/bad schema; retención sin purga.
+- 4.5: reanálisis canónico sin alias; hash con padre; misma key+padre distinto ⇒ `409`; key nueva crea reanálisis; frozen set/consulta intactos; auth revocada/ownership fresco.
 
 **Comandos CURRENT (baseline, no cubren todos los casos nuevos):**
 
@@ -1142,6 +1200,10 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `prisma validate` + `prisma generate` con URL sintética (4.2B) | **CURRENT** | Schema válido y cliente generado; sin `.env` real. |
 | `npm --prefix backend run test:unit -- tests/schemas.test.ts tests/unit/inference.processor.test.ts tests/unit/ml-client.test.ts tests/unit/inference-run-repo.test.ts` (4.3C) | **CURRENT (QA PASSED)** | **4 files / 86 tests passed**; catálogo único, aliases legacy, prototipos, repo schema validation/desconocido y predicciones por modelo. |
 | `npm --prefix backend run test:integration -- tests/inference-worker.integration.test.ts tests/repositories.test.ts` (4.3C) | **CURRENT (QA PASSED)** | **2 files / 31 tests passed**; 9 worker + 22 repo, sin repetir migraciones B. |
+| QA focal unit 4.4/4.5: idempotency/idempotency-repo/idempotency-creation-guard/schemas/runner-isolation | **CURRENT (QA PASSED)** | **5 files / 62 tests**. |
+| QA focal integración 4.4/4.5: inference-idempotency/inference-creation/clinical-access/rbac/identity-migrations | **CURRENT (QA PASSED)** | **5 files / 82 tests**. |
+| Post-corrección reviewer: unit/integration | **CURRENT (QA PASSED)** | Unit **3 files / 16**; integración **1 file / 19** (decoy/advisory); `typecheck` **0**; build reutilizable. |
+| `scripts/e2e-backend.ps1` con `Idempotency-Key` (4.4) | FUTURO / NO EJECUTAR | Solo actualizar el caller; no correr contra la DB de desarrollo compartida. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

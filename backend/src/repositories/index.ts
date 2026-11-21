@@ -22,3 +22,7 @@ export function createRepositories(db: Db) {
   };
 }
 export type Repositories = ReturnType<typeof createRepositories>;
+
+/** Schema-bound idempotency access; instantiate with the active schema. */
+export { createIdempotencyRepository } from "./idempotency.repo.js";
+export type { IdempotencyRepository } from "./idempotency.repo.js";

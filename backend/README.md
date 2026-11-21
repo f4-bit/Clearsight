@@ -186,10 +186,24 @@ npm run admin:bootstrap
 | `POST /auth/refresh` | Cookie `clearsight_refresh` (sin body/Bearer) | Rota single-use; `200 {accessToken,tokenType,expiresIn}`; `401` genérico (incluye reuso); `403` origen; `503` sin Set-Cookie de éxito. |
 | `POST /auth/logout` | Bearer + sesión válida | `204`; revoca sesión/cadena con auditoría y limpia la cookie; `401`/`403`/`503`; la cookie sola no autoriza. |
 | `GET /auth/me` | Bearer + sesión vigente | Valida firma/claims, sesión durable, usuario activo y rol/versión; `401`/`503`. Sin cambios por 5.8. |
+| `POST /inferences` | `OFTALMOLOGO` (dueño de la imagen/consulta) | Zod estricto + `Idempotency-Key` ASCII obligatoria; `202 {inferenceId,jobId,status:"QUEUED"}` con `jobId=inferenceId`; replay idéntico devuelve el mismo `202`; misma key con body/padre distinto `409`; `400` header inválido; `401/403/404/422/503`. No crea una segunda ejecución ni re-prepara en replay/resume. |
 | `POST /feedback` | `OFTALMOLOGO` (dueño de la consulta) | Zod + upsert por `(inference_id, doctor_id)`. `doctor_id` sale del JWT; `predicted_class`, `confidence` y `agreement` se derivan de la inferencia guardada (lo que mande el cliente se ignora). `validated_class: null` = no concluyente y no puede ser gold standard. Siempre responde 200 con la fila guardada. |
 | `GET /export/gold-standard?format=json\|csv&since=<ISO>&limit=<n>` | `INVESTIGADOR`, `ADMIN` | Solo `is_gold_standard = true`. Anonimizado: `doctor_id` = HMAC-SHA256 con `EXPORT_HMAC_SECRET`; sin notas, sin ids de paciente/consulta. Cabecera `x-has-more`. El CSV tiene las columnas que lee `scripts/retrain_cycle.py --samples`. |
 
 Orden de clases del ML (¡no es «Normal» = 0!): `0 = Glaucoma`, `1 = Non_Glaucoma`, `2 = Suspicious_Glaucoma`.
+
+### Idempotencia de `POST /inferences` (4.4)
+
+`Idempotency-Key` es obligatoria: un único valor ASCII que cumpla `^[A-Za-z0-9._:-]{1,128}$`. No la genere el servidor y no la reutilice con otro body o `reanalysisOf`.
+
+```http
+POST /inferences
+Authorization: Bearer <token>
+Idempotency-Key: 6f1c2d7e-3b4a-4c8d-9e2f-1a2b3c4d5e6f
+Content-Type: application/json
+```
+
+Si el `202` se pierde, reintente con **la misma key y el mismo payload** para recuperar el mismo `inferenceId`/`jobId`; si cambia el payload, use una key nueva. Un `400` de header no crea nada; `401`/`403` prevalecen. Un `503` deja la ejecución `PENDING` reanudable con la misma key. No se promete outbox, recuperación automática ni de-duplicación eterna; eso queda en 4.6/4.7/4.8.
 
 ## ETL de reentrenamiento
 

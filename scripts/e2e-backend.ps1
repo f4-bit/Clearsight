@@ -76,8 +76,11 @@ function Step($name) {
   Write-Host "===== $name =====" -ForegroundColor Cyan
 }
 
-function Invoke-Json($method, $url, $token, $body) {
+function Invoke-Json($method, $url, $token, $body, $extraHeaders = @{}) {
   $headers = @{ Authorization = "Bearer $token" }
+  foreach ($entry in $extraHeaders.GetEnumerator()) {
+    $headers[$entry.Key] = $entry.Value
+  }
   $params = @{ Method = $method; Uri = $url; Headers = $headers }
   if ($null -ne $body) {
     $params.ContentType = "application/json"
@@ -150,12 +153,14 @@ try {
   Write-Host "[e2e] image sanitized: $imageId (hash=$($image.hashMd5))"
 
   Step "5/7 Enqueue ML inference (BullMQ -> ml-service)"
+  # One key per logical attempt. Reuse this exact key if this request is retried.
+  $inferenceIdempotencyKey = [guid]::NewGuid().ToString()
   $inference = Invoke-Json "POST" "$BaseUrl/inferences" $token @{
     imageId = $imageId
     eyeSide = "OD"
     clinicalFeatures = $clinicalData
     modelVersion = "v1.0.0-onnx"
-  }
+  } @{ "Idempotency-Key" = $inferenceIdempotencyKey }
   $inferenceId = $inference.inferenceId
   $jobId = $inference.jobId
   Write-Host "[e2e] inference queued: inferenceId=$inferenceId jobId=$jobId"
