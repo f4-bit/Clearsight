@@ -147,10 +147,16 @@ def record(kind: str, name: str) -> None:
         identifier = make_id("storage", parent) + f"/blobServices/default/containers/{name}"
     else:
         identifier = make_id(kind, name)
+    tags = parse_tags()
+    existing = state["created"].get(state_key(kind, name))
+    if not tags and isinstance(existing, dict):
+        prior = existing.get("tags", {})
+        if isinstance(prior, dict):
+            tags = prior
     state["created"][state_key(kind, name)] = {
         "kind": kind,
         "name": name,
-        "tags": parse_tags(),
+        "tags": tags,
         "id": identifier,
         "group": name if kind == "group" else resource_group(),
     }

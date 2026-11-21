@@ -993,6 +993,19 @@ try {
     Add-ManifestResource -Type "containerapp" -Name $BackendApp -Id $backendAppId -ResourceTags $tags -Extra @{ image = $imageRefs["backend"]; fqdn = "https://$backendFqdn" }
     Save-Manifest
 
+    # Cookie endpoints fail closed without AUTH_PUBLIC_ORIGIN. The run E2E sends
+    # Origin = backend base URL, so use the real backend FQDN. CORS_ORIGIN is
+    # intentionally left unset for this API-only run; a browser UI would need
+    # CORS_ORIGIN=https://<frontend FQDN>.
+    Invoke-AzCli @(
+        "containerapp", "update",
+        "--name", $BackendApp,
+        "--resource-group", $rgName,
+        "--set-env-vars", "AUTH_PUBLIC_ORIGIN=https://$backendFqdn",
+        "--output", "none"
+    ) -Operation "containerapp update backend public origin"
+    Save-Manifest
+
     # 11. Worker -------------------------------------------------------------
     $workerSecrets = @(
         "database-url=$databaseUrl",

@@ -1108,6 +1108,42 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
 
 
 @requires_powershell
+def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path) -> None:
+    env = _stub_environment(tmp_path)
+    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    result = _run_powershell(DEPLOY_SCRIPT, args, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    entries = _read_log(tmp_path / "az-calls.jsonl")
+    backend_name = f"{RESOURCE_GROUP}-backend"
+    updates = [
+        entry
+        for entry in entries
+        if _args_start(entry, ["containerapp", "update"])
+        and _option_values(entry, "--name") == [backend_name]
+    ]
+    assert updates, "backend AUTH_PUBLIC_ORIGIN update not found"
+
+    update = updates[-1]
+    env_values = _option_values(update, "--set-env-vars")
+    auth_values = [
+        value for value in env_values if value.startswith("AUTH_PUBLIC_ORIGIN=")
+    ]
+    assert len(auth_values) == 1, env_values
+
+    auth_origin = auth_values[0].split("=", 1)[1]
+    assert auth_origin.startswith(f"https://{backend_name}.")
+    assert auth_origin.endswith(".azurecontainerapps.io")
+    assert "secretref:" not in auth_origin
+
+    secrets = _option_values(update, "--secrets")
+    assert not any("AUTH_PUBLIC_ORIGIN" in value for value in secrets)
+
+    manifest_text = _manifest_path(tmp_path).read_text(encoding="utf-8")
+    assert "AUTH_PUBLIC_ORIGIN" not in manifest_text
+
+
+@requires_powershell
 def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) -> None:
     canary = "BootstrapQaCanary1!x"
     env = _stub_environment(tmp_path)

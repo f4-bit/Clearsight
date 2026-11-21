@@ -1298,12 +1298,12 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 
 | Elemento | Resultado |
 |---|---|
-| `scripts/deploy_azure.ps1` | Plan-first; parámetros obligatorios; sin `-Apply` no hay verbo mutante; tags `project`/`runId`/`owner`/`expiresAt`/`managedBy` en todos los creates; manifest sin secretos en `artifacts/azure-runs/<runId>/manifest.json`; sin `.env.azure`/`EnvOutputPath`. |
+| `scripts/deploy_azure.ps1` | Plan-first; parámetros obligatorios; sin `-Apply` no hay verbo mutante; tags `project`/`runId`/`owner`/`expiresAt`/`managedBy` en todos los creates; manifest sin secretos en `artifacts/azure-runs/<runId>/manifest.json`; sin `.env.azure`/`EnvOutputPath`; `AUTH_PUBLIC_ORIGIN=https://<backend FQDN>` en el backend (cookie endpoints); `CORS_ORIGIN` no configurado (API-only). |
 | Imágenes/config | 5 imágenes SHA `clearsight-{backend,migrate,worker,frontend,ml-service}:<sha>` con digest; jobs `prisma:deploy` y `admin:bootstrap` (sin seed); contenedor Blob PDF `clinical-reports`; `STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_{URL,NAME,KEY}`, `MINIO_BUCKET_{RAW,GRADCAM,MASK,OVERLAY,PDF}`, `ML_SERVICE_URL`, `REDIS_URL`. |
 | `scripts/teardown_azure.ps1` | Ownership por tag `runId`; no borra untagged/foreign; orden inverso; `az group delete --no-wait` solo si el RG fue creado por el run y tags coinciden; si no, recurso por recurso; timeout→`pending`; revisión de blobs/soft-delete/ACR images/IPs. |
 | Cleanup en deploy | `finally` invoca teardown desde el manifest; `-KeepForDebug` explícito omite el borrado y conserva el TTL `expiresAt`. |
 | Gate (8.3) | Cada dato faltante/inválido ⇒ **cero creates**; `BudgetUsd`/`DurationHours` exigen número **finito y positivo** (`TryParse` + `IsNaN`/`IsInfinity` + `> 0`); `NaN`/`±Infinity`/`1e308`/`1e309`/`0`/negativos/blank/missing → `BLOQUEO`, dato reportado, exit 1, sin `az` y sin manifest, antes de `AddHours`. |
-| Verificación QA | `ml/tests/test_deploy_scripts.py` **66 passed** (72 con `test_azure_readiness.py`), `ruff` limpio, parse de ambos `.ps1` sin errores; gate no finito (NaN/±Infinity/1e308/1e309) bloqueado. |
+| Verificación QA | `ml/tests/test_deploy_scripts.py` **66 passed** (72 con `test_azure_readiness.py`), `ruff` limpio, parse de ambos `.ps1` sin errores; gate no finito (NaN/±Infinity/1e308/1e309) bloqueado. Post-QA `AUTH_PUBLIC_ORIGIN`: **67 passed** (73 con readiness) en el workspace. |
 | B6 | Parcial: sin IDs/nombres de suscripción; no se confirma capa gratuita, cuota, RBAC de creación ni permiso de gasto; no deployment ready. |
 | Límites | Sin `az`/Docker real (stub); timeout Wait-AzJobSucceeded y cuota/RBAC reales sin cubrir; B6 parcial; 7.4 E2E real pendiente. Sin source/test edits ni reruns en este cierre. |
 | 7.4 | Pendiente de provisionamiento real autorizado con teardown rápido; no se declara E2E Azure. |
