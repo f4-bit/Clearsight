@@ -1,7 +1,9 @@
 .git
 .github
 .venv
-node_modules
+**/node_modules
+backend/node_modules
+frontend/node_modules
 .next
 mlruns
 openspec
