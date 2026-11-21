@@ -1279,6 +1279,7 @@ python -m pytest ml/tests/test_onnx_serving.py -q
 
 - El contexto CLI read-only está satisfecho; **no** prueba capa gratuita, cuotas, RBAC de creación ni permiso de gasto.
 - `scripts/test_azure_e2e.py` existe, pero cubre el **servicio ML** (health, submit, polling, CDR/probabilidades), no el flujo backend completo. Se etiqueta como **CURRENT PARCIAL**, no como E2E completo.
+- `scripts/deploy_azure.ps1` (plan-first, tags, manifest, gate, cleanup en `finally`) y `scripts/teardown_azure.ps1` (ownership por tag, orden inverso, polling y residuales) existen y están cubiertos por tests con stub de `az`; QA PASSED (§8.1). **No se ejecutaron contra Azure.**
 - No existe un script de E2E completo ni un script `e2e` en `package.json`. **No usar `npm run e2e`** (no existe).
 
 **Comando CURRENT parcial (solo si hay un ML service autorizado):**
@@ -1287,9 +1288,25 @@ python -m pytest ml/tests/test_onnx_serving.py -q
 python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 ```
 
-**FUTURO (no disponible):** script de E2E completo backend/Blob/ML/DB/PDF/descarga/feedback/export, con negative-auth y cleanup verificado. Se etiqueta `FUTURO` hasta que exista y esté revisado.
+**FUTURO (no disponible):** script de E2E completo backend/Blob/ML/DB/PDF/descarga/feedback/export, con negative-auth y cleanup verificado. Se etiqueta `FUTURO` hasta que exista y esté revisado. Los scripts de provisioning/teardown existen y tienen QA PASSED con stub (§8.1), pero el E2E real sigue FUTURO.
 
 **Stop:** cualquier recurso creado sin tag/manifest, falta de cleanup, secreto en salida, target no confirmado o intento de reutilizar recursos ajenos.
+
+### 8.1 Cierre QA 8.1/8.2/8.3 (QA PASSED)
+
+> **Naturaleza:** cierre documental post-QA. **QA PASSED** sobre source/test sin cambios en este turno; sin `az`/Docker real (stub), sin recursos creados/destruidos, sin `.env.azure`/secretos, sin reruns ni commit. 8.1/8.2/8.3 quedan `[x]`.
+
+| Elemento | Resultado |
+|---|---|
+| `scripts/deploy_azure.ps1` | Plan-first; parámetros obligatorios; sin `-Apply` no hay verbo mutante; tags `project`/`runId`/`owner`/`expiresAt`/`managedBy` en todos los creates; manifest sin secretos en `artifacts/azure-runs/<runId>/manifest.json`; sin `.env.azure`/`EnvOutputPath`. |
+| Imágenes/config | 5 imágenes SHA `clearsight-{backend,migrate,worker,frontend,ml-service}:<sha>` con digest; jobs `prisma:deploy` y `admin:bootstrap` (sin seed); contenedor Blob PDF `clinical-reports`; `STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_{URL,NAME,KEY}`, `MINIO_BUCKET_{RAW,GRADCAM,MASK,OVERLAY,PDF}`, `ML_SERVICE_URL`, `REDIS_URL`. |
+| `scripts/teardown_azure.ps1` | Ownership por tag `runId`; no borra untagged/foreign; orden inverso; `az group delete --no-wait` solo si el RG fue creado por el run y tags coinciden; si no, recurso por recurso; timeout→`pending`; revisión de blobs/soft-delete/ACR images/IPs. |
+| Cleanup en deploy | `finally` invoca teardown desde el manifest; `-KeepForDebug` explícito omite el borrado y conserva el TTL `expiresAt`. |
+| Gate (8.3) | Cada dato faltante/inválido ⇒ **cero creates**; `BudgetUsd`/`DurationHours` exigen número **finito y positivo** (`TryParse` + `IsNaN`/`IsInfinity` + `> 0`); `NaN`/`±Infinity`/`1e308`/`1e309`/`0`/negativos/blank/missing → `BLOQUEO`, dato reportado, exit 1, sin `az` y sin manifest, antes de `AddHours`. |
+| Verificación QA | `ml/tests/test_deploy_scripts.py` **66 passed** (72 con `test_azure_readiness.py`), `ruff` limpio, parse de ambos `.ps1` sin errores; gate no finito (NaN/±Infinity/1e308/1e309) bloqueado. |
+| B6 | Parcial: sin IDs/nombres de suscripción; no se confirma capa gratuita, cuota, RBAC de creación ni permiso de gasto; no deployment ready. |
+| Límites | Sin `az`/Docker real (stub); timeout Wait-AzJobSucceeded y cuota/RBAC reales sin cubrir; B6 parcial; 7.4 E2E real pendiente. Sin source/test edits ni reruns en este cierre. |
+| 7.4 | Pendiente de provisionamiento real autorizado con teardown rápido; no se declara E2E Azure. |
 
 ## 9. Benchmarks separados (p95 full-flow, concurrencia)
 
@@ -1332,7 +1349,7 @@ No se versionan tokens, pacientes ni valores clínicos reales; el script RNF exi
 | Allowlist | El nuevo archivo E2E está en `vitest.integration.config.ts` y en `tests/unit/runner-isolation.test.ts`; el runner unitario no se amplía. |
 | QA final de desarrollo | Suite completa **PASSED**: unit **45 files / 710 tests**, integración **31 files / 587 tests** (incluye `e2e-clinical.integration.test.ts` **1/1**), `typecheck`/`build` **0**, Docker limpio (`redkeep_db` intacto). Cierre documental sin source/test edits, reruns ni commit. |
 
-**Nota:** la suite completa no ejecuta `benchmark-pdf.ts` ni `benchmark-rnf.ts`; siguen sin evidencia de HU08 ≤15 s ni p95 full-flow y no se declara cumplimiento de RNF. REG-002/003/004/008 requieren cierre humano; 8.x/7.4 y 9.2-9.7 siguen pendientes.
+**Nota:** la suite completa no ejecuta `benchmark-pdf.ts` ni `benchmark-rnf.ts`; siguen sin evidencia de HU08 ≤15 s ni p95 full-flow y no se declara cumplimiento de RNF. REG-002/003/004/008 requieren cierre humano; 8.1-8.3 QA PASSED; 7.4 y 9.2-9.7 siguen pendientes.
 
 ## 10. Inventario de comandos: CURRENT vs FUTURO
 
