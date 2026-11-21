@@ -61,6 +61,8 @@ Se documentan las 11 variables (`Age`, `Gender`, `dioptre_1`, `dioptre_2`, `asti
 ## 2. CURRENT VERIFIED — contrato actual (leído del código)
 
 > Esta sección describe el comportamiento actual aunque sea incompleto o inseguro. No es el contrato recomendado para nuevas integraciones. Login/refresh/logout reflejan la implementación 5.8 validada por QA; forgot/reset reflejan 5.9 (R2) validada por QA; el resto mantiene su estado actual.
+>
+> **Cierre 0.2:** CURRENT VERIFIED queda congelado con evidencia de rutas implementadas y QA PASSED; TARGET vNext es la referencia para nuevas integraciones. La matriz de autorización está alineada con 5.2/3.4 (owner médico; grants `readResult`/`readArtifacts`/`readPdf` según endpoint; `ADMIN` sin grant no concede acceso clínico). No se documentan endpoints no implementados como actuales.
 
 | Método | Ruta | Auth actual | Request actual | Response actual | Limitaciones actuales |
 |---|---|---|---|---|---|

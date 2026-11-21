@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14); 3.6/6.3 QA PASSED (§4.15); HITO28 2.3/2.4/2.5/2.6/4.10 QA PASSED (§4.16/§4.17) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14); 3.6/6.3 QA PASSED (§4.15); HITO28 2.3/2.4/2.5/2.6/4.10 QA PASSED (§4.16/§4.17); 0.2/1.7/7.1/7.3 QA PASSED (§4.18) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -1124,6 +1124,14 @@ npm --prefix backend run test:integration -- tests/consultation-completion.integ
 **Estado:** QA final de suite completa **PASSED**; cierre documental, sin source/test edits ni reruns ni commit. 2.3/2.4/2.5/2.6/4.10 `[x]`.
 
 **Límites:** REG-002/003/004/008 siguen para cierre humano y `defects/regressions.md` no se edita; 6.4, 0.2, 1.7, 7.x, 8.x y 9.x pendientes; versión nueva por feedback/regeneración queda futuro.
+
+### 4.18 Cierre 0.2/1.7/7.1/7.3 - contrato, legacy, sanitizer y suite adversarial (QA PASSED)
+
+**Estado:** QA PASSED. 0.2/1.7/7.1/7.3 quedan `[x]`; cierre documental sin source/test edits adicionales en esta sección.
+
+**Resultados:** contrato CURRENT/TARGET y matriz auth/roles alineados con 5.2/3.4. Compatibilidad legacy verificada con tests existentes de parser 3.3, alias `Phakic_Pseudophakic` y migraciones A/B sin backfill. Sanitizer: nuevo límite 20 MiB + errores seguros; tests JPEG/PNG >=512 px, EXIF, oversize, inválidos y fallo de sharp. Suite adversarial nueva `tests/unit/adversarial-coverage.test.ts` ligera (sin DB/red) con índice de cobertura y asserts puros. Foco sanitizer+adversarial **2 files / 12 tests**; `typecheck`/`build` **0**.
+
+**Límites:** 7.2 (E2E completo) sigue pendiente; multipart 50 MB sin cambios; REG-002/003/004/008 no resueltos (cierre humano); sin Azure/`.env`, PDF/ML/modelos ni commit.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 

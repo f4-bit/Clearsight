@@ -4,6 +4,8 @@
 
 > **HITO27/28 (cierre QA PASSED — suite completa):** D28 (6.1/6.2/3.5/3.6/6.3) y D29 (2.3/2.4/2.5/2.6/4.10) quedan registradas en `design.md` con sus ADR-067..076. **6.1/6.2/3.5/3.6/6.3/2.3/2.4/2.5/2.6/4.10 QA PASSED y cerradas `[x]`.** Full QA: unit **44 files / 698 tests**, integración **30 files / 586 tests**, `typecheck`/`build` **0**, Docker limpio (`redkeep_db` intacto). Límites: 6.4, 0.2, 1.7, 7.x, 8.x y 9.x pendientes; versión nueva por feedback/regeneración queda futuro; REG-002/003/004/008 no resueltos (cierre humano, sin editar `defects/regressions.md`).
 
+> **Cierre 0.2/1.7/7.1/7.3 (QA PASSED):** contrato CURRENT/TARGET y matriz de autorización congelados; compatibilidad legacy verificada sin backfill; sanitizer con límite 20 MiB y errores seguros; suite adversarial consolidada ligera. Sin migración/backfill nuevo.
+
 ## 0. Documentación y salvaguardas
 
 - [x] 0.1 Crear `defects/regressions.md` con entradas solo estáticas, activas/resueltas, sin inventar runtime ni datos sensibles.
@@ -12,11 +14,12 @@
   - **Test:** revisión documental; no aplica ejecución.
   - **Coverage:** regresiones REG-001..REG-008.
 
-- [ ] 0.2 Congelar el contrato actual vs target y la matriz de autorización antes de tocar rutas.
+- [x] 0.2 Congelar el contrato actual vs target y la matriz de autorización antes de tocar rutas. **QA/documental PASSED.**
   - **Scope:** `contracts/frontend-api-contract.md`; revisión con arquitecto/producto.
   - **When/Then:** WHEN frontend recibe el documento THEN CURRENT VERIFIED y TARGET vNext están separados, con estado, auth, grants, body, response, errores y compatibilidad.
   - **Test:** revisión de contrato; no aplica ejecución.
   - **Coverage:** “Contrato HTTP único y explícito para frontend”, “Separación entre contrato actual verificado y target vnext”, “Autenticación y autorización por endpoint y recurso”.
+  - **Cierre 0.2:** CURRENT VERIFIED congelado con evidencia (rutas implementadas y QA PASSED) y TARGET vNext como referencia; matriz de autorización alineada con 5.2/3.4 (owner médico; grants `readResult`/`readArtifacts`/`readPdf`; `ADMIN` sin grant no concede acceso clínico). No se documentaron endpoints no implementados como actuales. 0.2 `[x]`.
 
 - [x] 0.3 Añadir guard de merge para no reintroducir llamadas `ensure_buckets` sin método o con provider incorrecto.
   - **Scope:** `ml/service/queue.py`, `ml/service/storage.py`, `ml/tests/test_storage.py`, `ml/tests/test_service.py`.
@@ -71,12 +74,13 @@
   - **Test:** `npm --prefix backend run test:unit` → **11 files / 138 tests passed**; `npm --prefix backend run test:integration -- tests/admin-bootstrap.integration.test.ts` → **1 file / 32 tests passed**; `npm --prefix backend run test:integration` → **13 files / 214 tests passed**; `typecheck`/`build` → exit 0. Incluye la regresión real de `result` conocido + `$disconnect` que falla: exit `2`, `operationStatus=COMMITTED cleanup=PENDING`, aviso constante y sin secreto.
   - **Coverage:** “Bootstrap de administrador controlado”, “Tres roles con mínimo privilegio y default deny”. No implementa `POST /admin/users` (1.8), sesiones/refresh/revocación (5.5) ni el ciclo de vida completo de administración.
 
-- [ ] 1.7 Backfill y compatibilidad de datos legacy.
+- [x] 1.7 Backfill y compatibilidad de datos legacy. **Compatibilidad verificada; sin backfill nuevo.**
   - **Scope:** migraciones A/B; normalización de `consultations.status`, referencias `s3://`/`azure://`, alias `Phakic_Pseudophakic`, `hashMd5` actual vs `checksumSha256` target.
   - **When/Then:** WHEN se migra una base legacy THEN las filas siguen legibles y ningún estado, hash o key cambia de significado.
   - **Depends on:** 1.1, 1.2.
   - **Test:** `npm --prefix backend run test -- tests/migrations.test.ts tests/schemas.test.ts`.
   - **Coverage:** “Compatibilidad de referencias legacy”, “Compatibilidad y evolución del contrato”, “Nombres canónicos, mapeo y lateralidad”.
+  - **Cierre 1.7:** parser 3.3 cubierto por tests `s3://`/`azure://`/key-only; alias `Phakic_Pseudophakic` cubierto en `tests/schemas.test.ts`; `hashMd5` (imagen legacy) vs `checksumSha256` (artefacto) documentados; migraciones A/B conservan legacy sin backfill ni reinterpretación. No se añadió migración/backfill. 1.7 `[x]`.
 
 - [x] 1.8 Implementar `POST /admin/users` como alta controlada prioritaria desde el primer release.
   - **Scope:** nueva ruta admin `backend/src/routes/admin.ts` y registro en `backend/src/app.ts`; DTO canónico de email y alta en `backend/src/schemas/auth.ts`; servicio transaccional `backend/src/services/admin-users.ts` sobre `withAuditedTransaction` y `ADMIN_LIFECYCLE_LOCK_KEY`; helper puro `backend/src/lib/canonical-email.ts` compartido con login/bootstrap/guard; ajustes de email literal en `backend/src/services/{admin-bootstrap,session,login-guard}.ts`; tests unitarios e integración owned. Sin frontend. `GET/PATCH /admin/users`, desactivación, cambio de rol y protección del último admin se implementan en 5.4/5.6/9.1 (HITO14); la lectura de auditoría sigue en 9.2.
@@ -491,11 +495,12 @@
   - **Test:** `npm --prefix backend run test:integration` → **8 files passed, 62 tests passed**, Vitest 5.1.0, inicio 17:09:59, duración 18.61 s, exit 0 (2026-11-18).
   - **Coverage:** ejecutado localmente con PostgreSQL 16-alpine de Testcontainers y ownership; setup/migraciones/fixtures, queries de test y cleanup según el harness verificado por QA de seguridad. Tras el run, `docker ps -a` con los filtros `com.clearsight.test.owner=backend-integration` y `org.testcontainers=true`, y `docker volume ls` con el label de ownership, no devolvieron salida. Solo se consultaron recursos con esas etiquetas; no se inspeccionaron todos los volúmenes/recursos del host ni se eliminó nada manualmente o ajeno. No cubre 7.1 (adversos nuevos), 7.2 (E2E clínico completo), 7.4 (Azure) ni la suite completa de auth/sesión.
 
-- [ ] 7.1 Crear suite de contratos con stub ML y casos adversos.
+- [x] 7.1 Crear suite de contratos con stub ML y casos adversos. **Cobertura consolidada; QA PASSED.**
   - **Scope:** `backend/tests/` nuevos casos; `ml/tests/` stubs; sin Azure real; seguir `contracts/testing-runbook.md`.
   - **When/Then:** WHEN corre la suite THEN cubre URL expirada, host no permitido, etiqueta desconocida, payload inválido, `202` perdido, reinicio, duplicado, objeto ausente, upload OK/DB fail, storage caído, provider desconocido y auditoría fallida.
   - **Test:** `npm --prefix backend run test` y `python -m pytest ml/tests -q` solo en entorno aislado; **no ejecutar en este change** y no tratar un test focalizado como libre del `globalSetup` destructivo.
   - **Coverage:** todas las capacidades adversas.
+  - **Cierre 7.1:** nuevo `tests/unit/adversarial-coverage.test.ts` ligero (sin DB/red) con índice de cobertura existente y asserts puros: URL policy ML 4.1, replay 202, worker duplicate/terminal, storage missing→409, audit rollback, unknown label, provider unknown. No replica suites pesadas; brechas reales cubiertas por referencias a los tests existentes. 7.1 `[x]`.
 
 - [ ] 7.2 Crear E2E completo con DB creada/adoptada explícitamente y ownership marker.
   - **Scope:** suite E2E; `TEST_DATABASE_URL` con DB creada/adoptada para el run, marker de ownership, allowlist de target y deny producción; **no** basta que el nombre contenga `test`. Ver `contracts/testing-runbook.md` fase 3.
@@ -503,11 +508,12 @@
   - **Test:** comando E2E con guard de ownership (prospectivo; no ejecutar en este change; no inventar `npm run e2e`).
   - **Coverage:** flujo prioritario completo; “Contrato HTTP único y explícito para frontend”.
 
-- [ ] 7.3 Verificar sanitización, tamaño, formato y lateralidad antes de persistir.
+- [x] 7.3 Verificar sanitización, tamaño, formato y lateralidad antes de persistir. **QA PASSED.**
   - **Scope:** `backend/src/services/sanitizer.ts`, `backend/src/routes/consultations.ts:100-160`, `backend/src/app.ts:64-68`.
   - **When/Then:** WHEN llega JPEG/PNG >=512 px y <=20 MB THEN se acepta y sanitiza; WHEN excede o no es válido THEN se rechaza antes de persistir; límites API/ML alineados; `eyeSide` contradictorio `422`.
   - **Test:** `npm --prefix backend run test -- tests/sanitizer.test.ts tests/schemas.test.ts`.
   - **Coverage:** RF02; “Nombres canónicos, mapeo y lateralidad”.
+  - **Cierre 7.3:** `sanitizer.ts` añade límite de entrada 20 MiB y errores tipados seguros; tests cubren JPEG/PNG >=512 px, EXIF eliminado, oversize, bytes inválidos y fallo de sharp. Lateralidad ya validada en creación; multipart 50 MB sin cambios. 7.3 `[x]`.
 
 - [ ] 7.4 Crear E2E real Azure posterior con autenticación, imagen → Blob → ML → mask/overlay → DB → PDF → URLs.
   - **Scope:** E2E de Azure real solo con B6 confirmado (presupuesto/duración/scope y contexto/permisos) y cleanup final; incluye stores ausentes; ver `contracts/testing-runbook.md` fase 6.
