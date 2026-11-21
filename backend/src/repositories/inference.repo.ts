@@ -1,5 +1,5 @@
-import type { InferenceCreate, InferenceResultUpdate } from "../schemas/inference.js";
-import type { Db, JsonObject } from "./types.js";
+import type { InferenceCreate } from "../schemas/inference.js";
+import type { Db } from "./types.js";
 
 export function createInferenceRepository(db: Db) {
   return {
@@ -30,31 +30,6 @@ export function createInferenceRepository(db: Db) {
 
     listByImage: (imageId: string) =>
       db.inference.findMany({ where: { imageId }, orderBy: { createdAt: "desc" } }),
-
-    /** Persists the ML InferenceResult. */
-    saveResult: (id: string, result: InferenceResultUpdate) =>
-      db.inference.update({
-        where: { id },
-        data: {
-          predictedClass: result.predictedClass,
-          confidence: result.confidence,
-          probabilities: result.probabilities as JsonObject,
-          ...(result.modelVersions !== undefined && {
-            modelVersions: result.modelVersions as JsonObject,
-          }),
-          ...(result.modelPredictions !== undefined && {
-            modelPredictions: result.modelPredictions as JsonObject,
-          }),
-          cdr: result.cdr,
-          cdrVertical: result.cdrVertical,
-          quality: (result.quality ?? {}) as JsonObject,
-          artifacts: (result.artifacts ?? {}) as JsonObject,
-          elapsedSeconds: result.elapsedSeconds,
-          gradcamPath: result.gradcamPath ?? null,
-          ...(result.modelVersion !== undefined && { modelVersion: result.modelVersion }),
-          ...(result.status !== undefined && { status: result.status }),
-        },
-      }),
 
     delete: (id: string) => db.inference.delete({ where: { id } }),
   };

@@ -3,6 +3,10 @@ import { Client } from "pg";
 import { ZodError } from "zod";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createRepositories } from "../src/repositories/index.js";
+import {
+  createInferenceRunRepository,
+  type TerminalInferenceUpdate,
+} from "../src/repositories/inference-run.repo.js";
 import { createTestPrisma, makeStudy, makeUser, resetDb, testDatabaseUrl } from "./helpers/db.js";
 
 const prisma = createTestPrisma();
@@ -97,7 +101,7 @@ describe("consultations / images / inferences", () => {
     await expect(prisma.image.create({ data: { consultationId: consultation.id, eyeSide: "XX", storagePath: "b.jpg" } })).rejects.toThrow();
   });
 
-  it("stores the ML result and resolves inferences by job id", async () => {
+  it("stores the ML result through CAS and resolves inferences by job id", async () => {
     const doctor = await makeUser(prisma);
     const { image } = await makeStudy(prisma, { doctorId: doctor.id });
     const jobId = randomUUID();
@@ -119,18 +123,37 @@ describe("consultations / images / inferences", () => {
         confidence: 0.8,
       },
     };
-    const saved = await repos.inferences.saveResult(created.id, {
-      predictedClass: 2, confidence: 0.72,
-      probabilities: { Glaucoma: 0.1, Non_Glaucoma: 0.18, Suspicious_Glaucoma: 0.72 },
-      modelVersions, modelPredictions,
-      cdr: 0.61, cdrVertical: 0.66, quality: { review_required: false }, artifacts: { gradcam_url: "x" },
-      elapsedSeconds: 2.4, gradcamPath: "g.png", modelVersion: "v1",
-    });
-    expect(saved).toMatchObject({
+    const saved = await createInferenceRunRepository(prisma).saveTerminalResult(
+      created.id,
+      {
+        status: "COMPLETED",
+        predictedClass: 2,
+        confidence: 0.72,
+        probabilities: {
+          Glaucoma: 0.1,
+          Non_Glaucoma: 0.18,
+          Suspicious_Glaucoma: 0.72,
+        },
+        modelVersions,
+        modelPredictions,
+        cdr: 0.61,
+        cdrVertical: 0.66,
+        quality: { review_required: false },
+        artifacts: { gradcam_url: "x" },
+        elapsedSeconds: 2.4,
+        gradcamPath: "g.png",
+        modelVersion: "2026-09-24",
+      },
+    );
+    expect(saved).toBe(true);
+
+    const stored = await repos.inferences.findById(created.id);
+    expect(stored).toMatchObject({
+      status: "COMPLETED",
       predictedClass: 2,
       cdr: 0.61,
       cdrVertical: 0.66,
-      modelVersion: "v1",
+      modelVersion: "2026-09-24",
       modelVersions,
       modelPredictions,
     });
@@ -139,6 +162,103 @@ describe("consultations / images / inferences", () => {
     const ctx = await repos.inferences.findWithContext(created.id);
     expect(ctx?.image.consultation.doctorId).toBe(doctor.id);
     await expect(repos.inferences.create({ imageId: image.id, jobId })).rejects.toMatchObject({ code: "P2002" });
+  });
+
+  it("does not duplicate or overwrite terminal result/evidence on repeated persistence", async () => {
+    const doctor = await makeUser(prisma);
+    const study = await makeStudy(prisma, { doctorId: doctor.id });
+    const runRepository = createInferenceRunRepository(prisma);
+    const terminal: TerminalInferenceUpdate = {
+      status: "COMPLETED",
+      predictedClass: 1,
+      confidence: 0.91,
+      probabilities: {
+        Glaucoma: 0.05,
+        Non_Glaucoma: 0.91,
+        Suspicious_Glaucoma: 0.04,
+      },
+      modelVersions: { manifest: "2026-09-24" },
+      modelPredictions: {},
+      cdr: 0.4,
+      cdrVertical: 0.45,
+      quality: {},
+      artifacts: { mask: "s3://masks/mask.png" },
+      elapsedSeconds: 1.2,
+      gradcamPath: null,
+      modelVersion: "2026-09-24",
+    };
+
+    expect(
+      await runRepository.saveTerminalResult(study.inference.id, terminal),
+    ).toBe(true);
+    const firstRow = await prisma.inference.findUniqueOrThrow({
+      where: { id: study.inference.id },
+    });
+
+    await prisma.artifactRecord.create({
+      data: {
+        inferenceId: study.inference.id,
+        artifactType: "mask",
+        version: 1,
+        status: "PENDING",
+      },
+    });
+    await prisma.pdfReport.create({
+      data: { inferenceId: study.inference.id, version: 1, dataVersion: "v1" },
+    });
+    await prisma.clinicalFeedback.create({
+      data: {
+        consultationId: study.consultation.id,
+        inferenceId: study.inference.id,
+        doctorId: doctor.id,
+      },
+    });
+
+    expect(
+      await runRepository.saveTerminalResult(study.inference.id, {
+        ...terminal,
+        predictedClass: 2,
+        confidence: 0.1,
+        artifacts: { overlay: "s3://overlays/other.png" },
+      }),
+    ).toBe(false);
+
+    const after = await prisma.inference.findUniqueOrThrow({
+      where: { id: study.inference.id },
+    });
+    expect(after).toEqual(firstRow);
+    expect(await prisma.artifactRecord.count()).toBe(1);
+    expect(await prisma.pdfReport.count()).toBe(1);
+    expect(await prisma.clinicalFeedback.count()).toBe(1);
+
+    await expect(
+      prisma.artifactRecord.create({
+        data: {
+          inferenceId: study.inference.id,
+          artifactType: "mask",
+          version: 1,
+          status: "PENDING",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+    await expect(
+      prisma.pdfReport.create({
+        data: {
+          inferenceId: study.inference.id,
+          version: 1,
+          dataVersion: "v1",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+    await expect(
+      prisma.clinicalFeedback.create({
+        data: {
+          consultationId: study.consultation.id,
+          inferenceId: study.inference.id,
+          doctorId: doctor.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
   });
 });
 

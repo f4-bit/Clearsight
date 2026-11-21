@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -637,6 +637,19 @@
 | Migración | `20261121000000_inference_dispatch` aditiva/idempotente; replay, columnas/defaults, índice parcial y privilegios `clearsight_app` verificados. |
 | Cierre | 4.6/4.7/4.8 `[x]`. REG-002/003/004 **NO** declarados resueltos; `gradcam`/`mask`/`overlay` y agregados/PDF siguen en 2.3/6.x. |
 | Límites | 4.6 no es outbox transaccional Redis (lease+jobId+inferenceId+CAS mitigan réplicas, no at-least-once perfecto); reconciliador recupera `PENDING` sin cliente; persist del failed handler es best-effort y depende del reconciliador; backoff `2s*2^attempts` cap 120 s; inconsistencias reintentan acotado con `last_error_code` observable y sin give-up; `UnrecoverableError` con `attemptsMade=1`; JIT desde `storagePath`, payload nuevo sin URL, legacy ignorado con storagePath, TTL 3600 sin 300 s. |
+
+## 1.38 Registro HITO26/4.9 - cierre pequeño (QA PASSED)
+
+> **Naturaleza:** se retiró `saveResult` del repositorio público y se actualizó el test de repositorios al camino CAS. Sin cambios en worker/migraciones/schema, sin Azure/`.env`, PDF, ML, `defects/regressions.md` ni commit.
+
+| Elemento | Evidencia |
+|---|---|
+| API retirada | `backend/src/repositories/inference.repo.ts` sin `saveResult`; worker ya usaba `saveTerminalResult` CAS. |
+| Regresión | Doble `saveTerminalResult` del mismo terminal: segunda llamada `false`, fila conserva el primer resultado; artifact/PDF/feedback no se duplican por constraints `UNIQUE`. |
+| Tests (QA PASSED) | Unit `inference-run-repo`/`inference.processor` **2 files / 46 tests**; integración `repositories.test.ts` **1 file / 23 tests**; `typecheck`/`build` **0**. |
+| Estado | 4.9 `[x]`; sin full suite. |
+
+**Criterio de salida:** QA PASSED con evidencia; 4.9 `[x]`. Sin cierre de REG-002/003/004 ni edición de `defects/regressions.md`.
 
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
@@ -1265,6 +1278,7 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | `scripts/e2e-backend.ps1` con `Idempotency-Key` (4.4) | FUTURO / NO EJECUTAR | Solo actualizar el caller; no correr contra la DB de desarrollo compartida. |
 | Unit 4.6-4.8: reconciler/failed-handler/processor/queue-options/worker + runner-isolation | **CURRENT QA PASSED (HITO26)** | 4.7/4.8 **5 files / 65**; H1/H2 **2 files / 55**; 4.6 **6 files / 96** (82+14 QA); sin Redis real. |
 | Integración 4.6-4.8: dispatch + worker con PostgreSQL real | **CURRENT QA PASSED (HITO26)** | 4.7/4.8 **3 files / 46**; 4.6 **4 files / 56** (50+6 QA); Testcontainers/DB aislada, sin Redis/Azure. |
+| 4.9: unit inference-run-repo/processor + integración repositories | **CURRENT QA PASSED** | Unit **2 files / 46**; integración **1 file / 23**; `typecheck`/`build` **0**. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 
