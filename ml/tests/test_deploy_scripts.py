@@ -331,7 +331,6 @@ TAGGED_CREATES = [
     ["storage", "account", "create"],
     ["acr", "create"],
     ["postgres", "flexible-server", "create"],
-    ["redis", "create"],
     ["containerapp", "env", "create"],
     ["containerapp", "job", "create"],
     ["containerapp", "create"],
@@ -492,7 +491,6 @@ def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> No
         "storage",
         "acr",
         "postgres",
-        "redis",
         "containerapp.env",
         "containerapp.job",
         "containerapp",
@@ -1082,11 +1080,24 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
         "MINIO_BUCKET_MASK=segmentation-masks",
         "MINIO_BUCKET_OVERLAY=segmentation-overlays",
         "MINIO_BUCKET_PDF=clinical-reports",
-        "REDIS_URL=secretref:redis-url",
         "DATABASE_URL=secretref:database-url",
     ]:
         assert assignment in backend_env, assignment
     assert any(item.startswith("ML_SERVICE_URL=https://") for item in backend_env)
+
+    redis_values = [item for item in backend_env if item.startswith("REDIS_URL=")]
+    assert len(redis_values) == 1, backend_env
+    redis_url = redis_values[0].split("=", 1)[1]
+    assert redis_url.startswith("redis://clearsight-run123-redis.")
+    assert redis_url.endswith(":6379/0")
+    assert "rediss://" not in redis_url
+    assert "secretref:" not in redis_url
+    assert not any("redis" in item for item in _option_values(backend, "--secrets"))
+
+    worker = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-worker")
+    worker_env = _option_values(worker, "--env-vars")
+    assert f"REDIS_URL={redis_url}" in worker_env
+    assert not any("redis" in item for item in _option_values(worker, "--secrets"))
 
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
     assert "ML_INFERENCE_BACKEND=onnx" in _option_values(ml_app, "--env-vars")
@@ -1141,6 +1152,76 @@ def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path
 
     manifest_text = _manifest_path(tmp_path).read_text(encoding="utf-8")
     assert "AUTH_PUBLIC_ORIGIN" not in manifest_text
+
+
+@requires_powershell
+def test_deploy_redis_is_internal_container_app(tmp_path: Path) -> None:
+    env = _stub_environment(tmp_path)
+    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    result = _run_powershell(DEPLOY_SCRIPT, args, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    entries = _read_log(tmp_path / "az-calls.jsonl")
+    assert not [entry for entry in entries if _args_start(entry, ["redis"])]
+
+    redis_app = _entry_with_name(
+        entries, ["containerapp", "create"], "clearsight-run123-redis"
+    )
+    assert _option_values(redis_app, "--image") == ["redis:7-alpine"]
+    assert _option_values(redis_app, "--target-port") == ["6379"]
+    assert _option_values(redis_app, "--ingress") == ["internal"]
+    assert _option_values(redis_app, "--transport") == ["tcp"]
+    assert _option_values(redis_app, "--min-replicas") == ["1"]
+    assert _option_values(redis_app, "--max-replicas") == ["1"]
+    assert not _option_values(redis_app, "--secrets")
+
+    for app_name in ("clearsight-run123-backend", "clearsight-run123-worker"):
+        app = _entry_with_name(entries, ["containerapp", "create"], app_name)
+        env_values = _option_values(app, "--env-vars")
+        redis_values = [item for item in env_values if item.startswith("REDIS_URL=")]
+        assert len(redis_values) == 1, env_values
+        value = redis_values[0].split("=", 1)[1]
+        assert value.startswith("redis://clearsight-run123-redis.")
+        assert value.endswith(":6379/0")
+        assert "rediss://" not in value
+        assert "secretref:" not in value
+        assert not any("redis" in item for item in _option_values(app, "--secrets"))
+
+
+@requires_powershell
+def test_deploy_manifest_marks_group_created_by_run_and_teardown_deletes_it(
+    tmp_path: Path,
+) -> None:
+    env = _stub_environment(tmp_path)
+    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload", "-KeepForDebug"]
+    result = _run_powershell(DEPLOY_SCRIPT, args, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    manifest_path = _manifest_path(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["resourceGroup"]["createdByRun"] is True
+
+    teardown = _run_powershell(
+        TEARDOWN_SCRIPT,
+        [
+            "-ManifestPath",
+            str(manifest_path),
+            "-TimeoutSeconds",
+            "2",
+            "-PollIntervalSeconds",
+            "1",
+        ],
+        env,
+    )
+    assert teardown.returncode == 0, teardown.stdout + teardown.stderr
+
+    entries = _read_log(tmp_path / "az-calls.jsonl")
+    group_deletes = [entry for entry in entries if _args_start(entry, ["group", "delete"])]
+    assert group_deletes, "teardown did not group-delete the run resource group"
+    assert "--no-wait" in group_deletes[0]["args"]
+
+    updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated["cleanup"]["status"] == "completed"
 
 
 @requires_powershell

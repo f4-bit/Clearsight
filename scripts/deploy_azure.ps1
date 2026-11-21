@@ -10,7 +10,7 @@
       2. Blob Storage account + containers (raw, gradcam, mask, overlay, pdf, models)
       3. Azure Container Registry (Basic) and five SHA-tagged images
       4. PostgreSQL Flexible Server + database + firewall
-      5. Azure Cache for Redis (Basic C0)
+      5. Redis 7 as an internal Container App (TCP 6379, no public ingress)
       6. Container Apps environment
       7. Manual Container Apps jobs: prisma:deploy (migrate) and admin:bootstrap
       8. Container Apps: ml-service, backend, worker, frontend
@@ -233,7 +233,7 @@ $StorageName = $compact
 $acrName = $compact
 if ($acrName.Length -gt 50) { $acrName = $acrName.Substring(0, 50) }
 $PostgresName = "$RunPrefix-pg"
-$RedisName = "$RunPrefix-redis"
+$RedisApp = "$RunPrefix-redis"
 $EnvName = "$RunPrefix-env"
 $MlApp = "$RunPrefix-ml"
 $BackendApp = "$RunPrefix-backend"
@@ -466,7 +466,7 @@ function Write-Plan {
     Write-Host "  Storage        : $StorageName"
     Write-Host "  Registry       : $acrName"
     Write-Host "  PostgreSQL     : $PostgresName/$PostgresDatabase"
-    Write-Host "  Redis          : $RedisName"
+    Write-Host "  Redis          : $RedisApp (internal TCP 6379)"
     Write-Host "  Container apps : $MlApp, $BackendApp, $WorkerApp, $FrontendApp"
     Write-Host "  Jobs           : $MigrateJob (prisma:deploy), $BootstrapJob (admin:bootstrap)"
     Write-Host "  Images         : $($imageRefs.Values -join ', ')"
@@ -576,12 +576,12 @@ try {
     else {
         Invoke-AzCli (@("group", "create", "--name", $rgName, "--location", $Location, "--tags") + $tagArgs + @("--output", "none")) -Operation "group create"
         $rgId = Get-AzValue @("group", "show", "--name", $rgName, "--query", "id", "-o", "tsv") -Operation "group id"
-        $script:Manifest["resourceGroup"]["createdByRun"] = $true
         $script:CreatedAny = $true
     }
     $script:Manifest["resourceGroup"]["id"] = $rgId
-    # The RG is either newly created or already owned by this run; cleanup must
-    # consider the run resources even on a re-run.
+    # The RG is either newly created or already owned by this run (tags match);
+    # mark it as created by the run so teardown can use a single group delete.
+    $script:Manifest["resourceGroup"]["createdByRun"] = $true
     $script:CreatedAny = $true
     Save-Manifest
 
@@ -757,30 +757,6 @@ try {
         ) -Operation "postgres firewall"
     }
 
-    # 5. Redis ---------------------------------------------------------------
-    if (Test-AzExists @("redis", "show", "--name", $RedisName, "--resource-group", $rgName)) {
-        $redisId = Get-AzValue @("redis", "show", "--name", $RedisName, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis id"
-        Assert-RunOwnership "redis" $RedisName $redisId
-    }
-    else {
-        Invoke-AzCli (@(
-            "redis", "create",
-            "--name", $RedisName,
-            "--resource-group", $rgName,
-            "--location", $Location,
-            "--sku", "Basic",
-            "--vm-size", "c0",
-            "--tags"
-        ) + $tagArgs + @("--output", "none")) -Operation "redis create"
-        $redisId = Get-AzValue @("redis", "show", "--name", $RedisName, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis id"
-        $script:CreatedAny = $true
-    }
-    $redisHost = Get-AzValue @("redis", "show", "--name", $RedisName, "--resource-group", $rgName, "--query", "hostName", "-o", "tsv") -Operation "redis host"
-    Add-ManifestResource -Type "redis" -Name $RedisName -Id $redisId -ResourceTags $tags -Extra @{ host = $redisHost }
-    Save-Manifest
-
-    $redisPrimaryKey = Register-Secret (Get-AzValue @("redis", "list-keys", "--name", $RedisName, "--resource-group", $rgName, "--query", "primaryKey", "-o", "tsv") -Operation "redis key")
-
     # 6. Container Apps environment -----------------------------------------
     if (Test-AzExists @("containerapp", "env", "show", "--name", $EnvName, "--resource-group", $rgName)) {
         $envId = Get-AzValue @("containerapp", "env", "show", "--name", $EnvName, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "env id"
@@ -800,14 +776,47 @@ try {
     Add-ManifestResource -Type "containerapp.env" -Name $EnvName -Id $envId -ResourceTags $tags
     Save-Manifest
 
+    # 6b. Redis (self-hosted Container App) ----------------------------------
+    # Internal TCP ingress only: apps in the same Container Apps environment
+    # resolve <redis-app>.<env-default-domain>; there is no public ingress and
+    # no auth secret. REDIS_URL is redis://<redis-fqdn>:6379/0 for backend and
+    # worker.
+    if (Test-AzExists @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName)) {
+        $redisAppId = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis app id"
+        Assert-RunOwnership "container app" $RedisApp $redisAppId
+    }
+    else {
+        Invoke-AzCli (@(
+            "containerapp", "create",
+            "--name", $RedisApp,
+            "--resource-group", $rgName,
+            "--environment", $EnvName,
+            "--image", "redis:7-alpine",
+            "--target-port", "6379",
+            "--ingress", "internal",
+            "--transport", "tcp",
+            "--cpu", "0.25",
+            "--memory", "0.5Gi",
+            "--min-replicas", "1",
+            "--max-replicas", "1",
+            "--tags"
+        ) + $tagArgs + @("--output", "none")) -Operation "containerapp create redis"
+        $redisAppId = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis app id"
+        $script:CreatedAny = $true
+    }
+    $redisFqdn = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "properties.configuration.ingress.fqdn", "-o", "tsv") -Operation "redis app fqdn"
+    $redisUrl = "redis://${redisFqdn}:6379/0"
+    $script:Manifest["endpoints"]["redis"] = $redisUrl
+    Add-ManifestResource -Type "containerapp" -Name $RedisApp -Id $redisAppId -ResourceTags $tags -Extra @{ image = "redis:7-alpine"; fqdn = $redisFqdn; ingress = "internal"; port = 6379; url = $redisUrl }
+    Save-Manifest
+    Write-Info "Redis internal endpoint: $redisUrl (same Container Apps environment)."
+
     # 7. Derived configuration (secrets stay in memory / Container App secrets).
     $databaseUrl = "postgresql://${PostgresAdmin}:${pgPassword}@${pgHost}:5432/${PostgresDatabase}?sslmode=require"
-    $redisUrl = "rediss://:${redisPrimaryKey}@${redisHost}:6380/0"
     $jwtSecret = Register-Secret (New-StrongToken 48)
     $exportSecret = Register-Secret (New-StrongToken 48)
     $mlToken = Register-Secret (New-StrongToken 40)
     Register-Secret $databaseUrl | Out-Null
-    Register-Secret $redisUrl | Out-Null
 
     $commonBuckets = @(
         "STORAGE_PROVIDER=azure",
@@ -948,8 +957,7 @@ try {
         "azure-storage-key=$storageKey",
         "jwt-secret=$jwtSecret",
         "export-hmac-secret=$exportSecret",
-        "ml-api-token=$mlToken",
-        "redis-url=$redisUrl"
+        "ml-api-token=$mlToken"
     )
     $backendEnv = @(
         "NODE_ENV=production",
@@ -959,7 +967,7 @@ try {
         "JWT_SECRET=secretref:jwt-secret",
         "EXPORT_HMAC_SECRET=secretref:export-hmac-secret",
         "ML_API_TOKEN=secretref:ml-api-token",
-        "REDIS_URL=secretref:redis-url",
+        "REDIS_URL=$redisUrl",
         "ML_SERVICE_URL=https://$mlFqdn"
     ) + $commonBuckets
     if (Test-AzExists @("containerapp", "show", "--name", $BackendApp, "--resource-group", $rgName)) {
@@ -1010,15 +1018,14 @@ try {
     $workerSecrets = @(
         "database-url=$databaseUrl",
         "azure-storage-key=$storageKey",
-        "ml-api-token=$mlToken",
-        "redis-url=$redisUrl"
+        "ml-api-token=$mlToken"
     )
     $workerEnv = @(
         "NODE_ENV=production",
         "DATABASE_URL=secretref:database-url",
         "AZURE_STORAGE_ACCOUNT_KEY=secretref:azure-storage-key",
         "ML_API_TOKEN=secretref:ml-api-token",
-        "REDIS_URL=secretref:redis-url",
+        "REDIS_URL=$redisUrl",
         "ML_SERVICE_URL=https://$mlFqdn"
     ) + $commonBuckets
     if (Test-AzExists @("containerapp", "show", "--name", $WorkerApp, "--resource-group", $rgName)) {

@@ -209,8 +209,6 @@ def query_value(kind: str, name: str, query: str | None) -> object:
         return scenario.get("acr_username", f"{name}-admin")
     if kind == "postgres" and query == "fullyQualifiedDomainName":
         return f"{name}.postgres.database.azure.com"
-    if kind == "redis" and query == "hostName":
-        return f"{name}.redis.cache.windows.net"
     if kind == "containerapp" and query == "properties.configuration.ingress.fqdn":
         env_name = scenario.get("env_name", "clearsight-env")
         return f"{name}.{env_name}.azurecontainerapps.io"
@@ -379,21 +377,11 @@ if args[:4] == ["postgres", "flexible-server", "firewall-rule", "create"]:
     sys.exit(0)
 
 
-# redis ---------------------------------------------------------------------
+# redis (legacy teardown-only; deployment uses a Container App) ---------------
 if args[:2] == ["redis", "show"]:
     handle_show("redis", opt("--name"))
-if args[:2] == ["redis", "create"]:
-    record("redis", opt("--name") or "")
-    sys.exit(0)
 if args[:2] == ["redis", "delete"]:
     handle_delete("redis", opt("--name"))
-if args[:2] == ["redis", "list-keys"]:
-    key = scenario.get("canary_redis_key", "CANARY-REDIS-KEY")
-    if opt("--query") == "primaryKey":
-        emit(key, output_format())
-    else:
-        emit({"primaryKey": key}, output_format())
-    sys.exit(0)
 
 
 # container apps ------------------------------------------------------------
