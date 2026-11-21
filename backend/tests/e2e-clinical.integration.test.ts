@@ -488,6 +488,8 @@ describe("clinical E2E (7.2)", () => {
     expect(completedPoll.json()).toMatchObject({
       id: inferenceId,
       status: "COMPLETED",
+      cdr: 0.42,
+      cdrVertical: 0.38,
       delivery: {
         resultStatus: "AVAILABLE",
         evidenceStatus: "AVAILABLE",

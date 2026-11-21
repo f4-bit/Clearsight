@@ -38,6 +38,12 @@ export interface InferenceRoutesOptions {
   storage?: ArtifactStoragePort;
 }
 
+const nullableCdr = z.number().min(0).max(1).nullable();
+
+function cdrForRead(value: unknown): number | null {
+  return typeof value === "number" && value >= 0 && value <= 1 ? value : null;
+}
+
 export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async (
   app,
   opts,
@@ -126,6 +132,8 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
             predictedClass: z.number().nullable(),
             confidence: z.number().nullable(),
             probabilities: z.record(z.string(), z.unknown()),
+            cdr: nullableCdr,
+            cdrVertical: nullableCdr,
             gradcamPath: z.string().nullable(),
             modelVersion: z.string().nullable(),
             createdAt: z.date().or(z.iso.datetime()),
@@ -177,6 +185,8 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
             }).pollingStop
           : computeConsultationStates(completion.input).pollingStop;
       const status = inference.status ?? "QUEUED";
+      const publishMeasures =
+        status === "COMPLETED" && inference.quality?.review_required !== true;
       const retryAfter = computeRetryAfterSeconds(status, pollingStop);
       if (retryAfter !== null) {
         reply.header("Retry-After", String(retryAfter));
@@ -188,6 +198,8 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         predictedClass: inference.predictedClass,
         confidence: inference.confidence,
         probabilities: inference.probabilities as Record<string, unknown>,
+        cdr: publishMeasures ? cdrForRead(inference.cdr) : null,
+        cdrVertical: publishMeasures ? cdrForRead(inference.cdrVertical) : null,
         gradcamPath: redactGradcamPath ? null : inference.gradcamPath,
         modelVersion: inference.modelVersion,
         createdAt: inference.createdAt,

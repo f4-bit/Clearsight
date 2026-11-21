@@ -178,6 +178,7 @@ async function seedStudy(
   doctorId: string,
   status = "COMPLETED",
   withArtifacts: "complete" | "no-pdf" | "none" = "none",
+  measures: Pick<Prisma.InferenceCreateInput, "cdr" | "cdrVertical" | "quality"> = {},
 ): Promise<Study> {
   const patient = await prisma.patient.create({
     data: { ownerDoctorId: doctorId },
@@ -224,6 +225,7 @@ async function seedStudy(
       modelVersions: {} as Prisma.InputJsonValue,
       modelPredictions: {} as Prisma.InputJsonValue,
       artifacts: {} as Prisma.InputJsonValue,
+      ...measures,
     },
   });
   const study = {
@@ -481,6 +483,8 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
     expect(pendingResponse.statusCode).toBe(200);
     expect(pendingResponse.json()).toMatchObject({
       status: "COMPLETED",
+      cdr: 0.42,
+      cdrVertical: 0.38,
       delivery: {
         resultStatus: "AVAILABLE",
         evidenceStatus: "AVAILABLE",
@@ -504,6 +508,8 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
     expect(queuedResponse.statusCode).toBe(200);
     expect(queuedResponse.json()).toMatchObject({
       status: "QUEUED",
+      cdr: null,
+      cdrVertical: null,
       pollingStop: "CONTINUE",
     });
     expect(Number(queuedResponse.headers["retry-after"])).toBe(2);
@@ -522,6 +528,7 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as Record<string, unknown>;
     expect(body.delivery).toMatchObject({ complete: true });
+    expect(body).toMatchObject({ cdr: 0.42, cdrVertical: 0.38 });
     expect(body).not.toHaveProperty("artifacts");
     expect(body).not.toHaveProperty("storageId");
     expect(body).not.toHaveProperty("key");
@@ -745,6 +752,8 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
     expect(reviewResponse.headers["retry-after"]).toBeUndefined();
     expect(reviewResponse.json()).toMatchObject({
       pollingStop: "ACTION_REQUIRED",
+      cdr: null,
+      cdrVertical: null,
       delivery: { reviewRequired: true, complete: false },
     });
 
@@ -808,6 +817,8 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual([
+      "cdr",
+      "cdrVertical",
       "confidence",
       "createdAt",
       "delivery",
@@ -840,6 +851,34 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
     ]) {
       expect(response.body).not.toContain(leak);
     }
+  });
+
+  it("preserves valid zeroes and suppresses invalid or flagged CDR independently of delivery", async () => {
+    async function readMeasures(
+      measures: Pick<Prisma.InferenceCreateInput, "cdr" | "cdrVertical" | "quality">,
+    ) {
+      const study = await seedStudy(doctorA.id, "COMPLETED", "none", measures);
+      const response = await app.inject({
+        method: "GET",
+        url: `/inferences/${study.inference.id}`,
+        headers: headersA,
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json();
+    }
+
+    expect(await readMeasures({ cdr: -0.01, cdrVertical: 1.01 })).toMatchObject({
+      cdr: null,
+      cdrVertical: null,
+    });
+    expect(await readMeasures({ cdr: null, cdrVertical: 0 })).toMatchObject({
+      cdr: null,
+      cdrVertical: 0,
+    });
+    expect(await readMeasures({ quality: { review_required: true } })).toMatchObject({
+      cdr: null,
+      cdrVertical: null,
+    });
   });
 
   it("rejects malformed freeze payloads before any write", async () => {
