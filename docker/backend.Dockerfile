@@ -14,7 +14,8 @@ RUN npm ci
 
 COPY backend/prisma ./prisma
 COPY backend/prisma.config.ts ./prisma.config.ts
-RUN npx prisma generate
+SHELL ["/bin/bash", "-c"]
+RUN set -o pipefail && npx prisma generate 2>&1 | tr -d '\200-\377'
 
 COPY backend ./
 RUN npm run build
