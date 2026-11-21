@@ -2,6 +2,8 @@ FROM python:3.11-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
+    PIP_PROGRESS_BAR=off \
+    PIP_NO_COLOR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TF_CPP_MIN_LOG_LEVEL=2
 
