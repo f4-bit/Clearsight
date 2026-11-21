@@ -8,13 +8,39 @@ x-backend-environment: &backend-environment
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clearsight}
   REDIS_URL: redis://redis:6379/0
   MLFLOW_TRACKING_URI: http://mlflow:5000
-  MINIO_ENDPOINT: minio:9000
+  MINIO_ENDPOINT: minio
+  MINIO_PORT: "9000"
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   MINIO_SECURE: "false"
+  STORAGE_PROVIDER: ${STORAGE_PROVIDER:-minio}
+  STORAGE_ID: ${STORAGE_ID:-}
+  STORAGE_DOWNLOAD_TTL_SECONDS: ${STORAGE_DOWNLOAD_TTL_SECONDS:-3600}
+  AZURE_STORAGE_ACCOUNT_URL: ${AZURE_STORAGE_ACCOUNT_URL:-}
+  AZURE_STORAGE_ACCOUNT_NAME: ${AZURE_STORAGE_ACCOUNT_NAME:-}
+  AZURE_STORAGE_ACCOUNT_KEY: ${AZURE_STORAGE_ACCOUNT_KEY:-}
   JWT_SECRET: ${JWT_SECRET:-replace-me}
+  # HMAC secret used to pseudonymize doctor ids in gold-standard exports.
+  EXPORT_HMAC_SECRET: ${EXPORT_HMAC_SECRET:-replace-me-too}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-clearsight}:${POSTGRES_PASSWORD:-clearsight}@postgres:5432/${POSTGRES_DB:-clearsight}
+  ML_SERVICE_URL: http://ml-service:8000
+  ML_API_TOKEN: ${ML_API_TOKEN:-}
+  ML_PUBLIC_HOST: minio:9000
+  CORS_ORIGIN: ${CORS_ORIGIN:-*}
 
 services:
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/migrate.Dockerfile
+    restart: "no"
+    environment: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - clearsight
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -54,12 +80,13 @@ services:
       - clearsight
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: cgr.dev/chainguard/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MC_HOST_health: http://${MINIO_ACCESS_KEY:-minioadmin}:${MINIO_SECRET_KEY:-minioadmin}@127.0.0.1:9000
     volumes:
       - minio-data:/data
     ports:
@@ -67,8 +94,11 @@ services:
       - "9001:9001"
     healthcheck:
       test:
-        - CMD-SHELL
-        - curl -sf http://localhost:9000/minio/health/live || exit 1
+        - CMD
+        - mc
+        - ping
+        - --exit
+        - health
       interval: 10s
       timeout: 5s
       retries: 5
@@ -114,6 +144,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mlflow:
@@ -128,11 +160,13 @@ services:
       context: .
       dockerfile: docker/worker.Dockerfile
     restart: unless-stopped
-    command: celery -A backend.app.workers.celery_app worker --loglevel=info
+    command: npm run worker
     environment: *backend-environment
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mlflow:
@@ -168,4 +202,5 @@ volumes:
 
 networks:
   clearsight:
-    driver: bridge
+    external: true
+    name: clearsight

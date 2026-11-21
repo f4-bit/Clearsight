@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 
 
 class StrictModel(BaseModel):
@@ -28,17 +30,22 @@ class JobStatus(str, Enum):
 
 
 class ClinicalFeatures(StrictModel):
-    Age: float
-    Gender: float
-    dioptre_1: float
-    dioptre_2: float
-    astigmatism: float
-    Phakic_Pseudophakic: float = Field(alias="Phakic/Pseudophakic")
-    Pneumatic: float
-    Perkins: float
-    Pachymetry: float
-    Axial_Length: float
-    VF_DM: float
+    Age: FiniteFloat
+    Gender: FiniteFloat
+    dioptre_1: FiniteFloat
+    dioptre_2: FiniteFloat
+    astigmatism: FiniteFloat
+    Phakic_Pseudophakic: FiniteFloat = Field(alias="Phakic/Pseudophakic")
+    Pneumatic: FiniteFloat
+    Perkins: FiniteFloat
+    Pachymetry: FiniteFloat
+    Axial_Length: FiniteFloat
+    VF_DM: FiniteFloat
+
+
+class ExpectedContext(StrictModel):
+    schema_version: str = Field(min_length=1)
+    fingerprint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class InferenceRequest(StrictModel):
@@ -47,6 +54,20 @@ class InferenceRequest(StrictModel):
     eye_side: EyeSide
     clinical_features: ClinicalFeatures
     model_version: str | None = None
+    expected_context: ExpectedContext | None = None
+
+
+class ClinicalSnapshotPrepareRequest(StrictModel):
+    clinical_features: ClinicalFeatures
+    requested_model_version: str | None = Field(default=None, min_length=1)
+
+
+class ClinicalSnapshotPrepareResponse(BaseModel):
+    rawCanonical: dict[str, Any]
+    normalizedPayload: dict[str, Any]
+    schemaVersion: str
+    modelVersions: dict[str, str]
+    contextFingerprintSha256: str
 
 
 class JobAccepted(BaseModel):

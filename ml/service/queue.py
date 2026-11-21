@@ -14,10 +14,21 @@ from ml.service.schemas import InferenceRequest, JobStatus
 
 
 def request_to_dict(request: InferenceRequest) -> dict[str, Any]:
-    return json.loads(request.model_dump_json())
+    # Serialize with aliases: ClinicalFeatures declares the field
+    # `Phakic_Pseudophakic` with alias `Phakic/Pseudophakic`; without
+    # by_alias the round-trip through request_from_dict fails validation.
+    return json.loads(request.model_dump_json(by_alias=True))
 
 
 def request_from_dict(payload: dict[str, Any]) -> InferenceRequest:
+    # Accept legacy payloads that were stored with the field name instead of
+    # the alias (extra="forbid" would otherwise reject them).
+    features = payload.get("clinical_features")
+    if isinstance(features, dict) and "Phakic_Pseudophakic" in features:
+        normalized = dict(features)
+        legacy = normalized.pop("Phakic_Pseudophakic")
+        normalized.setdefault("Phakic/Pseudophakic", legacy)
+        payload = {**payload, "clinical_features": normalized}
     return InferenceRequest.model_validate(payload)
 
 
@@ -70,6 +81,7 @@ class InMemoryJobQueue(JobQueue):
         return self.states.get(str(job_id))
 
     async def start(self, pipeline: InferencePipeline) -> None:
+        pipeline.artifact_store.ensure_storage()
         self.worker_task = asyncio.create_task(self._worker(pipeline))
 
     async def close(self) -> None:
@@ -142,6 +154,7 @@ class RedisJobQueue(JobQueue):
         return json.loads(payload) if payload else None
 
     async def start(self, pipeline: InferencePipeline) -> None:
+        pipeline.artifact_store.ensure_storage()
         self.worker_task = asyncio.create_task(self._worker(pipeline))
 
     async def close(self) -> None:
@@ -167,9 +180,30 @@ class RedisJobQueue(JobQueue):
             if item is None:
                 continue
             _, payload = item
-            request = request_from_dict(json.loads(payload))
 
             loop = asyncio.get_running_loop()
+
+            try:
+                request = request_from_dict(json.loads(payload))
+            except Exception as error:
+                # Never let one malformed job kill the consumer task: mark it
+                # failed (if we can identify it) and keep draining the queue.
+                try:
+                    raw = json.loads(payload)
+                    raw_id = raw.get(
+                        "inference_id",
+                        "00000000-0000-0000-0000-000000000000",
+                    )
+                    job_id = UUID(str(raw_id))
+                except Exception:
+                    job_id = UUID("00000000-0000-0000-0000-000000000000")
+                await self._update_state(
+                    job_id,
+                    status=JobStatus.FAILED.value,
+                    stage=JobStatus.FAILED.value,
+                    message=f"invalid job payload: {error}",
+                )
+                continue
 
             def stage_callback(stage: str) -> None:
                 asyncio.run_coroutine_threadsafe(

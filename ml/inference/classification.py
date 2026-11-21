@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -14,11 +15,54 @@ CLASS_NAMES = ("Glaucoma", "Non_Glaucoma", "Suspicious_Glaucoma")
 CLINICAL_EPSILON = 1e-8
 
 
+@dataclass(frozen=True)
+class ResolvedClinicalParameters:
+    """Effective normalization parameters captured from the loaded runner.
+
+    ``mean_source``/``std_source`` describe where the whole vector came from
+    (the current settings semantics are all-or-nothing: an override supplies
+    the complete list, otherwise the manifest is used). The values are copied
+    so later mutation of ``Settings`` or the manifest cannot change a runner.
+    """
+
+    feature_names: tuple[str, ...]
+    mean: tuple[float, ...]
+    std: tuple[float, ...]
+    mean_source: str
+    std_source: str
+
+
+def resolve_clinical_parameters(
+    settings: Settings,
+    manifest: dict[str, Any],
+) -> ResolvedClinicalParameters:
+    """Resolve the same parameters both classifier backends use in predict."""
+
+    feature_names = tuple(manifest["clinical_features"])
+    mean_source = "env" if settings.clinical_mean else "manifest"
+    std_source = "env" if settings.clinical_std else "manifest"
+    clinical_mean = settings.clinical_mean or manifest.get("clinical_mean")
+    clinical_std = settings.clinical_std or manifest.get("clinical_std")
+    if not clinical_mean or not clinical_std:
+        raise RuntimeError("clinical_mean and clinical_std are required")
+    if len(clinical_mean) != len(feature_names):
+        raise RuntimeError("clinical_mean length does not match feature schema")
+    if len(clinical_std) != len(feature_names):
+        raise RuntimeError("clinical_std length does not match feature schema")
+    return ResolvedClinicalParameters(
+        feature_names=feature_names,
+        mean=tuple(float(value) for value in clinical_mean),
+        std=tuple(float(value) for value in clinical_std),
+        mean_source=mean_source,
+        std_source=std_source,
+    )
+
+
 def normalize_clinical_features(
     features: dict[str, float],
-    clinical_features: tuple[str, ...],
-    clinical_mean: list[float],
-    clinical_std: list[float],
+    clinical_features: Sequence[str],
+    clinical_mean: Sequence[float],
+    clinical_std: Sequence[float],
 ) -> np.ndarray:
     if len(clinical_mean) != len(clinical_features):
         raise ValueError("clinical_mean length does not match feature schema")
@@ -43,6 +87,9 @@ class ClassifierPrediction:
 class ClassificationEngine(Protocol):
     """Structural interface shared by the PyTorch and ONNX classification runners."""
 
+    @property
+    def resolved_parameters(self) -> ResolvedClinicalParameters: ...
+
     def predict(
         self,
         image: np.ndarray,
@@ -62,17 +109,10 @@ class ClassificationRunner:
             raise RuntimeError("PyTorch did not detect a CUDA GPU")
         self.device = torch.device(settings.device)
         self.class_names = tuple(manifest["class_names"])
-        self.clinical_features = tuple(manifest["clinical_features"])
-        clinical_mean = settings.clinical_mean or manifest.get("clinical_mean")
-        clinical_std = settings.clinical_std or manifest.get("clinical_std")
-        if not clinical_mean or not clinical_std:
-            raise RuntimeError("clinical_mean and clinical_std are required")
-        if len(clinical_mean) != len(self.clinical_features):
-            raise RuntimeError("clinical_mean length does not match feature schema")
-        if len(clinical_std) != len(self.clinical_features):
-            raise RuntimeError("clinical_std length does not match feature schema")
-        self.clinical_mean: list[float] = [float(value) for value in clinical_mean]
-        self.clinical_std: list[float] = [float(value) for value in clinical_std]
+        self.parameters = resolve_clinical_parameters(settings, manifest)
+        self.clinical_features = self.parameters.feature_names
+        self.clinical_mean = self.parameters.mean
+        self.clinical_std = self.parameters.std
         self.models: dict[str, torch.nn.Module] = {}
         from ml.models.architecture import create_model, model_state_dict
 
@@ -85,6 +125,10 @@ class ClassificationRunner:
             )
             model.load_state_dict(model_state_dict(checkpoint), strict=True)
             self.models[model_type] = model.to(self.device).eval()
+
+    @property
+    def resolved_parameters(self) -> ResolvedClinicalParameters:
+        return self.parameters
 
     def _clinical_vector(self, features: dict[str, float]) -> torch.Tensor:
         normalized = normalize_clinical_features(

@@ -8,6 +8,9 @@ from ml.config import Settings
 
 
 class ArtifactStore(Protocol):
+    def ensure_storage(self) -> None:
+        ...
+
     def upload_bytes(
         self,
         bucket: str | None,
@@ -20,6 +23,7 @@ class ArtifactStore(Protocol):
 
 class MinioArtifactStore:
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
         self.minio_required = settings.minio_required
         if settings.minio_required and not all(
             [
@@ -54,6 +58,22 @@ class MinioArtifactStore:
             region_name="us-east-1",
             config=Config(s3={"addressing_style": "path"}),
         )
+
+    def ensure_buckets(self) -> None:
+        if self.client is None:
+            return
+        from botocore.exceptions import ClientError
+        for bucket in [self.settings.mask_bucket, self.settings.overlay_bucket]:
+            if not bucket:
+                continue
+            try:
+                self.client.head_bucket(Bucket=bucket)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "404":
+                    self.client.create_bucket(Bucket=bucket)
+
+    def ensure_storage(self) -> None:
+        self.ensure_buckets()
 
     def upload_bytes(
         self,
@@ -114,6 +134,17 @@ class AzureBlobArtifactStore:
                 account_url=account_url,
                 credential=settings.minio_secret_key,
             )
+
+    def ensure_storage(self) -> None:
+        if self.client is None:
+            return
+        for container in [self.settings.mask_bucket, self.settings.overlay_bucket]:
+            if not container:
+                continue
+            if not self.client.get_container_client(container).exists():
+                raise RuntimeError(
+                    f"Azure Blob container is not available: {container}"
+                )
 
     def upload_bytes(
         self,

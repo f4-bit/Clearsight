@@ -1,0 +1,27 @@
+# Entornos y dependencias
+node_modules/
+.venv/
+venv/
+__pycache__/
+
+# Archivos de datos y modelos locales
+*.parquet
+*.csv
+*.json 
+*.gguf
+.ipynb_checkpoints/
+
+# Bases de datos locales
+*.sqlite
+*.db
+*.sqlite3
+
+# Compilados y builds
+dist/
+build/
+*.o
+*.out
+
+# Secretos y configuración de entorno
+.env
+.env.local
