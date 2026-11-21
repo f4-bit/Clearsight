@@ -22,6 +22,7 @@ export default defineConfig({
       "tests/clinical-access-migrations.test.ts",
       "tests/clinical-access.integration.test.ts",
       "tests/artifact-downloads.integration.test.ts",
+      "tests/artifact-publication.integration.test.ts",
       "tests/inference-creation.integration.test.ts",
       "tests/inference-idempotency.integration.test.ts",
       "tests/inference-dispatch.integration.test.ts",

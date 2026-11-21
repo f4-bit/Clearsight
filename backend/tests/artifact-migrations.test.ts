@@ -10,6 +10,7 @@ import { migrationNames, migrationSql } from "./helpers/migrations.js";
 const SCHEMA = "artifact_reports_rules";
 const MIGRATIONS = migrationNames();
 const ARTIFACT_MIGRATION = "20261118010000_artifact_reports";
+const DATA_VERSION_MIGRATION = "20261122000000_pdf_report_data_version_pending";
 const CHECKSUM = "a".repeat(64);
 
 const P = "00000000-0000-4000-8000-0000000002a1";
@@ -603,12 +604,20 @@ describe("migration B artifact and PDF persistence", () => {
     await expect(
       client.query("UPDATE pdf_reports SET model_versions = '{\"other\":\"v\"}'::jsonb WHERE id = $1", [R1]),
     ).rejects.toThrow(/identity and rendering inputs are immutable/);
-    await expect(
-      client.query("UPDATE pdf_reports SET rendering_inputs = '{\"changed\":true}'::jsonb WHERE id = $1", [R1]),
-    ).rejects.toThrow(/identity and rendering inputs are immutable/);
-    await expect(
-      client.query("UPDATE pdf_reports SET data_version = 'other' WHERE id = $1", [R1]),
-    ).rejects.toThrow(/identity and rendering inputs are immutable/);
+    // D1 correction: data_version and rendering_inputs may be replaced only
+    // while PENDING (a repaired retry refreshes provenance before AVAILABLE).
+    await client.query("UPDATE pdf_reports SET rendering_inputs = '{\"changed\":true}'::jsonb WHERE id = $1", [R1]);
+    await client.query("UPDATE pdf_reports SET data_version = 'other-pending' WHERE id = $1", [R1]);
+    const afterPendingData = await client.query(
+      "SELECT data_version, rendering_inputs FROM pdf_reports WHERE id = $1",
+      [R1],
+    );
+    expect(afterPendingData.rows).toEqual([
+      {
+        data_version: "other-pending",
+        rendering_inputs: { changed: true },
+      },
+    ]);
     await expect(
       client.query("UPDATE pdf_reports SET document_kind = 'gradcam' WHERE id = $1", [R1]),
     ).rejects.toThrow(/identity and rendering inputs are immutable/);
@@ -623,11 +632,21 @@ describe("migration B artifact and PDF persistence", () => {
     expect(failed.rowCount).toBe(1);
     const afterFailed = await client.query("SELECT status FROM pdf_reports WHERE id = $1", [R1]);
     expect(afterFailed.rows).toEqual([{ status: "FAILED" }]);
+    await expect(
+      client.query("UPDATE pdf_reports SET data_version = 'other-failed' WHERE id = $1", [R1]),
+    ).rejects.toThrow(/data_version and rendering_inputs can only change while the report remains PENDING/);
+    await expect(
+      client.query("UPDATE pdf_reports SET rendering_inputs = '{\"failed\":true}'::jsonb WHERE id = $1", [R1]),
+    ).rejects.toThrow(/data_version and rendering_inputs can only change while the report remains PENDING/);
 
     const pending = await client.query("UPDATE pdf_reports SET status = 'PENDING' WHERE id = $1", [R1]);
     expect(pending.rowCount).toBe(1);
     const afterPending = await client.query("SELECT status FROM pdf_reports WHERE id = $1", [R1]);
     expect(afterPending.rows).toEqual([{ status: "PENDING" }]);
+    await client.query(
+      "UPDATE pdf_reports SET data_version = 'other-pending-2', rendering_inputs = '{\"pending\":true}'::jsonb WHERE id = $1",
+      [R1],
+    );
 
     await expect(
       client.query("UPDATE pdf_reports SET status = 'AVAILABLE' WHERE id = $1", [R1]),
@@ -639,6 +658,12 @@ describe("migration B artifact and PDF persistence", () => {
     expect(published.rowCount).toBe(1);
     const afterPublished = await client.query("SELECT status, artifact_id FROM pdf_reports WHERE id = $1", [R1]);
     expect(afterPublished.rows).toEqual([{ status: "AVAILABLE", artifact_id: A1 }]);
+    await expect(
+      client.query("UPDATE pdf_reports SET data_version = 'other-available' WHERE id = $1", [R1]),
+    ).rejects.toThrow(/published PDF reports are immutable/);
+    await expect(
+      client.query("UPDATE pdf_reports SET rendering_inputs = '{\"available\":true}'::jsonb WHERE id = $1", [R1]),
+    ).rejects.toThrow(/published PDF reports are immutable/);
 
     await expect(
       client.query("UPDATE pdf_reports SET artifact_id = NULL WHERE id = $1", [R1]),
@@ -718,6 +743,96 @@ describe("migration B artifact and PDF persistence", () => {
     await expect(client.query("DELETE FROM pdf_reports WHERE id = $1", [R1])).rejects.toThrow(
       /published PDF reports cannot be deleted/,
     );
+  });
+
+  it("replays the corrective pending-content migration without changing rows or weakening guards", async () => {
+    await seedBase();
+    await insertArtifact(A1, I1, "pdf", { status: "PENDING" });
+    await insertPdfReport(R1, I1, {
+      version: 1,
+      sourceSnapshotId: S1,
+      artifactId: A1,
+      status: "PENDING",
+      dataVersion: "pdfv1:pending-placeholder",
+    });
+
+    const before = await client.query(
+      "SELECT id, version, artifact_id, status, data_version, rendering_inputs FROM pdf_reports ORDER BY id",
+    );
+
+    // The corrective migration is idempotent (CREATE OR REPLACE FUNCTION +
+    // DROP TRIGGER IF EXISTS): replaying it changes nothing.
+    await expect(client.query(migrationSql(DATA_VERSION_MIGRATION))).resolves.toBeDefined();
+    await expect(client.query(migrationSql(DATA_VERSION_MIGRATION))).resolves.toBeDefined();
+
+    const after = await client.query(
+      "SELECT id, version, artifact_id, status, data_version, rendering_inputs FROM pdf_reports ORDER BY id",
+    );
+    expect(after.rows).toEqual(before.rows);
+
+    // Guards survive the replay: data_version changes only PENDING -> PENDING.
+    await client.query("UPDATE pdf_reports SET data_version = 'pdfv1:replaced' WHERE id = $1", [
+      R1,
+    ]);
+    await client.query(
+      "UPDATE pdf_reports SET rendering_inputs = '{\"replaced\":true}'::jsonb WHERE id = $1",
+      [R1],
+    );
+    const replaced = await client.query(
+      "SELECT data_version, rendering_inputs FROM pdf_reports WHERE id = $1",
+      [R1],
+    );
+    expect(replaced.rows).toEqual([
+      {
+        data_version: "pdfv1:replaced",
+        rendering_inputs: { replaced: true },
+      },
+    ]);
+
+    const failed = await client.query(
+      "UPDATE pdf_reports SET status = 'FAILED' WHERE id = $1",
+      [R1],
+    );
+    expect(failed.rowCount).toBe(1);
+    await expect(
+      client.query("UPDATE pdf_reports SET data_version = 'pdfv1:illegal' WHERE id = $1", [R1]),
+    ).rejects.toThrow(/data_version and rendering_inputs can only change while the report remains PENDING/);
+    await expect(
+      client.query(
+        "UPDATE pdf_reports SET rendering_inputs = '{\"changed\":true}'::jsonb WHERE id = $1",
+        [R1],
+      ),
+    ).rejects.toThrow(/data_version and rendering_inputs can only change while the report remains PENDING/);
+
+    // Other identity fields remain immutable after the replay.
+    await expect(
+      client.query("UPDATE pdf_reports SET document_kind = 'gradcam' WHERE id = $1", [R1]),
+    ).rejects.toThrow(/identity and rendering inputs are immutable/);
+
+    // AVAILABLE stays immutable after the replay as well.
+    const repended = await client.query(
+      "UPDATE pdf_reports SET status = 'PENDING' WHERE id = $1",
+      [R1],
+    );
+    expect(repended.rowCount).toBe(1);
+    await client.query(
+      "UPDATE artifact_records SET status = 'AVAILABLE', storage_id = 'azure-blob-default', bucket_or_container = 'artifacts', key = 'inference/artifact.bin', content_type = 'application/pdf', size_bytes = 123, checksum_sha256 = $2, available_at = now() WHERE id = $1",
+      [A1, CHECKSUM],
+    );
+    const published = await client.query(
+      "UPDATE pdf_reports SET status = 'AVAILABLE', artifact_id = $2, available_at = now() WHERE id = $1",
+      [R1, A1],
+    );
+    expect(published.rowCount).toBe(1);
+    await expect(
+      client.query("UPDATE pdf_reports SET data_version = 'pdfv1:illegal-available' WHERE id = $1", [R1]),
+    ).rejects.toThrow(/published PDF reports are immutable/);
+    await expect(
+      client.query(
+        "UPDATE pdf_reports SET rendering_inputs = '{\"available\":true}'::jsonb WHERE id = $1",
+        [R1],
+      ),
+    ).rejects.toThrow(/published PDF reports are immutable/);
   });
 
   it("rejects deleting inference evidence while preserving the legacy cascade", async () => {

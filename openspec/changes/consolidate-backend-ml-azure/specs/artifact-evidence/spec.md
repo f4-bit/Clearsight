@@ -244,7 +244,7 @@ Una cadena sin esquema MUST interpretarse de forma determinista sin consultar la
 
 ### Requirement: Reintento de publicación sin reinferir y consistencia con almacenamiento
 
-El sistema SHALL permitir reintentar la publicación de artefactos o la generación de PDF sin reinferir cuando el resultado sea recuperable e inmutable. El sistema MUST reconciliar el estado entre almacenamiento y base de datos: si el upload tiene éxito y falla la persistencia, MUST registrar o limpiar el huérfano de forma controlada; si la base de datos referencia un objeto ausente, MUST marcarlo como inconsistencia. Las órdenes de borrado MUST afectar solo objetos creados por la propia ejecución y MUST NOT borrar objetos ajenos o compartidos. Si el almacenamiento no está disponible, el sistema MUST reintentar de forma acotada y MUST terminar en un estado explícito de fallo o pendiente, sin éxito silencioso.
+El sistema SHALL permitir reintentar la publicación de artefactos o la generación de PDF sin reinferir cuando el resultado sea recuperable e inmutable. El sistema MUST reconciliar el estado entre almacenamiento y base de datos: si el upload tiene éxito y falla la persistencia, MUST registrar o limpiar el huérfano de forma controlada; si la base de datos referencia un objeto ausente, MUST marcarlo como inconsistencia. Las órdenes de borrado MUST afectar solo objetos creados por la propia ejecución y MUST NOT borrar objetos ajenos o compartidos. Si el almacenamiento no está disponible, el sistema MUST reintentar de forma acotada y MUST terminar en un estado explícito de fallo o pendiente, sin éxito silencioso. La publicación SHALL resolver la ubicación de `mask`/`overlay`/`pdf` mediante el seam compartido (parser 3.3 + lectura de storage) y MUST registrar `ArtifactRecord` con tamaño/checksum/estado, verificando el objeto y reconciliando huérfanos/ausentes. El bucket/contenedor de mask/overlay/pdf MUST estar en una allowlist configurable y el sistema MUST fallar cerrado si falta. Un artefacto ML key-only sin URI MUST quedar `FAILED`; el sistema MUST NOT inventar su ubicación. La publicación MUST ejecutarse antes del CAS del resultado terminal para no bloquear el resultado clínico por storage, y el reintento SHALL ejecutarse en un reconciliador o fase separada, fuera del processor terminal, sin reinferir ni depender del short-circuit terminal. La transición del par `ArtifactRecord` PDF + `PdfReport` a `AVAILABLE` MUST ser atómica: si el reporte no puede pasar a `AVAILABLE`, el artifact MUST NOT quedar `AVAILABLE`; la transacción MUST hacer rollback o dejar el par en un estado no publicado seguro.
 
 #### Scenario: Upload correcto y fallo de persistencia
 
@@ -269,6 +269,31 @@ El sistema SHALL permitir reintentar la publicación de artefactos o la generaci
 - **WHEN** se limpia un artefacto huérfano de una ejecución
 - **THEN** el sistema borra solo la key registrada para esa ejecución
 - **AND** no borra prefijos, buckets completos ni objetos de otras ejecuciones.
+
+#### Scenario: Bucket no permitido o ausente
+
+- **WHEN** el bucket/contenedor de mask/overlay/pdf no está en la allowlist configurable
+- **THEN** la publicación falla cerrado con un estado explícito
+- **AND** no se inventa ni se usa un bucket alternativo.
+
+#### Scenario: Artefacto ML key-only sin URI
+
+- **WHEN** el resultado ML referencia un artefacto solo por key, sin URI resoluble
+- **THEN** el `ArtifactRecord` correspondiente queda `FAILED`
+- **AND** no se reconstruye una ubicación ficticia.
+
+#### Scenario: Publicación antes del CAS y reintento fuera del terminal
+
+- **WHEN** se va a persistir el resultado clínico terminal y la publicación aún no terminó
+- **THEN** la publicación se intenta antes del CAS y, si falla, se reintenta en un reconciliador/fase separada
+- **AND** no se vuelve a llamar al ML ni se depende del short-circuit terminal.
+
+#### Scenario: El par PDF no queda medio publicado
+
+- **WHEN** el `PdfReport` no puede pasar a `AVAILABLE` en la misma transacción que publica su `ArtifactRecord` PDF
+- **THEN** la transacción hace rollback y el artifact no queda `AVAILABLE`
+- **AND** el sistema no expone un artifact `AVAILABLE` con un reporte `FAILED`
+- **AND** el perdedor de un finalize concurrente refresca y devuelve el `AVAILABLE` del ganador sin marcar FAILED al ganador.
 
 ### Requirement: Explicabilidad diferida explícita
 

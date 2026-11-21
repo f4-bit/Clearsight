@@ -53,6 +53,12 @@ npm run dev
 - Tests herméticos: dobles de SDK, firma real offline con cuentas/claves sintéticas y MinIO con comandos/reloj fake; no requieren Azure real, Azurite ni Docker. La firma Azure no crea/modifica/destruye recursos.
 - **QA final 3.2 PASSED:** focus storage **2 files / 36 tests** (35 + 1 QA), unit completo **33 files / 473 tests** (472 + 1 QA), integración focal **3 files / 41 tests** re-ejecutada final, `typecheck` **0**, `build` **0** reutilizado del mismo source, audit **13** baseline **13** (8 moderate, 5 high; delta 0, sin advisory Azure). `3.2` queda `[x]`; `3.8` sigue `[ ]` parcial y depende de `3.4`.
 
+### Artifact content seam (6.1/3.5)
+
+- `backend/src/services/artifact-content.ts` expone `loadArtifactBytes(reference, kind)` y `describeArtifactBytes(bytes[, contentType])`. Resuelve `s3://`/`azure://`, `bucket/key` y key-only legacy mediante el parser 3.3 y `StorageService.getObjectStream`; nunca firma URLs ni las escribe en logs/DB. El kind `image` usa `MINIO_BUCKET_RAW` para la original y no se publica como `ArtifactRecord`.
+- `MINIO_BUCKET_MASK`, `MINIO_BUCKET_OVERLAY` y `MINIO_BUCKET_PDF` son los defaults de key-only por tipo. Son opcionales: si el bucket del tipo falta o no está en la allowlist (`STORAGE_ALLOWED_BUCKETS` explícita o defaults configurados), la carga falla cerrada. `ARTIFACT_CONTENT_MAX_BYTES` (default 25 MiB) acota la lectura; un exceso devuelve `artifact_content_too_large`.
+- Errores tipados y seguros (`ArtifactContentError`) sin eco de referencia, bucket, key ni detalles del SDK. `describeArtifactBytes` calcula `size`/`checksumSha256` y detecta `application/pdf`, `image/png` o `image/jpeg` por magic bytes.
+
 ## Bootstrap del primer administrador
 
 El alta pública `POST /auth/register` está **retirada** y responde `410 Gone`: no acepta

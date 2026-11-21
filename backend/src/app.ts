@@ -19,6 +19,7 @@ import { registerGenericNotFoundHandler } from "./lib/not-found-handler.js";
 import { prisma as defaultPrisma, type PrismaClient } from "./lib/prisma.js";
 import { createRepositories } from "./repositories/index.js";
 import type { ArtifactReadRepository } from "./repositories/artifact.repo.js";
+import { createArtifactPublicationRepository } from "./repositories/artifact-publication.repo.js";
 import { adminRoutes } from "./routes/admin.js";
 import { artifactRoutes } from "./routes/artifacts.js";
 import { authRoutes } from "./routes/auth.js";
@@ -247,6 +248,8 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     now: deps?.now,
   });
   const repositories = createRepositories(prisma);
+  const artifactPublicationRepository =
+    createArtifactPublicationRepository(prisma);
 
   // 3. Swagger / OpenAPI documentation
   await app.register(fastifySwagger, {
@@ -403,6 +406,7 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
     authService,
     artifactReadRepository:
       deps?.artifactReadRepository ?? repositories.artifacts,
+    artifactPublicationRepository,
     storage: deps?.storage,
   });
   // Clinical feedback + gold-standard export (paths: /feedback, /export/gold-standard)

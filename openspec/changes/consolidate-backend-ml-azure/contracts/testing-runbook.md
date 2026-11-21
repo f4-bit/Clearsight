@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -651,6 +651,22 @@
 
 **Criterio de salida:** QA PASSED con evidencia; 4.9 `[x]`. Sin cierre de REG-002/003/004 ni edición de `defects/regressions.md`.
 
+## 1.39 Registro HITO27/28 - preparación documental PDF/publicación/agregación (sin ejecución)
+
+> **Naturaleza:** solo documentación sobre la base `67942a1`. **No se modificó source, no se ejecutaron pruebas, no se generó PDF real, no se usó Azure/`.env`, modelos ni commit.** D28/D29 y ADR-067..075 quedan registradas; 6.1/6.2/3.5/3.6/2.3/2.4/2.5/2.6/4.10 siguen `[ ]` hasta `arquitectovalidate` y QA por etapa.
+
+| Elemento | Registro |
+|---|---|
+| Base | `67942a1`; rama `feat/backend-ml-consolidation`. |
+| Documentos | `design.md` D28/D29 + ADR-067..075 + riesgos; `specs/clinical-pdf-report/spec.md`, `specs/clinical-case-execution/spec.md`, `specs/artifact-evidence/spec.md`; `tasks.md` (notas en 2.3/2.4/2.5/2.6/3.5/3.6/4.10/6.1/6.2); `contracts/frontend-api-contract.md`; este runbook §1.39/§4.13/§10. |
+| D28 (HITO27) | 6.1 renderer puro `pdf-report.ts` + seam `artifact-content.ts`; `pdf-lib` runtime, `sharp` sin EXIF, parser solo test; mask/overlay desde `Inference.artifacts`, nunca `gradcamPath`; falta ⇒ error tipado. 6.2 `PdfReport`+`ArtifactRecord` idempotente/versionado con `sourceSnapshotId` obligatorio y reutilización de 3.4. 3.5 allowlist de buckets y reconciliación; key-only ML ⇒ `FAILED`. 3.6 reintento fuera del terminal y publicación antes del CAS. Migración correctiva D1 `20261122000000_pdf_report_data_version_pending` (`data_version`+`rendering_inputs` solo PENDING→PENDING; sin tablas/columnas). QA PASSED en §4.13/§4.14. |
+| D29 (HITO28) | 2.3 agregación pura con lectura batch y precedencia exacta, sin enum DB; 2.6 expone en `GET /consultations/:id`; 2.5 freeze explícito en una TX; 2.4 cierre/entrega + PDF 6.3; 4.10 polling/`Retry-After`/entrega posterior a `COMPLETED`. |
+| Decisiones clave | Seam compartido sin URLs firmadas en logs/DB; renderer sin DB/storage writes; PHI fuera del PDF (IDs pseudónimos, `externalCode` excluido); `renderingInputs` sin `://`/firma; `dataVersion`/`requiredSetVersion` deterministas (`pdfv1:`/`rsv1:` + SHA-256 hex); versión PDF más alta sin `latest` en descarga; fail closed si falta bucket; no inventar ubicación key-only. |
+| Riesgos registrados | PHI en PDF, EXIF re-encode, tamaño/límites, constraints `PdfReport`/`ArtifactRecord`, bucket PDF ausente en Azure deploy, key-only ML, elección de versión `pdfStatus`. |
+| Límites | Sin source, pruebas, Azure, PDF real, modelos, migraciones históricas, `defects/regressions.md` ni commit. Tareas `[ ]`. |
+
+**Actualización ETAPA A + 6.2/3.5:** D28 validado por arquitecto (`--strict 0`); seam, renderer, publicación y `/reports` implementados. **6.1/6.2/3.5 QA PASSED y `[x]`.** Evidencia y conteos en §4.13/§4.14.
+
 ## 2. Fase 0 — Entorno, versiones y smoke mínimo
 
 **Objetivo:** confirmar toolchain y contexto sin importar código pesado, sin levantar servicios y sin leer secretos.
@@ -1043,6 +1059,50 @@ npm --prefix backend run build
 
 **Criterio de salida:** QA PASSED con evidencia; 4.6/4.7/4.8 quedan `[x]`. REG-002/003/004 siguen sin cierre humano.
 
+### 4.13 Fase específica HITO27/28 - PDF/publicación (6.1/6.2/3.5 QA PASSED)
+
+**Estado:** **QA PASSED.** 6.1/6.2/3.5 quedan `[x]`; 3.6/2.3/2.4/2.5/2.6/4.10 siguen FUTURO. Sin Azure/`.env`, PDF real de producción, modelos ni commit.
+
+**Resultados:** 6.1 QA previo: seam/pdf-report **6 files / 131 tests**, `typecheck` **0**. 6.2/3.5: unit publication/content/pdf-report **3 files / 67 tests**; integración publication **1 file / 20 tests** (incluye `QA gap coverage` y perdedor concurrente); `artifact-migrations` **1/29**; `migrations` **1/28**; regresión 3.4 `artifact-downloads` **1/24**; `typecheck` **0**; `build` **0**. Migración correctiva `20261122000000_pdf_report_data_version_pending`: `data_version` y `rendering_inputs` mutables **solo PENDING→PENDING**. **D1:** retry retryable reutiliza `reportId`/`version=1` y refresca hash real + checksums/tamaños sin `failureCode`. **D2:** `finalizePdfAvailable` exige `report.update.count=1` en la TX; 0 ⇒ rollback del par; el perdedor refresca y devuelve el `AVAILABLE` del ganador sin FAILED. Fixture PENDING con metadata NULL.
+
+**Objetivo:** verificar 6.1/6.2/3.5/3.6 y 2.3/2.4/2.5/2.6/4.10 con foco, sin Azure/`.env`, PDF real de producción, modelos ni suite completa.
+
+**Precondiciones:** D28/D29 y ADR-067..075 revisadas; deps `pdf-lib` runtime/`pdfjs-dist` dev aprobadas y `sharp` disponible; DB owned/aislada para freeze/agregados; buckets mask/overlay/pdf configurados en allowlist o prueba negativa fail closed; sin Azure/`.env`, PHI real, DB compartida ni commit.
+
+**Comandos ejecutados:**
+
+```powershell
+npm --prefix backend run test:unit -- tests/unit/artifact-publication.test.ts tests/unit/artifact-content.test.ts tests/unit/pdf-report.test.ts
+npm --prefix backend run test:integration -- tests/artifact-publication.integration.test.ts
+npm --prefix backend run test:integration -- tests/artifact-migrations.test.ts
+npm --prefix backend run test:integration -- tests/migrations.test.ts
+npm --prefix backend run test:integration -- tests/artifact-downloads.integration.test.ts
+npm --prefix backend run typecheck
+npm --prefix backend run build
+```
+
+**Comandos pendientes (no ejecutados):**
+
+```powershell
+npm --prefix backend run test:integration -- tests/consultation-completion.integration.test.ts
+```
+
+**Casos mínimos restantes:** agregación batch con precedencia exacta y sin enum DB; freeze con IDs existentes/duplicados/ajenos/tras freeze y sin tocar `consultation.status`; `GET /consultations/:id` con agregados; polling/`Retry-After`/entrega posterior a `COMPLETED`; 3.6 reintento sin reinferir fuera del terminal; versión nueva por feedback/regeneración 6.3+/futuro.
+
+**Allowlists:** `tests/artifact-publication.integration.test.ts` añadido a `vitest.integration.config.ts` y a `INTEGRATION_INCLUDE` de `tests/unit/runner-isolation.test.ts`. Los unit nuevos entran por `tests/unit/**/*.test.ts`.
+
+**Stop:** si el test exige Azure/`.env`, PDF real de producción, modelos, DB compartida, PHI real, migración histórica o source antes de `arquitectovalidate`.
+
+**Criterio de salida:** QA PASSED con evidencia; 6.1/6.2/3.5 `[x]`.
+
+### 4.14 Cierre QA HITO27/28 - 6.1/6.2/3.5 PASSED
+
+**Estado:** **QA PASSED.** Cierre documental; no se editaron source/tests ni se re-ejecutaron suites en este cierre. Sin Azure/`.env`, PDF real de producción, ML/modelos ni commit.
+
+**Evidencia de cierre:** 6.1 seam/pdf-report **6 files / 131 tests** + `typecheck` **0** (QA previo). 6.2/3.5 unit publication/content/pdf-report **3 files / 67 tests**; integración publication **1/20**; artifact-migrations **1/29**; migrations **1/28**; artifact-downloads **1/24** (regresión 3.4); `typecheck`/`build` **0**. D1/D2 PASSED con la migración correctiva `20261122000000_pdf_report_data_version_pending` y finalize atómico.
+
+**Límites:** versión nueva por feedback/regeneración queda **6.3+/futuro**; **3.6** reintento de publicación (extensión del reconciliador) pendiente; **6.3/6.4** pendientes; **REG-004 no resuelto** (cierre humano). Frontend: `GET /inferences/:id/reports` y `/:version/url` implementados para owner/grant `readPdf` con `ReportVersion`; sin exposición fuera de `readPdf`.
+
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
 **Objetivo:** probar integración local de DB/cola/storage sin tocar recursos ajenos.
@@ -1279,6 +1339,8 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | Unit 4.6-4.8: reconciler/failed-handler/processor/queue-options/worker + runner-isolation | **CURRENT QA PASSED (HITO26)** | 4.7/4.8 **5 files / 65**; H1/H2 **2 files / 55**; 4.6 **6 files / 96** (82+14 QA); sin Redis real. |
 | Integración 4.6-4.8: dispatch + worker con PostgreSQL real | **CURRENT QA PASSED (HITO26)** | 4.7/4.8 **3 files / 46**; 4.6 **4 files / 56** (50+6 QA); Testcontainers/DB aislada, sin Redis/Azure. |
 | 4.9: unit inference-run-repo/processor + integración repositories | **CURRENT QA PASSED** | Unit **2 files / 46**; integración **1 file / 23**; `typecheck`/`build` **0**. |
+| Foco HITO27: `pdf-report`/`artifact-content`/publicación unit+integración | **QA PASSED** | 6.1 unit **6/131** + typecheck 0; 6.2/3.5 unit **3/67**, publication **20**, artifact-migrations **29**, migrations **28**, artifact-downloads **24**, build 0. Sin Azure/`.env`, PDF real de producción ni modelos. |
+| Foco HITO28: `consultation-completion`/freeze/agregados/polling unit+integración | FUTURO (no ejecutado) | Depende de 3.5 (QA PASSED) y DB aislada; sin enum DB persistido ni fuente antes de validación. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

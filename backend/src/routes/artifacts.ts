@@ -12,6 +12,7 @@ import {
 import type { PrismaClient } from "../lib/prisma.js";
 import { authenticate } from "../middleware/auth.js";
 import type { ArtifactReadRepository } from "../repositories/artifact.repo.js";
+import type { ArtifactPublicationRepository } from "../repositories/artifact-publication.repo.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import {
   ArtifactListQuerySchema,
@@ -19,7 +20,9 @@ import {
   ArtifactType,
   ArtifactUrlQuerySchema,
   ArtifactUrlSchema,
+  ReportVersionListSchema,
   type ArtifactRef,
+  type ReportVersion,
 } from "../schemas/inference.js";
 import {
   mapArtifactRecordToRef,
@@ -50,6 +53,7 @@ export interface ArtifactRoutesOptions {
   access: ClinicalAccessService;
   authService: Pick<AuthSessionService, "verifySession">;
   artifactReadRepository: ArtifactReadRepository;
+  artifactPublicationRepository: ArtifactPublicationRepository;
   /** Trusted storage seam; defaults to the backward-compatible facade. */
   storage?: ArtifactStoragePort;
 }
@@ -215,7 +219,12 @@ export const artifactRoutes: FastifyPluginAsync<ArtifactRoutesOptions> = async (
   app,
   opts,
 ) => {
-  const { prisma, access, artifactReadRepository } = opts;
+  const {
+    prisma,
+    access,
+    artifactReadRepository,
+    artifactPublicationRepository,
+  } = opts;
   const storage = opts.storage ?? StorageService;
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
 
@@ -284,6 +293,143 @@ export const artifactRoutes: FastifyPluginAsync<ArtifactRoutesOptions> = async (
     },
   );
 
+  async function issueArtifactUrl(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    artifactType: ArtifactType,
+    version: number,
+  ): Promise<FastifyReply> {
+    const inferenceId = (request.params as { id: string }).id;
+    const subject = subjectFromRequest(request);
+
+    try {
+      const scope = await access.getArtifactReadScope(subject, inferenceId);
+      if (!scope.allowedTypes.includes(artifactType)) {
+        throw notFound("Artifact");
+      }
+
+      const row = await artifactReadRepository.findExact(
+        inferenceId,
+        artifactType,
+        version,
+      );
+      if (row === null) {
+        throw notFound("Artifact");
+      }
+      const reference = toReference(row);
+
+      let reportVersion: number | null = null;
+      if (artifactType === "pdf") {
+        const report = await artifactReadRepository.findPublishedPdfReport(
+          inferenceId,
+          row.version,
+          row.id,
+          scope.inference.snapshotId,
+        );
+        reportVersion = report?.version ?? null;
+        if (reference.status === "AVAILABLE" && report === null) {
+          await recheckFreshAccess(
+            request,
+            subject,
+            access,
+            opts.authService,
+            inferenceId,
+            artifactType,
+          );
+          await auditIncident(prisma, {
+            actorUserId: subject.id,
+            artifactId: row.id,
+            action: REPORT_NOT_AVAILABLE_ACTION,
+            reasonCode: REPORT_NOT_AVAILABLE_REASON,
+          });
+          throw conflict("Published PDF report is unavailable");
+        }
+      }
+
+      if (reference.status !== "AVAILABLE") {
+        return reply.send({
+          artifactType: reference.artifactType,
+          status: reference.status,
+          url: null,
+          expiresInSeconds: null,
+          contentType: null,
+          reportVersion,
+        });
+      }
+
+      // DTO and the structured 3.3 location are validated before the SDK.
+      const location = resolveRowLocation(reference, storage);
+      const ttl = storage.getDownloadTtlSeconds();
+      let url: string;
+      try {
+        url = await storage.getDownloadUrl(
+          location.bucketOrContainer,
+          location.key,
+          ttl,
+        );
+      } catch (error) {
+        if (
+          error instanceof StorageProviderError &&
+          error.code === "storage_object_missing"
+        ) {
+          await recheckFreshAccess(
+            request,
+            subject,
+            access,
+            opts.authService,
+            inferenceId,
+            artifactType,
+          );
+          await auditIncident(prisma, {
+            actorUserId: subject.id,
+            artifactId: row.id,
+            action: ARTIFACT_OBJECT_MISSING_ACTION,
+            reasonCode: STORAGE_OBJECT_MISSING_REASON,
+          });
+          throw conflict("Artifact object is unavailable");
+        }
+        throw serviceUnavailable(
+          "Artifact download is temporarily unavailable",
+        );
+      }
+
+      await recheckFreshAccess(
+        request,
+        subject,
+        access,
+        opts.authService,
+        inferenceId,
+        artifactType,
+      );
+
+      try {
+        await writeArtifactAudit(prisma, {
+          actorUserId: subject.id,
+          artifactId: row.id,
+          action: ARTIFACT_URL_AUDIT_ACTION,
+          outcome: "SUCCESS",
+          reasonCode: ARTIFACT_URL_REASON,
+        });
+      } catch {
+        throw serviceUnavailable("Artifact audit is unavailable");
+      }
+
+      return reply.send({
+        artifactType: reference.artifactType,
+        status: reference.status,
+        url,
+        expiresInSeconds: ttl,
+        contentType: reference.contentType,
+        reportVersion,
+      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        throw error;
+      }
+      throw serviceUnavailable("Artifact download is temporarily unavailable");
+    }
+  }
+
   typedApp.get(
     "/:id/artifacts/:type/url",
     {
@@ -305,6 +451,27 @@ export const artifactRoutes: FastifyPluginAsync<ArtifactRoutesOptions> = async (
     async (request, reply) => {
       const artifactType = parseArtifactType(request.params.type);
       const query = parseUrlQuery(request.query);
+      return issueArtifactUrl(request, reply, artifactType, query.version);
+    },
+  );
+
+  typedApp.get(
+    "/:id/reports",
+    {
+      onRequest: [noStore, authenticate],
+      schema: {
+        tags: ["Artifacts"],
+        summary: "List immutable PDF report versions",
+        params: z.object({ id: z.string().uuid() }),
+        response: {
+          200: ReportVersionListSchema,
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
       const subject = subjectFromRequest(request);
 
       try {
@@ -312,130 +479,59 @@ export const artifactRoutes: FastifyPluginAsync<ArtifactRoutesOptions> = async (
           subject,
           request.params.id,
         );
-        if (!scope.allowedTypes.includes(artifactType)) {
-          throw notFound("Artifact");
+        if (!scope.allowedTypes.includes("pdf")) {
+          throw notFound("Report");
         }
 
-        const row = await artifactReadRepository.findExact(
+        const rows = await artifactPublicationRepository.listPdfReports(
           request.params.id,
-          artifactType,
-          query.version,
         );
-        if (row === null) {
-          throw notFound("Artifact");
-        }
-        const reference = toReference(row);
-
-        let reportVersion: number | null = null;
-        if (artifactType === "pdf") {
-          const report = await artifactReadRepository.findPublishedPdfReport(
-            request.params.id,
-            row.version,
-            row.id,
-            scope.inference.snapshotId,
-          );
-          reportVersion = report?.version ?? null;
-          if (reference.status === "AVAILABLE" && report === null) {
-            await recheckFreshAccess(
-              request,
-              subject,
-              access,
-              opts.authService,
-              request.params.id,
-              artifactType,
-            );
-            await auditIncident(prisma, {
-              actorUserId: subject.id,
-              artifactId: row.id,
-              action: REPORT_NOT_AVAILABLE_ACTION,
-              reasonCode: REPORT_NOT_AVAILABLE_REASON,
-            });
-            throw conflict("Published PDF report is unavailable");
-          }
-        }
-
-        if (reference.status !== "AVAILABLE") {
-          return reply.send({
-            artifactType: reference.artifactType,
-            status: reference.status,
-            url: null,
-            expiresInSeconds: null,
-            contentType: null,
-            reportVersion,
-          });
-        }
-
-        // DTO and the structured 3.3 location are validated before the SDK.
-        const location = resolveRowLocation(reference, storage);
-        const ttl = storage.getDownloadTtlSeconds();
-        let url: string;
-        try {
-          url = await storage.getDownloadUrl(
-            location.bucketOrContainer,
-            location.key,
-            ttl,
-          );
-        } catch (error) {
-          if (
-            error instanceof StorageProviderError &&
-            error.code === "storage_object_missing"
-          ) {
-            await recheckFreshAccess(
-              request,
-              subject,
-              access,
-              opts.authService,
-              request.params.id,
-              artifactType,
-            );
-            await auditIncident(prisma, {
-              actorUserId: subject.id,
-              artifactId: row.id,
-              action: ARTIFACT_OBJECT_MISSING_ACTION,
-              reasonCode: STORAGE_OBJECT_MISSING_REASON,
-            });
-            throw conflict("Artifact object is unavailable");
-          }
-          throw serviceUnavailable(
-            "Artifact download is temporarily unavailable",
-          );
-        }
-
-        await recheckFreshAccess(
-          request,
-          subject,
-          access,
-          opts.authService,
-          request.params.id,
-          artifactType,
-        );
-
-        try {
-          await writeArtifactAudit(prisma, {
-            actorUserId: subject.id,
-            artifactId: row.id,
-            action: ARTIFACT_URL_AUDIT_ACTION,
-            outcome: "SUCCESS",
-            reasonCode: ARTIFACT_URL_REASON,
-          });
-        } catch {
-          throw serviceUnavailable("Artifact audit is unavailable");
-        }
-
-        return reply.send({
-          artifactType: reference.artifactType,
-          status: reference.status,
-          url,
-          expiresInSeconds: ttl,
-          contentType: reference.contentType,
-          reportVersion,
-        });
+        const items: ReportVersion[] = rows.map((row) => ({
+          reportId: row.id,
+          inferenceId: row.inferenceId,
+          version: row.version,
+          status: row.status as ReportVersion["status"],
+          immutable: row.status === "AVAILABLE",
+          createdAt: row.createdAt.toISOString(),
+          availableAt: row.availableAt?.toISOString() ?? null,
+          failureCode: row.artifact?.failureCode ?? null,
+        }));
+        return reply.send(items);
       } catch (error) {
         if (error instanceof HttpError) {
           throw error;
         }
-        throw serviceUnavailable("Artifact download is temporarily unavailable");
+        throw serviceUnavailable("Report list is temporarily unavailable");
       }
+    },
+  );
+
+  typedApp.get(
+    "/:id/reports/:version/url",
+    {
+      onRequest: [noStore, authenticate],
+      schema: {
+        tags: ["Artifacts"],
+        summary: "Get a fresh signed URL for a PDF report version",
+        params: z.object({ id: z.string().uuid(), version: z.string() }),
+        response: {
+          200: ArtifactUrlSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+          409: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const parsed = ArtifactUrlQuerySchema.safeParse({
+        version: request.params.version,
+      });
+      if (!parsed.success) {
+        throw badRequest("A positive artifact version is required");
+      }
+      return issueArtifactUrl(request, reply, "pdf", parsed.data.version);
     },
   );
 };

@@ -299,6 +299,50 @@ export const ArtifactUrlSchema = z
 
 export type ArtifactUrl = z.infer<typeof ArtifactUrlSchema>;
 
+export const PDF_REPORT_STATUSES = ["PENDING", "AVAILABLE", "FAILED"] as const;
+export const PdfReportStatus = z.enum(PDF_REPORT_STATUSES);
+export type PdfReportStatus = z.infer<typeof PdfReportStatus>;
+
+export const ReportVersionSchema = z
+  .object({
+    reportId: z.uuid(),
+    inferenceId: z.uuid(),
+    version: z.number().int().positive().max(ARTIFACT_VERSION_MAX),
+    status: PdfReportStatus,
+    immutable: z.boolean(),
+    createdAt: z.iso.datetime(),
+    availableAt: z.iso.datetime().nullable(),
+    failureCode: artifactFailureCode,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.status === "AVAILABLE" && value.availableAt === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["availableAt"],
+        message: "AVAILABLE reports require availableAt",
+      });
+    }
+    if (value.status !== "AVAILABLE" && value.availableAt !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["availableAt"],
+        message: "Only AVAILABLE reports carry availableAt",
+      });
+    }
+    if (value.status === "AVAILABLE" && value.failureCode !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["failureCode"],
+        message: "AVAILABLE reports cannot carry failureCode",
+      });
+    }
+  });
+
+export type ReportVersion = z.infer<typeof ReportVersionSchema>;
+
+export const ReportVersionListSchema = z.array(ReportVersionSchema);
+
 export const jobAcceptedSchema = z.object({
   inferenceId: z.string().uuid(),
   jobId: z.string(),

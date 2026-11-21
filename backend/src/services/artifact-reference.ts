@@ -17,6 +17,9 @@ export interface ArtifactReferenceEnv {
   STORAGE_ALLOWED_BUCKETS?: string | undefined;
   MINIO_BUCKET_RAW: string;
   MINIO_BUCKET_GRADCAM: string;
+  MINIO_BUCKET_MASK?: string | undefined;
+  MINIO_BUCKET_OVERLAY?: string | undefined;
+  MINIO_BUCKET_PDF?: string | undefined;
 }
 
 export interface ArtifactReferenceContext {
@@ -295,9 +298,21 @@ export function resolveAllowedBuckets(
   assertConfiguredBucket(provider, rawBucket);
   assertConfiguredBucket(provider, gradcamBucket);
 
+  // Mask/overlay/PDF defaults are additive when the operator configures them
+  // explicitly. An explicit STORAGE_ALLOWED_BUCKETS still wins and must contain
+  // the bucket a caller wants to use; no bucket is ever added implicitly.
+  const artifactBuckets = [
+    input.MINIO_BUCKET_MASK,
+    input.MINIO_BUCKET_OVERLAY,
+    input.MINIO_BUCKET_PDF,
+  ].filter(
+    (value): value is string =>
+      typeof value === "string" && value.trim().length > 0,
+  );
+
   let allowedBuckets: string[];
   if (input.STORAGE_ALLOWED_BUCKETS === undefined) {
-    allowedBuckets = dedupe([rawBucket, gradcamBucket]);
+    allowedBuckets = dedupe([rawBucket, gradcamBucket, ...artifactBuckets]);
   } else {
     const entries = input.STORAGE_ALLOWED_BUCKETS.split(",").map((entry) =>
       entry.trim(),

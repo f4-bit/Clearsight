@@ -58,7 +58,7 @@ El sistema SHALL permitir solicitar un reanálisis como una nueva ejecución enl
 
 ### Requirement: Selección explícita de ejecuciones requeridas y cambio tras cierre
 
-El sistema SHALL declarar por consulta una selección explícita de `requiredExecutionIds` y una `requiredSetVersion` (manifiesto) al iniciar el análisis. La selección puede cubrir uno (`OD` u `OS`) o ambos ojos; no se exige bilateralidad de forma universal. La completitud MUST evaluarse solo sobre esos IDs y MUST NOT usar “latest” automático. Un reanálisis no seleccionado MUST NOT cambiar la evidencia ni la completitud de una consulta cerrada. La promoción o reemplazo de un `requiredExecutionId` tras el cierre MUST NOT realizarse (B2 resuelto como restricción aprobada); la ejecución del reanálisis en sí no está bloqueada y conserva su PDF independiente. La consulta cerrada MUST NOT reabrirse ni ampliarse automáticamente y no se asume cierre retroactivo. Cualquier cambio futuro del conjunto requerido exigirá una nueva decisión de producto y una versión documentada antes de aplicarse.
+El sistema SHALL declarar por consulta una selección explícita de `requiredExecutionIds` y una `requiredSetVersion` (manifiesto) al iniciar el análisis. La selección puede cubrir uno (`OD` u `OS`) o ambos ojos; no se exige bilateralidad de forma universal. La completitud MUST evaluarse solo sobre esos IDs y MUST NOT usar “latest” automático. Un reanálisis no seleccionado MUST NOT cambiar la evidencia ni la completitud de una consulta cerrada. La promoción o reemplazo de un `requiredExecutionId` tras el cierre MUST NOT realizarse (B2 resuelto como restricción aprobada); la ejecución del reanálisis en sí no está bloqueada y conserva su PDF independiente. La consulta cerrada MUST NOT reabrirse ni ampliarse automáticamente y no se asume cierre retroactivo. Cualquier cambio futuro del conjunto requerido exigirá una nueva decisión de producto y una versión documentada antes de aplicarse. El freeze SHALL realizarse mediante una operación explícita `POST /consultations/:id/required-executions`: MUST verificar ownership, MUST recibir solo IDs existentes de la consulta y MUST escribir `requiredExecutionIds`, `requiredSetVersion` y `requiredSetFrozenAt` en una única transacción. MUST rechazar duplicados e IDs ajenos, MUST NOT modificar `consultation.status` y MUST NOT reabrir una consulta cerrada; tras el freeze, cualquier cambio MUST rechazarse (guard SQL existente).
 
 #### Scenario: Consulta con un solo ojo requerido
 
@@ -84,6 +84,18 @@ El sistema SHALL declarar por consulta una selección explícita de `requiredExe
 - **THEN** el sistema rechaza la transición con un bloqueo explícito
 - **AND** no marca retroactivamente la consulta como completa o incompleta.
 
+#### Scenario: Freeze por operación explícita
+
+- **WHEN** se invoca `POST /consultations/:id/required-executions` con IDs existentes de la consulta
+- **THEN** se fijan `requiredExecutionIds`, `requiredSetVersion` y `requiredSetFrozenAt` en una TX
+- **AND** no se modifica `consultation.status` ni se reabre una consulta cerrada.
+
+#### Scenario: ID duplicado, ajeno o cambio tras freeze
+
+- **WHEN** la operación recibe un ID duplicado o de otra consulta, o se intenta cambiar un conjunto ya congelado
+- **THEN** el sistema rechaza la operación
+- **AND** conserva el conjunto y la versión previamente congelados.
+
 ### Requirement: Separación entre estado de ejecución, etapa, artefacto y consulta
 
 El sistema SHALL separar estos conceptos: ejecución ML, etapa de pipeline, estado de artefacto, entrega de PDF y estado agregado de consulta. El estado de ejecución MUST usar el vocabulario `QUEUED`, `DOWNLOADING`, `LOCALIZING`, `SEGMENTING`, `CLASSIFYING`, `COMPLETED`, `REVIEW_REQUIRED`, `FAILED`. El sistema MUST NOT introducir un estado `PROCESSING` en el enum de base de datos sin migración. `COMPLETED` de ejecución MUST NOT equivaler a consulta completada ni a entrega completa; el estado de entrega y el agregado de consulta MUST ser campos separados.
@@ -102,7 +114,7 @@ El sistema SHALL separar estos conceptos: ejecución ML, etapa de pipeline, esta
 
 ### Requirement: Estado agregado de consulta con precedencia determinista
 
-El sistema SHALL calcular `analysisState`, `reportState`, `completionState` y `pollingStop` de la consulta como campos derivados y MUST NOT persistirlos como un enum nuevo de base de datos. `analysisState` MUST usar `OPEN`, `IN_PROGRESS`, `REVIEW_REQUIRED`, `FAILED`, `PARTIAL` o `COMPLETED`; `reportState` MUST usar `NOT_REQUESTED`, `REPORT_PENDING`, `AVAILABLE` o `FAILED`; `completionState` MUST ser `INCOMPLETE` o `COMPLETE`; `pollingStop` MUST usar `CONTINUE`, `COMPLETE`, `ACTION_REQUIRED` o `FAILED`. La precedencia de `analysisState` MUST ser: conjunto vacío ⇒ `OPEN`; todo requerido satisfecho ⇒ `COMPLETED`; cualquier `FAILED` sin recuperación pendiente ⇒ `FAILED`; cualquier `REVIEW_REQUIRED` ⇒ `REVIEW_REQUIRED`; cualquier ejecución con `jobTerminal=false` o artefacto obligatorio `PENDING` ⇒ `IN_PROGRESS`; alguna ejecución requerida con resultado/evidencia pero no todas ⇒ `PARTIAL`; en otro caso ⇒ `OPEN`. `reportState` MUST ser `NOT_REQUESTED` si `requiredExecutionIds` está vacío; `AVAILABLE` solo si el conjunto no está vacío y **todos** los `pdfStatus` están `AVAILABLE`; `REPORT_PENDING` si alguno está en generación/publicación y ninguno es fallo terminal; `FAILED` si alguno es fallo terminal. La precedencia de `reportState` MUST ser `FAILED > REPORT_PENDING > AVAILABLE`; nunca `AVAILABLE` por vacuidad. `completionState = COMPLETE` MUST requerir conjunto no vacío, todas las ejecuciones requeridas con resultado, artefactos obligatorios y PDF disponible; no basta “algún reporte” ni un reporte histórico. Cada delivery de ejecución registra su propia completitud y la agregación MUST NOT sobrescribir histórico. `pollingStop` MUST ser `COMPLETE` solo con `completionState=COMPLETE`, `ACTION_REQUIRED` si hay revisión/bloqueo que exige acción humana o nueva consulta, `FAILED` en fallo terminal y `CONTINUE` si queda `REPORT_PENDING` o `jobTerminal=false`.
+El sistema SHALL calcular `analysisState`, `reportState`, `completionState` y `pollingStop` de la consulta como campos derivados y MUST NOT persistirlos como un enum nuevo de base de datos. `analysisState` MUST usar `OPEN`, `IN_PROGRESS`, `REVIEW_REQUIRED`, `FAILED`, `PARTIAL` o `COMPLETED`; `reportState` MUST usar `NOT_REQUESTED`, `REPORT_PENDING`, `AVAILABLE` o `FAILED`; `completionState` MUST ser `INCOMPLETE` o `COMPLETE`; `pollingStop` MUST usar `CONTINUE`, `COMPLETE`, `ACTION_REQUIRED` o `FAILED`. La precedencia de `analysisState` MUST ser: conjunto vacío ⇒ `OPEN`; todo requerido satisfecho ⇒ `COMPLETED`; cualquier `FAILED` sin recuperación pendiente ⇒ `FAILED`; cualquier `REVIEW_REQUIRED` ⇒ `REVIEW_REQUIRED`; cualquier ejecución con `jobTerminal=false` o artefacto obligatorio `PENDING` ⇒ `IN_PROGRESS`; alguna ejecución requerida con resultado/evidencia pero no todas ⇒ `PARTIAL`; en otro caso ⇒ `OPEN`. `reportState` MUST ser `NOT_REQUESTED` si `requiredExecutionIds` está vacío; `AVAILABLE` solo si el conjunto no está vacío y **todos** los `pdfStatus` están `AVAILABLE`; `REPORT_PENDING` si alguno está en generación/publicación y ninguno es fallo terminal; `FAILED` si alguno es fallo terminal. La precedencia de `reportState` MUST ser `FAILED > REPORT_PENDING > AVAILABLE`; nunca `AVAILABLE` por vacuidad. `completionState = COMPLETE` MUST requerir conjunto no vacío, todas las ejecuciones requeridas con resultado, artefactos obligatorios y PDF disponible; no basta “algún reporte” ni un reporte histórico. Cada delivery de ejecución registra su propia completitud y la agregación MUST NOT sobrescribir histórico. `pollingStop` MUST ser `COMPLETE` solo con `completionState=COMPLETE`, `ACTION_REQUIRED` si hay revisión/bloqueo que exige acción humana o nueva consulta, `FAILED` en fallo terminal y `CONTINUE` si queda `REPORT_PENDING` o `jobTerminal=false`. La agregación MUST leer en batch los estados reales de `ArtifactRecord`/`PdfReport` (depende de 3.5) y MUST NOT introducir un enum persistido. `GET /consultations/:id` SHALL exponer los agregados calculados en lectura, sin persistirlos.
 
 #### Scenario: Mezcla de fallo, revisión y ejecución en curso
 
@@ -128,9 +140,15 @@ El sistema SHALL calcular `analysisState`, `reportState`, `completionState` y `p
 - **THEN** `analysisState` es `OPEN` y `reportState` es `NOT_REQUESTED`
 - **AND** `completionState` nunca es `COMPLETE` por vacuidad.
 
+#### Scenario: Lectura expone agregados sin persistir
+
+- **WHEN** se lee una consulta con ejecuciones, artefactos y PDF reales en distintos estados
+- **THEN** `GET /consultations/:id` devuelve los agregados calculados en esa lectura
+- **AND** no escribe un enum agregado ni altera las filas de ejecución/PDF.
+
 ### Requirement: Revisión humana terminal sin cierre automático
 
-El sistema SHALL tratar `REVIEW_REQUIRED` como un estado terminal para la espera automática. Un timeout MUST NOT convertir la ejecución en `COMPLETED`, y la existencia de un PDF MUST NOT aprobar automáticamente la revisión. **B1 queda resuelto como restricción aprobada:** el médico MUST NOT convertir una ejecución sin resultado válido en `COMPLETED`; `REVIEW_REQUIRED` MUST preservarse. La resolución SHALL ser un reanálisis como ejecución nueva, con imagen/snapshot nuevos si procede, PDF independiente y vínculo a la ejecución anterior, sin sobrescribir la evidencia previa. No existe endpoint ejecutable de aprobación de revisión ni auto-completado manual alternativo en este hito.
+El sistema SHALL tratar `REVIEW_REQUIRED` como un estado terminal para la espera automática. Un timeout MUST NOT convertir la ejecución en `COMPLETED`, y la existencia de un PDF MUST NOT aprobar automáticamente la revisión. **B1 queda resuelto como restricción aprobada:** el médico MUST NOT convertir una ejecución sin resultado válido en `COMPLETED`; `REVIEW_REQUIRED` MUST preservarse. La resolución SHALL ser un reanálisis como ejecución nueva, con imagen/snapshot nuevos si procede, PDF independiente y vínculo a la ejecución anterior, sin sobrescribir la evidencia previa. No existe endpoint ejecutable de aprobación de revisión ni auto-completado manual alternativo en este hito. El cierre/entrega de una revisión MUST usar el agregado de consulta y el PDF de revisión de 6.3; el worker terminal por sí solo no completa ni entrega la consulta.
 
 #### Scenario: Revisión requerida por calidad
 

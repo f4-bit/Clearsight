@@ -2,6 +2,8 @@
 
 > **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Implementadas: documentales 0.1/0.3/0.4, migraciones 1.1-1.6, alta 1.8, 3.1, **3.3 (QA PASSED HITO21)**, **3.4 (QA PASSED HITO22)**, **3.8 (QA PASSED HITO22; cobertura combinada)**, 5.1-5.9 (5.2 en HITO15; 5.8/5.9 con QA PASSED), **2.1 (QA PASSED HITO18)**, **2.2 (QA PASSED HITO19; H1 PASSED)** y 7.0/7.0.1, más 4.1/4.2/4.3 (QA PASSED HITO24), 4.4/4.5 (QA PASSED HITO25), 4.6/4.7/4.8/4.9 (QA PASSED HITO26) y ciclo de vida 5.4/5.6/9.1. 5.9 quedó cerrada en HITO17 con full integration QA **23 files / 444 tests**; B8 (proveedor real/credenciales) sigue pendiente de provisioning y **no bloquea** el cierre de 5.9. El resto de tareas de implementación quedan **pending** con comandos como criterios de verificación futuros; 3.4/3.8 quedaron cerradas con QA PASSED en HITO22 (foco, sin suite completa). Las tareas de **hito posterior** se marcan `[LATER HITO]`; salvo 9.1 (cerrada en HITO14), quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.** **HITO19 (2.2):** A/B/C completos; **QA final global PASSED y H1 PASSED**. 2.2 queda `[x]`. 4.2/4.3 cerraron en HITO24 con QA PASSED; 2.4 sigue parcial con dueño independiente y 2.3/2.5/4.4/4.6/6.x no se implementan en HITO24 (4.4/4.5 se implementan en HITO25; QA PASSED). Baseline QA pre-H1: unit **31/437**, full integration **25/469**; H1 se validó con foco postfix, no con un full nuevo. **HITO24 QA final PASSED:** 4.1/4.2/4.3 `[x]`. Unit foco **4 files / 86**, integración worker/repo **2 files / 31** (9 worker + 22 repo), ML foco **5 files / 86**, `typecheck`/`build` **0**, `ruff`/`mypy` (**--follow-imports=skip**) limpios en 6 archivos. Sin suite completa. **HITO25 QA PASSED:** 4.4/4.5 `[x]` bajo D26/ADR-062..063, sin migración nueva. QA focal unit **5 files / 62** e integración **5 files / 82**; `typecheck` **0**. Reviewer independiente: 2 LOW corregidos (`pg_catalog` en lock/`statement_timestamp`; comentario de lock honesto). Post-corrección: unit **3 files / 16**, integración **1 file / 19**, `typecheck` **0**. Límites: 4.6/4.7/4.8/4.9/PDF pendientes, sin TTL/B3 ni dedup eterna; E2E no ejecutado. **HITO26 QA PASSED:** 4.6/4.7/4.8/4.9 `[x]` bajo D27/ADR-064..066. 4.7/4.8 unit **5 files / 65**, integración **3 files / 46**, `typecheck` **0**; correcciones H1/H2 unit **2 files / 55**, `typecheck`/`build` **0**. 4.6 unit **6 files / 96** (82+14 QA), integración **4 files / 56** (50+6 QA), `typecheck` **0**, `build` reutilizado; revisor sin defectos. 4.9 QA PASSED: unit **2 files / 46**, integración **1 file / 23**, `typecheck`/`build` **0**.
 
+> **HITO27/28 (cierre QA PASSED):** D28 (6.1/6.2/3.5) y D29 (2.3/2.4/2.5/2.6/4.10) quedan registradas en `design.md` con sus ADR-067..075. **6.1/6.2/3.5 QA PASSED y cerradas `[x]`.** 3.6 (reintento en reconciliador) y 2.3/2.4/2.5/2.6/4.10 siguen pendientes. Versión nueva por feedback/regeneración queda 6.3+/futuro; 6.3/6.4 pendientes; REG-004 no resuelto (cierre humano). Sin Azure/`.env`, PDF real de producción, modelos, migraciones históricas ni commit.
+
 ## 0. Documentación y salvaguardas
 
 - [x] 0.1 Crear `defects/regressions.md` con entradas solo estáticas, activas/resueltas, sin inventar runtime ni datos sensibles.
@@ -138,6 +140,7 @@
   - **Depends on:** 6.1, 6.2.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con casos de una/dos ejecuciones y mezcla de estados.
   - **Coverage:** “Estado agregado de consulta con precedencia determinista”, “Separación entre estado de ejecución, etapa, artefacto y consulta”.
+  - **Nota HITO28 (D29.1):** agregación **pura** con precedencia exacta y lectura **batch** de `ArtifactRecord`/`PdfReport` reales (depende de 3.5); sin enum DB persistido. Pendiente de `arquitectovalidate`.
 
 - [ ] 2.4 Tratar `REVIEW_REQUIRED` como terminal de espera automática y evitar cierre o conversión automática.
   - **Scope:** `backend/src/workers/inference.worker.ts:33-47`, estado de revisión en repositorio, caso de reanálisis en `backend/src/routes/inferences.ts`.
@@ -146,14 +149,16 @@
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` (worker stub) y `python -m pytest ml/tests/test_service.py -q`; ver guard de DB en `contracts/testing-runbook.md`.
   - **Coverage:** “Revisión humana terminal sin cierre automático”, B1 como restricción aprobada, “Estados de job y resultado completo”.
   - **Nota HITO19:** C ya cubre worker terminal/`REVIEW_REQUIRED` sin throw/retry y sin autocompletado; **no cierra 2.4**. La agregación de consulta y el PDF siguen en 2.3/6.x. REG-002 queda mitigado, no resuelto; el registro humano no se reescribe.
+  - **Nota HITO28 (D29.4):** el worker `REVIEW` terminal ya existe; el cierre restante es agregado/delivery + PDF de revisión 6.3. Sin source hasta `arquitectovalidate`.
 
 - [ ] 2.5 Fijar selección requerida al iniciar y excluir reanálisis históricos no seleccionados.
   - **Scope:** `backend/src/services/consultation-completion.ts`, `backend/src/repositories/consultation.repo.ts`, `backend/src/routes/consultations.ts`.
-  - **When/Then:** WHEN se inicia la consulta THEN `requiredExecutionIds` y `requiredSetVersion` quedan fijados; WHEN existe un reanálisis posterior no seleccionado THEN no cambia la completitud de la consulta cerrada; WHEN se intenta promover o reemplazar un ID tras cierre THEN se rechaza por B2 (restricción aprobada) y no se reabre ni altera la consulta automáticamente.
+  - **When/Then:** WHEN se inicia la consulta THEN `requiredExecutionIds`, `requiredSetVersion` y `requiredSetFrozenAt` quedan fijados; WHEN existe un reanálisis posterior no seleccionado THEN no cambia la completitud de la consulta cerrada; WHEN se intenta promover o reemplazar un ID tras cierre THEN se rechaza por B2 (restricción aprobada) y no se reabre ni altera la consulta automáticamente.
   - **Depends on:** 2.2, 2.3.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts`; ver guard de DB en `contracts/testing-runbook.md`.
   - **Coverage:** “Selección explícita de ejecuciones requeridas y cambio tras cierre” como frozen set, “Reanálisis enlazado sin sobrescribir evidencia”, B2 como restricción aprobada.
   - **Nota HITO19:** 2.2 no lee ni modifica `requiredExecutionIds` ni `requiredSetVersion`; la creación contextualizada no congela ni promueve IDs. 2.5 conserva todo el alcance de selección/freeze.
+  - **Nota HITO28 (D29.3):** operación explícita `POST /consultations/:id/required-executions` con ownership, IDs existentes de la consulta y TX que escribe los tres campos; `requiredSetVersion = "rsv1:" + sha256hex(sorted IDs)`; sin duplicados/ajenos/cambios tras freeze (trigger SQL ya listo), sin tocar `consultation.status` ni reabrir cerrada.
 
 - [ ] 2.6 Exponer agregados de consulta sin enum DB nuevo.
   - **Scope:** `backend/src/services/consultation-completion.ts`, `backend/src/routes/consultations.ts`, `backend/src/schemas/consultation.ts`.
@@ -161,6 +166,7 @@
   - **Depends on:** 2.3.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts`.
   - **Coverage:** “Estado agregado de consulta con precedencia determinista”, “Separación entre estado de ejecución, etapa, artefacto y consulta”.
+  - **Nota HITO28 (D29.2):** `GET /consultations/:id` expone agregados calculados en lectura, sin persistir un enum nuevo. Sin source hasta `arquitectovalidate`.
 
 ## 3. Storage y artefactos
 
@@ -208,13 +214,16 @@
   - **Evidencia HITO22:** nuevo `tests/artifact-downloads.integration.test.ts` (16 tests) cubre owner/foreign/admin sin grant/readResult-only, unión de grants split, expiración/revocación, envelope/orden/filtro antes de count, `version` obligatoria y sin fallback, estados no-`AVAILABLE` sin storage, `reportVersion`/PDF sin reporte `409` auditado, `storage_object_missing` `409` sin mutar `AVAILABLE`, permiso/red/canary `503`, revocación de sesión/grant durante la firma sin URL, auditoría caída `503`, allowlist/contexto inválido antes del SDK, `403` boundary, metadata `503` sin eco, cross-inference `404` y `Cache-Control: no-store`. Unit añade DTO/query y contexto row explícito sin exigir raw. Límites: sin full suite, PDF real, ML/worker, migraciones ni recursos cloud; 3.5 publicación/reconciliación sigue pendiente (dependencia 6.2).
   - **Coverage:** “Autorización y firma de descargas bajo demanda”, “Estado explícito por artefacto”, “Referencia de artefacto estructurada y estable”, “Prohibición de persistir credenciales temporales y URLs arbitrarias”.
 
-- [ ] 3.5 Implementar ciclo de vida de artefacto y reconciliación storage/DB.
+- [x] 3.5 Implementar ciclo de vida de artefacto y reconciliación storage/DB. **QA PASSED HITO27/28.**
   - **Scope:** nuevo `backend/src/services/artifact-publication.ts`; `backend/src/repositories/inference.repo.ts`.
   - **When/Then:** WHEN upload OK y falla DB THEN se registra huérfano y se reconcilia/limpia; WHEN DB referencia objeto ausente THEN se marca inconsistencia; WHEN storage no responde THEN reintento acotado y estado explícito.
   - **Depends on:** 1.2, 3.3, 6.2 (ciclo de vida del artefacto PDF).
   - **Nota HITO22:** 3.4 solo lista/firma artefactos existentes; la publicación/reconciliación sigue **pending** y depende de 6.2. No se declara generador PDF implementado.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con fallos inyectados.
   - **Coverage:** “Reintento de publicación sin reinferir y consistencia con almacenamiento”.
+  - **Nota HITO27 (D28.4):** publicar `ArtifactRecord` mask/overlay/pdf con tamaño/checksum/estado, verificar objeto y reconciliar huérfanos/ausentes; allowlist configurable de buckets (`MINIO_BUCKET_MASK`/`OVERLAY`/`PDF` o `STORAGE_ALLOWED_BUCKETS`) fail closed; ML key-only sin URI ⇒ `FAILED`. Sin source hasta `arquitectovalidate`.
+  - **Implementación/QA 6.2+3.5 PASSED:** nuevos `artifact-publication.ts` y `artifact-publication.repo.ts`; publicación mask/overlay/pdf idempotente con metadata real, key-only fail closed y transiciones PENDING→AVAILABLE/FAILED; `/reports` list/url reutiliza la firma de 3.4. Unit publication **3 files / 67 tests**, integración publication **1/20**, artifact-migrations **1/29**, migrations **1/28**, regresión artifact-downloads **24/24**, `typecheck`/`build` **0**. 3.5 `[x]`.
+  - **Corrección QA D1/D2 PASSED:** migración `20261122000000_pdf_report_data_version_pending` permite `data_version` y `rendering_inputs` solo PENDING→PENDING; un fallo retryable reutiliza la misma fila/versión y refresca el hash real + checksums/tamaños sin `failureCode`; `finalizePdfAvailable` hace rollback si el report no transiciona (sin half-publish) y el perdedor refresca/devuelve AVAILABLE sin marcar FAILED al ganador; fixture PENDING con metadata NULL. Sin cambiar la inmutabilidad de AVAILABLE ni la unicidad `(inference,type/version)`.
 
 - [ ] 3.6 Reintentar publicación de artefactos y PDF sin reinferir.
   - **Scope:** `backend/src/workers/inference.worker.ts`, `backend/src/services/artifact-publication.ts`.
@@ -222,6 +231,7 @@
   - **Depends on:** 6.2, 3.5.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con stub de ML que cuenta llamadas.
   - **Coverage:** “Reintento de publicación sin reinferir y consistencia con almacenamiento”, “Publicación de artefactos sin reinferir y credenciales internas”.
+  - **Nota HITO27 (D28.5):** reintento en reconciliador/fase separada, fuera del processor terminal y sin depender del short-circuit terminal; publicación **antes del CAS** para no bloquear el resultado clínico por storage. Sin source hasta `arquitectovalidate`.
 
 - [x] 3.7 Redactar logs de storage y descargas (QA PASSED HITO23).
   - **Estado:** **QA PASSED**. Maker focus **3 files / 65 tests** antes de QA final; QA post **13 unit / 13** y **24 download / 24**; las 6 regresiones QA rojas quedan verdes. `typecheck`/`build` **0** reutilizados del mismo source maker; ACL/RBAC **29** reutilizado. 3.5/3.6 siguen pendientes de PDF 6.2.
@@ -338,6 +348,7 @@
   - **Depends on:** 2.3, 3.5, 4.2.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con estados simulados.
   - **Coverage:** “Polling, Retry-After y entrega posterior a COMPLETED”, “Estado agregado de consulta con precedencia determinista”.
+  - **Nota HITO28 (D29.5):** backoff 2 s→10 s y `Retry-After`; la entrega continúa tras `COMPLETED` usando los agregados de 2.3 y no declara completitud por `jobTerminal`. Sin source hasta `arquitectovalidate`.
 
 ## 5. Seguridad, roles, sesiones y auditoría
 
@@ -426,19 +437,23 @@
 
 ## 6. PDF básico y reportes
 
-- [ ] 6.1 Implementar PDF básico con original sanitizada + mask + overlay embebidas.
-  - **Scope:** nuevo `backend/src/services/pdf-report.ts`; worker/servicio de publicación; artefacto `pdf`.
-  - **When/Then:** WHEN ruta exitosa normal THEN el PDF incluye original sanitizada (sin EXIF del upload), `mask` y `overlay` embebidas, identificación, snapshot, versiones, clínica con unidades solo verificadas, probabilidades, calidad, CDR, fechas, warnings y aviso; WHEN falta una imagen obligatoria THEN no completa.
+- [x] 6.1 Implementar PDF básico con original sanitizada + mask + overlay embebidas. **QA PASSED HITO27.**
+  - **Scope:** nuevo `backend/src/services/pdf-report.ts` (renderer puro) y `backend/src/services/artifact-content.ts` (seam 3.3+storage); worker/servicio de publicación; artefacto `pdf`. Deps `pdf-lib` (runtime), `sharp` (ya presente) y parser solo test.
+  - **When/Then:** WHEN ruta exitosa normal THEN el PDF incluye original sanitizada (sin EXIF del upload), `mask` y `overlay` embebidas, identificación, snapshot, versiones, clínica con unidades solo verificadas, probabilidades, calidad, CDR, fechas, warnings y aviso; WHEN falta una imagen obligatoria THEN error tipado y no completa.
   - **Depends on:** 3.2, 3.3, 4.2 (storage y resultado completos; el agregador consume PDF, no al revés).
   - **Test:** test nuevo que genere un PDF real, extraiga texto, cuente imágenes renderizadas y verifique contenido; no solo un mock snapshot.
   - **Coverage:** “PDF básico obligatorio para completitud”, “Contenido clínico y trazabilidad del PDF”.
+  - **Nota HITO27 (D28.1-D28.2):** `renderBasicPdf(input): Promise<Buffer>` sin DB/storage writes; original re-encode `sharp` sin EXIF; mask/overlay desde `Inference.artifacts` por seam, nunca `gradcamPath`; falta ⇒ error tipado, sin PDF “completo” ni enlaces; contenido con IDs pseudónimos, 11 features “no interpretables”, sin PHI/URLs/keys. D28 validado por arquitecto (`--strict 0`).
+  - **Implementación/QA 6.1 PASSED:** nuevos `backend/src/services/artifact-content.ts` y `backend/src/services/pdf-report.ts`; deps `pdf-lib` runtime y `pdfjs-dist` dev. QA unit seam/pdf-report **6 files / 131 tests**; `typecheck` **0** (QA previo). 6.1 `[x]`.
 
-- [ ] 6.2 Implementar idempotencia, `reportId`/`version` inmutables y versionado de reporte.
+- [x] 6.2 Implementar idempotencia, `reportId`/`version` inmutables y versionado de reporte. **QA PASSED HITO27/28.**
   - **Scope:** `backend/src/services/pdf-report.ts`; repositorio `PdfReport`; migración B; endpoints `/reports`.
   - **When/Then:** WHEN se reintenta sin cambios THEN reutiliza/reproduce el mismo reporte; WHEN feedback nuevo THEN crea `version` nueva sin pisar la anterior; WHEN se consulta THEN `reportId`/`version` son explícitos e inmutables.
   - **Depends on:** 6.1, 1.2.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` y test de PDF real para versiones.
   - **Coverage:** “Idempotencia y versionado del reporte”, “URLs de artefactos y PDF en el contrato”.
+  - **Nota HITO27 (D28.3):** `PdfReport` + `ArtifactRecord` pdf de la misma inferencia/versión; `sourceSnapshotId` obligatorio (legacy null no `AVAILABLE`); reutiliza `/artifacts/pdf/url` de 3.4; reintento reutiliza fila/versión y feedback crea versión nueva; `dataVersion = "pdfv1:" + sha256hex(canonical JSON)` documentado en D28.3. Las tablas ya existían; la única migración añadida es la correctiva D1 `20261122000000_pdf_report_data_version_pending` (solo PENDING→PENDING, sin tablas/columnas).
+  - **Implementación/QA 6.2 PASSED:** `PdfReport` + `ArtifactRecord pdf` con `sourceSnapshotId`, `dataVersion` canónico, `renderingInputs` sin `://`, `reportId`/`version`, transición atómica y `/reports` list/url; snapshot null ⇒ `FAILED`. Unit publication **3 files / 67 tests**, integración publication **1/20**, artifact-migrations **1/29**, migrations **1/28**, artifact-downloads **24/24**, `typecheck`/`build` **0**. Migración correctiva D1 `20261122000000_pdf_report_data_version_pending` (data_version + rendering_inputs solo PENDING→PENDING). 6.2 `[x]`.
 
 - [ ] 6.3 Aplicar limitaciones de revisión y ausencia de explicabilidad en PDF.
   - **Scope:** `backend/src/services/pdf-report.ts`; contrato de artefactos.
@@ -452,6 +467,8 @@
   - **When/Then:** WHEN se ejecuta THEN el PDF incluye encabezado/numeración institucional y se registra tiempo, entorno y volumen; no se declara cumplimiento sin evidencia.
   - **Test:** benchmark en entorno aislado (no ejecutar en este change).
   - **Coverage:** “Criterio medible de generación institucional (HU08)”.
+
+**Límite de cierre 6.1/6.2/3.5:** la versión nueva por feedback/regeneración queda para 6.3+/futuro; **3.6** (reintento de publicación en reconciliador), **6.3** y **6.4** siguen pendientes; **REG-004 no resuelto** (cierre humano). Sin source/test edits ni commit en este cierre documental.
 
 ## 7. Pruebas transversales y métricas
 

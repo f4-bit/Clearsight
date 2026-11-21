@@ -45,6 +45,19 @@ const envSchema = z
     .default(false),
   MINIO_BUCKET_RAW: z.string().default("raw-retinas"),
   MINIO_BUCKET_GRADCAM: z.string().default("gradcam-overlays"),
+  // Artifact-content defaults for key-only legacy references (6.1/3.5). They
+  // are optional on purpose: a missing kind bucket fails closed instead of
+  // inventing a location. An explicit STORAGE_ALLOWED_BUCKETS must include it.
+  MINIO_BUCKET_MASK: z.string().optional(),
+  MINIO_BUCKET_OVERLAY: z.string().optional(),
+  MINIO_BUCKET_PDF: z.string().optional(),
+  // Bounded read for the shared artifact-content seam. Integer bytes.
+  ARTIFACT_CONTENT_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100 * 1024 * 1024)
+    .default(25 * 1024 * 1024),
 
   // Storage provider selection. `minio` is the backward-compatible default;
   // `azure` is explicit and validated lazily by the provider factory.
