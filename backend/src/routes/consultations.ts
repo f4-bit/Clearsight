@@ -1,21 +1,35 @@
 import type { FastifyPluginAsync } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { Prisma } from "../generated/prisma/client.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { forbidden, notFound } from "../lib/http-error.js";
+import {
+  conflict,
+  forbidden,
+  notFound,
+  serviceUnavailable,
+  unprocessable,
+} from "../lib/http-error.js";
 import type { PrismaClient } from "../lib/prisma.js";
 import { authenticate } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
+import { createConsultationRepository } from "../repositories/consultation.repo.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import {
+  AnalysisState,
+  CompletionState,
+  PollingStop,
+  ReportState,
   consultationCreateSchema,
   consultationReadSchema,
+  requiredExecutionsBodySchema,
+  requiredExecutionsResponseSchema,
 } from "../schemas/consultation.js";
 import { imageReadSchema } from "../schemas/image.js";
 import type { ClinicalAccessService } from "../services/clinical-access.js";
 import { subjectFromRequest } from "../services/clinical-access.js";
+import { computeConsultationStates } from "../services/consultation-completion.js";
 import { sanitizeImage } from "../services/sanitizer.js";
 import { StorageService } from "../services/storage.js";
 
@@ -50,6 +64,7 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
   opts,
 ) => {
   const { prisma, access } = opts;
+  const consultationRepository = createConsultationRepository(prisma);
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
 
   // POST /consultations
@@ -215,6 +230,104 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
     }
   );
 
+  // POST /consultations/:id/required-executions
+  typedApp.post(
+    "/:id/required-executions",
+    {
+      preHandler: [authenticate, requireRole("OFTALMOLOGO")],
+      schema: {
+        tags: ["Consultations"],
+        summary: "Freeze the required execution set for a consultation",
+        params: z.object({ id: z.string().uuid() }),
+        body: requiredExecutionsBodySchema,
+        response: {
+          200: requiredExecutionsResponseSchema,
+          400: errorResponseSchema,
+          403: errorResponseSchema,
+          404: errorResponseSchema,
+          409: errorResponseSchema,
+          422: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const subject = subjectFromRequest(request);
+      const consultationId = request.params.id;
+      const consultation = await access.getOwnedConsultation(
+        subject,
+        consultationId,
+        false,
+      );
+      if (consultation.requiredSetFrozenAt !== null) {
+        throw conflict("Required selection is already frozen");
+      }
+
+      const executionIds = request.body.executionIds.map((id) =>
+        id.toLowerCase(),
+      );
+      if (new Set(executionIds).size !== executionIds.length) {
+        throw unprocessable("executionIds must not contain duplicates");
+      }
+
+      const existing = await prisma.inference.findMany({
+        where: {
+          OR: [
+            { consultationId },
+            { consultationId: null, image: { consultationId } },
+          ],
+        },
+        select: { id: true },
+      });
+      const existingIds = new Set(existing.map((row) => row.id));
+      if (executionIds.some((id) => !existingIds.has(id))) {
+        throw unprocessable(
+          "executionIds must be executions of this consultation",
+        );
+      }
+
+      const requiredExecutionIds = [...executionIds].sort();
+      const requiredSetVersion = `rsv1:${createHash("sha256")
+        .update(requiredExecutionIds.join("\n"))
+        .digest("hex")}`;
+      const requiredSetFrozenAt = new Date();
+
+      let updated;
+      try {
+        updated = await prisma.$transaction(async (tx) => {
+          const repository = createConsultationRepository(tx);
+          return repository.setRequiredSelection(consultationId, {
+            requiredExecutionIds,
+            requiredSetVersion,
+            requiredSetFrozenAt,
+          });
+        });
+      } catch (error) {
+        // PostgreSQL raises restrict_violation (SQLSTATE 23001) when the
+        // selection is already frozen. Prisma may surface it as P2003 (FK) or
+        // P2010 (raw query), depending on the driver path. Both are a safe 409;
+        // never forward the Prisma message or cause.
+        const code = (error as { code?: unknown }).code;
+        if (code === "P2003" || code === "P2010") {
+          throw conflict("Required selection could not be frozen");
+        }
+        throw error;
+      }
+
+      if (
+        updated.requiredSetVersion === null ||
+        updated.requiredSetFrozenAt === null
+      ) {
+        throw serviceUnavailable("Required selection is unavailable");
+      }
+      return reply.send({
+        id: updated.id,
+        requiredExecutionIds: updated.requiredExecutionIds,
+        requiredSetVersion: updated.requiredSetVersion,
+        requiredSetFrozenAt: updated.requiredSetFrozenAt,
+      });
+    },
+  );
+
   // GET /consultations/:id
   typedApp.get(
     "/:id",
@@ -233,6 +346,12 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
             clinicalData: z.record(z.string(), z.unknown()),
             createdAt: z.date().or(z.iso.datetime()),
             images: z.array(imageReadSchema),
+            requiredExecutionIds: z.array(z.string().uuid()),
+            requiredSetVersion: z.string().nullable(),
+            analysisState: AnalysisState,
+            reportState: ReportState,
+            completionState: CompletionState,
+            pollingStop: PollingStop,
           }),
           404: errorResponseSchema,
         },
@@ -245,6 +364,13 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
         request.params.id,
         true,
       );
+      const completion = await consultationRepository.findCompletionInput(
+        request.params.id,
+      );
+      if (completion === null) {
+        throw notFound("Consultation");
+      }
+      const states = computeConsultationStates(completion.input);
 
       return reply.send({
         id: consultation.id,
@@ -256,6 +382,12 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
         images: (consultation.images as Array<Parameters<typeof toImageRead>[0]>).map(
           toImageRead,
         ),
+        requiredExecutionIds: [...completion.requiredExecutionIds],
+        requiredSetVersion: completion.requiredSetVersion,
+        analysisState: states.analysisState,
+        reportState: states.reportState,
+        completionState: states.completionState,
+        pollingStop: states.pollingStop,
       });
     }
   );

@@ -40,13 +40,30 @@ $$;
 DO $$
 DECLARE
     app_oid OID;
-    schema_name TEXT := current_schema();
+    inferences_oid REGCLASS;
+    schema_name TEXT;
     qualified_name TEXT;
 BEGIN
     SELECT oid INTO app_oid FROM pg_roles WHERE rolname = 'clearsight_app';
     IF app_oid IS NULL THEN
         RAISE EXCEPTION 'clearsight_app must exist before result detail grants are verified'
             USING ERRCODE = 'undefined_object';
+    END IF;
+
+    -- Resolve the table the migration actually altered, not whatever schema
+    -- current_schema() happens to return under a hostile search_path.
+    inferences_oid := to_regclass('inferences');
+    IF inferences_oid IS NULL THEN
+        RAISE EXCEPTION 'inferences table must exist before result detail grants are verified'
+            USING ERRCODE = 'undefined_table';
+    END IF;
+    SELECT n.nspname INTO schema_name
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.oid = inferences_oid;
+    IF schema_name IS NULL THEN
+        RAISE EXCEPTION 'inferences table schema could not be resolved'
+            USING ERRCODE = 'undefined_table';
     END IF;
 
     qualified_name := format('%I.inferences', schema_name);

@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Entorno, versiones y smoke mínimo | No | Bajo | CURRENT |
 | 1 | Documentación y specs estáticas | No | Bajo | CURRENT |
-| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14); 3.6/6.3 QA PASSED (§4.15) |
+| 2 | Unidad/contratos focalizados | No (runner unitario) | Medio | CURRENT: runner unitario aislado; HITO19 2.2 A CURRENT, B/C FUTURO (§4.5); HITO20 3.2 QA PASSED (§4.6); HITO21 3.3 QA PASSED (§4.7); HITO22 3.4/3.8 CURRENT QA PASSED (§4.8); HITO23 3.7 QA PASSED (§4.9); HITO24 4.1(A)+4.2(B)+4.3(C) QA PASSED (§1.29/§1.30/§1.31/§1.32/§1.33/§4.10); HITO25 4.4/4.5 QA PASSED (§1.35/§4.11); HITO26 4.6-4.8 QA PASSED (§1.36/§1.37/§4.12); 4.9 QA PASSED (§1.38); HITO27/28 6.1/6.2/3.5 QA PASSED (§4.13/§4.14); 3.6/6.3 QA PASSED (§4.15); HITO28 2.3/2.4/2.5/2.6/4.10 QA PASSED (§4.16/§4.17) |
 | 3 | PostgreSQL/Redis/MinIO efímeros con ownership marker | Sí, efímero | Alto | PostgreSQL/Testcontainers EJECUTADO (HITO 3); Redis/MinIO no ejecutados; compose raíz NO LISTO |
 | 4 | Stub ML y fault injection | No real | Medio | CURRENT parcial / FUTURO casos |
 | 5 | ML local real con pesos y golden tolerances | No cloud | Alto | CURRENT con pesos / FUTURO golden |
@@ -1101,7 +1101,7 @@ npm --prefix backend run test:integration -- tests/consultation-completion.integ
 
 **Evidencia de cierre:** 6.1 seam/pdf-report **6 files / 131 tests** + `typecheck` **0** (QA previo). 6.2/3.5 unit publication/content/pdf-report **3 files / 67 tests**; integración publication **1/20**; artifact-migrations **1/29**; migrations **1/28**; artifact-downloads **1/24** (regresión 3.4); `typecheck`/`build` **0**. D1/D2 PASSED con la migración correctiva `20261122000000_pdf_report_data_version_pending` y finalize atómico.
 
-**Límites:** versión nueva por feedback/regeneración queda futuro (post-6.3); **3.6/6.3 QA PASSED**; **6.4** y **2.3/2.4/2.5/2.6/4.10** pendientes; **REG-002/003/004/008 no resueltos** (cierre humano). Frontend: `GET /inferences/:id/reports` y `/:version/url` implementados para owner/grant `readPdf` con `ReportVersion`; sin exposición fuera de `readPdf`.
+**Límites:** versión nueva por feedback/regeneración queda futuro (post-6.3); **3.6/6.3/2.3/2.4/2.5/2.6/4.10 QA PASSED**; **6.4, 0.2, 1.7, 7.x, 8.x y 9.x** pendientes; **REG-002/003/004/008 no resueltos** (cierre humano). Frontend: `GET /inferences/:id/reports` y `/:version/url` implementados para owner/grant `readPdf` con `ReportVersion`; sin exposición fuera de `readPdf`.
 
 ### 4.15 Cierre QA 3.6/6.3 - publicación en reconciliador y revisión (QA PASSED)
 
@@ -1110,6 +1110,20 @@ npm --prefix backend run test:integration -- tests/consultation-completion.integ
 **Resultados:** unit reconciler/worker/pdf/publication **4 files / 66 tests**; integración publication **29**; artifact-migrations **31**; artifact-downloads **24**; `typecheck`/`build` **0**; Docker limpio. 3.6 publica candidatos terminales sin reinferir (idempotente, fallo permanente excluido, batch/intervalo inyectable, no solape con dispatch, query ids-only bounded) y usa el índice parcial `idx_inferences_publication_reconcile` con replay idempotente. 6.3 añade revisión requerida/evidencia parcial/faltantes y explicabilidad `NOT_SUPPORTED` sin imágenes simuladas.
 
 **Límites:** 6.4 (HU08), 2.3/2.4/2.5/2.6/4.10 y feedback/regeneración futuros; **REG-002/003/004/008 no resueltos** (cierre humano). Frontend sin cambios de contrato (interno). No se editó el processor terminal ni la migración correctiva D1.
+
+### 4.16 Implementación/QA HITO28 - agregación, freeze, exposición y polling (QA PASSED)
+
+**Estado:** **QA PASSED.** 2.3/2.4/2.5/2.6/4.10 quedan `[x]`. Sin Azure/`.env`, PDF real de producción, ML/modelos ni commit.
+
+**Resultados:** unit `consultation-completion` **22/22**; integración consulta **16/16**. Freeze: 409 sin mensaje interno, carrera determinista `{200,409}`, `requiredSetVersion` `rsv1:`+SHA-256 y guard SQL. GET agregados sin persistir; 4.10 `status`/`stage`/`delivery`/`pollingStop`/`Retry-After` 2→10 s y entrega posterior a `COMPLETED` sin locators. Full QA: unit **44 files / 698 tests**, integración **30 files / 586 tests**, `typecheck`/`build` **0**, Docker limpio (`redkeep_db` intacto). `GET /consultations/:id` se mantiene owner-only (un grant NO concede Consultation); 4.10 cubre grant `readResult`.
+
+**Límites:** REG-002/003/004/008 no resueltos (cierre humano); 6.4, 0.2, 1.7, 7.x, 8.x y 9.x pendientes.
+
+### 4.17 Cierre QA HITO28 - suite completa PASSED
+
+**Estado:** QA final de suite completa **PASSED**; cierre documental, sin source/test edits ni reruns ni commit. 2.3/2.4/2.5/2.6/4.10 `[x]`.
+
+**Límites:** REG-002/003/004/008 siguen para cierre humano y `defects/regressions.md` no se edita; 6.4, 0.2, 1.7, 7.x, 8.x y 9.x pendientes; versión nueva por feedback/regeneración queda futuro.
 
 ## 5. Fase 3 — PostgreSQL, Redis y MinIO efímeros con ownership marker
 
@@ -1349,7 +1363,7 @@ python scripts/test_azure_e2e.py --base-url <endpoint-autorizado>
 | 4.9: unit inference-run-repo/processor + integración repositories | **CURRENT QA PASSED** | Unit **2 files / 46**; integración **1 file / 23**; `typecheck`/`build` **0**. |
 | Foco HITO27: `pdf-report`/`artifact-content`/publicación unit+integración | **QA PASSED** | 6.1 unit **6/131** + typecheck 0; 6.2/3.5 unit **3/67**, publication **20**, artifact-migrations **29**, migrations **28**, artifact-downloads **24**, build 0. Sin Azure/`.env`, PDF real de producción ni modelos. |
 | Foco 3.6/6.3: reconciliador de publicación + PDF de revisión | **QA PASSED** | unit **4/66**, publication **29**, artifact-migrations **31**, artifact-downloads **24**, `typecheck`/`build` **0**, Docker limpio; índice parcial de candidatos; sin ML. |
-| Foco HITO28: `consultation-completion`/freeze/agregados/polling unit+integración | FUTURO (no ejecutado) | Depende de 3.5 (QA PASSED) y DB aislada; sin enum DB persistido ni fuente antes de validación. |
+| Foco HITO28: `consultation-completion`/freeze/agregados/polling unit+integración | **QA PASSED** | unit **22/22**, integración **16/16**; full QA unit **44 files / 698**, integración **30 files / 586**, `typecheck`/`build` **0**, Docker limpio; sin migración; owner-only en Consultation. |
 | E2E Azure completo | FUTURO | Requiere B6 confirmado y cleanup. |
 | Benchmark p95 full-flow | FUTURO | Requiere script y entorno aprobado. |
 

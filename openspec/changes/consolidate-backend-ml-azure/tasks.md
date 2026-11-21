@@ -2,7 +2,7 @@
 
 > **Estado:** plan vivo; solo se consideran implementadas las tareas marcadas `[x]` y con evidencia registrada. Implementadas: documentales 0.1/0.3/0.4, migraciones 1.1-1.6, alta 1.8, 3.1, **3.3 (QA PASSED HITO21)**, **3.4 (QA PASSED HITO22)**, **3.8 (QA PASSED HITO22; cobertura combinada)**, 5.1-5.9 (5.2 en HITO15; 5.8/5.9 con QA PASSED), **2.1 (QA PASSED HITO18)**, **2.2 (QA PASSED HITO19; H1 PASSED)** y 7.0/7.0.1, más 4.1/4.2/4.3 (QA PASSED HITO24), 4.4/4.5 (QA PASSED HITO25), 4.6/4.7/4.8/4.9 (QA PASSED HITO26) y ciclo de vida 5.4/5.6/9.1. 5.9 quedó cerrada en HITO17 con full integration QA **23 files / 444 tests**; B8 (proveedor real/credenciales) sigue pendiente de provisioning y **no bloquea** el cierre de 5.9. El resto de tareas de implementación quedan **pending** con comandos como criterios de verificación futuros; 3.4/3.8 quedaron cerradas con QA PASSED en HITO22 (foco, sin suite completa). Las tareas de **hito posterior** se marcan `[LATER HITO]`; salvo 9.1 (cerrada en HITO14), quedan unchecked pero **no bloqueadas**; las decisiones/restricciones y el fuera de alcance se listan en la tabla final. **B1/B2 quedan resueltos como restricciones aprobadas; B5 elimina hard delete del hito; B3/B4/B5 aplican solo a producción real/purgas; B6 está parcialmente satisfecho por CLI y no es deployment ready; B9 queda fuera de alcance.** **HITO19 (2.2):** A/B/C completos; **QA final global PASSED y H1 PASSED**. 2.2 queda `[x]`. 4.2/4.3 cerraron en HITO24 con QA PASSED; 2.4 sigue parcial con dueño independiente y 2.3/2.5/4.4/4.6/6.x no se implementan en HITO24 (4.4/4.5 se implementan en HITO25; QA PASSED). Baseline QA pre-H1: unit **31/437**, full integration **25/469**; H1 se validó con foco postfix, no con un full nuevo. **HITO24 QA final PASSED:** 4.1/4.2/4.3 `[x]`. Unit foco **4 files / 86**, integración worker/repo **2 files / 31** (9 worker + 22 repo), ML foco **5 files / 86**, `typecheck`/`build` **0**, `ruff`/`mypy` (**--follow-imports=skip**) limpios en 6 archivos. Sin suite completa. **HITO25 QA PASSED:** 4.4/4.5 `[x]` bajo D26/ADR-062..063, sin migración nueva. QA focal unit **5 files / 62** e integración **5 files / 82**; `typecheck` **0**. Reviewer independiente: 2 LOW corregidos (`pg_catalog` en lock/`statement_timestamp`; comentario de lock honesto). Post-corrección: unit **3 files / 16**, integración **1 file / 19**, `typecheck` **0**. Límites: 4.6/4.7/4.8/4.9/PDF pendientes, sin TTL/B3 ni dedup eterna; E2E no ejecutado. **HITO26 QA PASSED:** 4.6/4.7/4.8/4.9 `[x]` bajo D27/ADR-064..066. 4.7/4.8 unit **5 files / 65**, integración **3 files / 46**, `typecheck` **0**; correcciones H1/H2 unit **2 files / 55**, `typecheck`/`build` **0**. 4.6 unit **6 files / 96** (82+14 QA), integración **4 files / 56** (50+6 QA), `typecheck` **0**, `build` reutilizado; revisor sin defectos. 4.9 QA PASSED: unit **2 files / 46**, integración **1 file / 23**, `typecheck`/`build` **0**.
 
-> **HITO27/28 (cierre QA PASSED):** D28 (6.1/6.2/3.5/3.6/6.3) y D29 (2.3/2.4/2.5/2.6/4.10) quedan registradas en `design.md` con sus ADR-067..075/076. **6.1/6.2/3.5/3.6/6.3 QA PASSED y cerradas `[x]`.** 2.3/2.4/2.5/2.6/4.10 y 6.4 siguen pendientes; versión nueva por feedback/regeneración queda futuro (post-6.3); REG-002/003/004/008 no resueltos (cierre humano). Sin Azure/`.env`, PDF real de producción, modelos, migraciones históricas ni commit.
+> **HITO27/28 (cierre QA PASSED — suite completa):** D28 (6.1/6.2/3.5/3.6/6.3) y D29 (2.3/2.4/2.5/2.6/4.10) quedan registradas en `design.md` con sus ADR-067..076. **6.1/6.2/3.5/3.6/6.3/2.3/2.4/2.5/2.6/4.10 QA PASSED y cerradas `[x]`.** Full QA: unit **44 files / 698 tests**, integración **30 files / 586 tests**, `typecheck`/`build` **0**, Docker limpio (`redkeep_db` intacto). Límites: 6.4, 0.2, 1.7, 7.x, 8.x y 9.x pendientes; versión nueva por feedback/regeneración queda futuro; REG-002/003/004/008 no resueltos (cierre humano, sin editar `defects/regressions.md`).
 
 ## 0. Documentación y salvaguardas
 
@@ -134,15 +134,16 @@
   - **REG mapping (no cierra el registro):** REG-002 mitigado por `REVIEW_REQUIRED` terminal en C; REG-003 mitigado al eliminar el autocompletado de consulta (la agregación real sigue en 2.3/6.x); REG-004 parcial al no perder campos disponibles (4.2 sigue siendo el cierre completo). `defects/regressions.md` no se reescribe; 2.4 queda parcial, 4.2/4.3 cerraron en HITO24 QA PASSED y REG-004 queda para cierre humano.
   - **Coverage:** “Snapshot clínico preparado por el runtime ML”, “Pin de contexto y rechazo de snapshot mentiroso”, “Creación transaccional de ejecución contextualizada”, “Sin mutación ni autocompletado del estado de consulta”, “Preparación de contexto clínico en el servicio ML”, “Compatibilidad del worker con terminales y revisión”.
 
-- [ ] 2.3 Implementar agregación de consulta con precedencia determinista y `reportState`.
+- [x] 2.3 Implementar agregación de consulta con precedencia determinista y `reportState`. **QA PASSED HITO28.**
   - **Scope:** nuevo `backend/src/services/consultation-completion.ts`; uso en `backend/src/workers/inference.worker.ts`.
   - **When/Then:** WHEN hay mezcla `FAILED` + `REVIEW_REQUIRED` + running THEN `analysisState=FAILED`; WHEN todo resultado+evidencia está pero falta PDF THEN `reportState=REPORT_PENDING` y `completionState=INCOMPLETE`; WHEN `requiredExecutionIds` vacío THEN `OPEN`.
   - **Depends on:** 6.1, 6.2.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con casos de una/dos ejecuciones y mezcla de estados.
   - **Coverage:** “Estado agregado de consulta con precedencia determinista”, “Separación entre estado de ejecución, etapa, artefacto y consulta”.
   - **Nota HITO28 (D29.1):** agregación **pura** con precedencia exacta y lectura **batch** de `ArtifactRecord`/`PdfReport` reales (depende de 3.5); sin enum DB persistido. Pendiente de `arquitectovalidate`.
+  - **Implementación/QA 2.3 PASSED:** `computeConsultationStates` puro; FAILED > REVIEW_REQUIRED > IN_PROGRESS > PARTIAL > OPEN, COMPLETE solo con set no vacío, todas COMPLETED, mask/overlay y PDF AVAILABLE; `reportState` FAILED>REPORT_PENDING>AVAILABLE; `pollingStop`; delivery por ejecución. Unit consultation-completion **22/22**, integración **16/16**; `typecheck`/`build` **0**. 2.3 `[x]`.
 
-- [ ] 2.4 Tratar `REVIEW_REQUIRED` como terminal de espera automática y evitar cierre o conversión automática.
+- [x] 2.4 Tratar `REVIEW_REQUIRED` como terminal de espera automática y evitar cierre o conversión automática. **QA PASSED HITO28.**
   - **Scope:** `backend/src/workers/inference.worker.ts:33-47`, estado de revisión en repositorio, caso de reanálisis en `backend/src/routes/inferences.ts`.
   - **When/Then:** WHEN el ML devuelve `REVIEW_REQUIRED` THEN el worker deja de esperar y persiste revisión; WHEN el médico intenta cerrar sin resultado válido THEN no se convierte a `COMPLETED`; WHEN existe PDF THEN no cambia a `COMPLETED` ni se autoaprueba; la resolución es un reanálisis como ejecución nueva con PDF independiente vinculado, sin pisar la anterior.
   - **Depends on:** 2.3.
@@ -150,8 +151,9 @@
   - **Coverage:** “Revisión humana terminal sin cierre automático”, B1 como restricción aprobada, “Estados de job y resultado completo”.
   - **Nota HITO19:** C ya cubre worker terminal/`REVIEW_REQUIRED` sin throw/retry y sin autocompletado; **no cierra 2.4**. La agregación de consulta y el PDF siguen en 2.3/6.x. REG-002 queda mitigado, no resuelto; el registro humano no se reescribe.
   - **Nota HITO28 (D29.4):** el worker `REVIEW` terminal ya existe; el cierre restante es agregado/delivery + PDF de revisión 6.3. Sin source hasta `arquitectovalidate`.
+  - **Implementación/QA 2.4 PASSED:** worker `REVIEW` terminal (sin throw/retry ni auto-completado) + agregación/delivery de 2.3/4.10 (`ACTION_REQUIRED`, `reviewRequired`, `delivery.complete=false`) + PDF de revisión 6.3; no se convierte a `COMPLETED` ni con PDF. Full QA PASSED. 2.4 `[x]`.
 
-- [ ] 2.5 Fijar selección requerida al iniciar y excluir reanálisis históricos no seleccionados.
+- [x] 2.5 Fijar selección requerida al iniciar y excluir reanálisis históricos no seleccionados. **QA PASSED HITO28.**
   - **Scope:** `backend/src/services/consultation-completion.ts`, `backend/src/repositories/consultation.repo.ts`, `backend/src/routes/consultations.ts`.
   - **When/Then:** WHEN se inicia la consulta THEN `requiredExecutionIds`, `requiredSetVersion` y `requiredSetFrozenAt` quedan fijados; WHEN existe un reanálisis posterior no seleccionado THEN no cambia la completitud de la consulta cerrada; WHEN se intenta promover o reemplazar un ID tras cierre THEN se rechaza por B2 (restricción aprobada) y no se reabre ni altera la consulta automáticamente.
   - **Depends on:** 2.2, 2.3.
@@ -159,14 +161,16 @@
   - **Coverage:** “Selección explícita de ejecuciones requeridas y cambio tras cierre” como frozen set, “Reanálisis enlazado sin sobrescribir evidencia”, B2 como restricción aprobada.
   - **Nota HITO19:** 2.2 no lee ni modifica `requiredExecutionIds` ni `requiredSetVersion`; la creación contextualizada no congela ni promueve IDs. 2.5 conserva todo el alcance de selección/freeze.
   - **Nota HITO28 (D29.3):** operación explícita `POST /consultations/:id/required-executions` con ownership, IDs existentes de la consulta y TX que escribe los tres campos; `requiredSetVersion = "rsv1:" + sha256hex(sorted IDs)`; sin duplicados/ajenos/cambios tras freeze (trigger SQL ya listo), sin tocar `consultation.status` ni reabrir cerrada.
+  - **Implementación/QA 2.5 PASSED:** route + `setRequiredSelection` en una TX, body `{ executionIds }`, IDs lowercased/sorted, ownership 404, duplicados/ajenos 422, freeze 409 (P2003/P2010 mapeados), trigger existente; `requiredSetVersion` `rsv1:`+sha256 y `requiredSetFrozenAt`; carrera determinista `{200,409}` y guard SQL. Unit 22/22, integración 16/16. 2.5 `[x]`.
 
-- [ ] 2.6 Exponer agregados de consulta sin enum DB nuevo.
+- [x] 2.6 Exponer agregados de consulta sin enum DB nuevo. **QA PASSED HITO28.**
   - **Scope:** `backend/src/services/consultation-completion.ts`, `backend/src/routes/consultations.ts`, `backend/src/schemas/consultation.ts`.
   - **When/Then:** WHEN se lee una consulta THEN recibe `requiredExecutionIds`, `requiredSetVersion`, `analysisState`, `reportState`, `completionState`; no se persiste un enum agregado ni `PROCESSING`.
   - **Depends on:** 2.3.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts`.
   - **Coverage:** “Estado agregado de consulta con precedencia determinista”, “Separación entre estado de ejecución, etapa, artefacto y consulta”.
   - **Nota HITO28 (D29.2):** `GET /consultations/:id` expone agregados calculados en lectura, sin persistir un enum nuevo. Sin source hasta `arquitectovalidate`.
+  - **Implementación/QA 2.6 PASSED:** añade `requiredExecutionIds`, `requiredSetVersion`, `analysisState`, `reportState`, `completionState`, `pollingStop` a la respuesta existente; lectura batch de ejecuciones/artefactos/reportes sin persistir. Se mantiene owner-only (un grant NO concede Consultation); 4.10 cubre grant `readResult` para la ejecución. 2.6 `[x]`.
 
 ## 3. Storage y artefactos
 
@@ -343,13 +347,14 @@
   - **Test (QA PASSED):** `npm --prefix backend run test:unit -- tests/unit/inference-run-repo.test.ts tests/unit/inference.processor.test.ts` → **2 files / 46**; `npm --prefix backend run test:integration -- tests/repositories.test.ts` → **1 file / 23**; `typecheck`/`build` **0**.
   - **Coverage:** “Entrega at-least-once y recuperación del worker”.
 
-- [ ] 4.10 Implementar polling/backoff/Retry-After y entrega posterior a `COMPLETED`.
+- [x] 4.10 Implementar polling/backoff/Retry-After y entrega posterior a `COMPLETED`. **QA PASSED HITO28.**
   - **Scope:** `backend/src/routes/inferences.ts`, `backend/src/routes/artifacts.ts`, contrato de estado.
   - **When/Then:** WHEN el cliente consulta THEN usa 2 s inicial/techo 10 s y `Retry-After`; WHEN ML `COMPLETED` pero faltan artefactos/PDF THEN la entrega continúa y no se declara completitud.
   - **Depends on:** 2.3, 3.5, 4.2.
   - **Test:** `npm --prefix backend run test -- tests/repositories.test.ts` con estados simulados.
   - **Coverage:** “Polling, Retry-After y entrega posterior a COMPLETED”, “Estado agregado de consulta con precedencia determinista”.
   - **Nota HITO28 (D29.5):** backoff 2 s→10 s y `Retry-After`; la entrega continúa tras `COMPLETED` usando los agregados de 2.3 y no declara completitud por `jobTerminal`. Sin source hasta `arquitectovalidate`.
+  - **Implementación/QA 4.10 PASSED:** `GET /inferences/:id` añade `status`, `stage`, `delivery` (result/evidence/pdf + flags), `pollingStop` y `Retry-After` 2→10 s solo si `CONTINUE`; `COMPLETED` con PDF pendiente mantiene `delivery.complete=false` y `CONTINUE`; sin locators ni cambio del resultado inline. Integración 16/16; full QA 44 files/698 unit y 30 files/586 integración; `typecheck`/`build` **0**. 4.10 `[x]`.
 
 ## 5. Seguridad, roles, sesiones y auditoría
 
@@ -470,7 +475,7 @@
   - **Test:** benchmark en entorno aislado (no ejecutar en este change).
   - **Coverage:** “Criterio medible de generación institucional (HU08)”.
 
-**Límite de cierre 3.6/6.3:** la versión nueva por feedback/regeneración queda futuro (post-6.3); **6.4** pendiente; **2.3/2.4/2.5/2.6/4.10** pendientes; **REG-002/003/004/008 no resueltos** (cierre humano). Sin source/test edits ni commit en este cierre documental.
+**Límite de cierre HITO27/28:** 2.3/2.4/2.5/2.6/4.10 QA PASSED; la versión nueva por feedback/regeneración queda futuro (post-6.3); **6.4, 0.2, 1.7, 7.x, 8.x y 9.x** pendientes; **REG-002/003/004/008 no resueltos** (cierre humano, sin editar `defects/regressions.md`). Sin source/test edits ni commit en este cierre documental.
 
 ## 7. Pruebas transversales y métricas
 

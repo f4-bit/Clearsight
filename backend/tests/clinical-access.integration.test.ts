@@ -382,11 +382,13 @@ describe("clinical ownership and grants", () => {
     expect(ok.statusCode).toBe(202);
     expect(await prisma.inference.count()).toBe(before + 1);
     expect(enqueueInference).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(enqueueInference).mock.calls[0]![0]).toMatchObject({
+    const enqueuedJob = vi.mocked(enqueueInference).mock.calls[0]![0];
+    expect(enqueuedJob).toMatchObject({
       eyeSide: "OD",
       imageId: own.image.id,
-      imageUrl: "http://minio:9000/retina.jpg",
     });
+    // 4.8: new jobs omit imageUrl; the worker re-signs JIT from storagePath.
+    expect(enqueuedJob).not.toHaveProperty("imageUrl");
   });
 
   it("rejects any client-supplied inferenceId identically before work and uses a server UUID when absent", async () => {

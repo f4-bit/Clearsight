@@ -5,14 +5,22 @@ import { notFound, serviceUnavailable } from "../lib/http-error.js";
 import type { PrismaClient } from "../lib/prisma.js";
 import { authenticate } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
+import { createConsultationRepository } from "../repositories/consultation.repo.js";
 import { errorResponseSchema } from "../schemas/common.js";
+import { PollingStop } from "../schemas/consultation.js";
 import {
+  DeliveryStateSchema,
   inferenceCreateSchema,
   jobAcceptedSchema,
 } from "../schemas/inference.js";
 import { parseArtifactLocation } from "../services/artifact-reference.js";
 import type { ClinicalAccessService } from "../services/clinical-access.js";
 import { subjectFromRequest } from "../services/clinical-access.js";
+import {
+  computeConsultationStates,
+  computeExecutionDelivery,
+  computeRetryAfterSeconds,
+} from "../services/consultation-completion.js";
 import { createInferenceCreationService } from "../services/inference-creation.js";
 import { parseIdempotencyKey } from "../services/idempotency.js";
 import type { ClinicalContextPreparer } from "../services/ml-client.js";
@@ -36,6 +44,7 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
 ) => {
   const { prisma, access } = opts;
   const storage = opts.storage ?? StorageService;
+  const consultationRepository = createConsultationRepository(prisma);
   const typedApp = app.withTypeProvider<ZodTypeProvider>();
 
   const resolveLocation = (
@@ -120,6 +129,10 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
             gradcamPath: z.string().nullable(),
             modelVersion: z.string().nullable(),
             createdAt: z.date().or(z.iso.datetime()),
+            status: z.string(),
+            stage: z.string().nullable(),
+            delivery: DeliveryStateSchema,
+            pollingStop: PollingStop,
           }),
           404: errorResponseSchema,
         },
@@ -133,6 +146,42 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         "readResult",
       );
 
+      const legacyConsultationId = inference.consultationId
+        ? null
+        : (
+            await prisma.image.findUnique({
+              where: { id: inference.imageId },
+              select: { consultationId: true },
+            })
+          )?.consultationId ?? null;
+      const consultationId = inference.consultationId ?? legacyConsultationId;
+      const completion =
+        consultationId === null
+          ? null
+          : await consultationRepository.findCompletionInput(consultationId);
+      const execution =
+        completion?.input.executions.find(
+          (row) => row.inferenceId === inference.id,
+        ) ??
+        (await consultationRepository.findExecutionState(inference.id));
+      if (execution === null) {
+        throw serviceUnavailable("Inference delivery state is unavailable");
+      }
+
+      const delivery = computeExecutionDelivery(execution);
+      const pollingStop =
+        completion === null
+          ? computeConsultationStates({
+              requiredExecutionIds: [inference.id],
+              executions: [execution],
+            }).pollingStop
+          : computeConsultationStates(completion.input).pollingStop;
+      const status = inference.status ?? "QUEUED";
+      const retryAfter = computeRetryAfterSeconds(status, pollingStop);
+      if (retryAfter !== null) {
+        reply.header("Retry-After", String(retryAfter));
+      }
+
       return reply.send({
         id: inference.id,
         imageId: inference.imageId,
@@ -142,6 +191,10 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         gradcamPath: redactGradcamPath ? null : inference.gradcamPath,
         modelVersion: inference.modelVersion,
         createdAt: inference.createdAt,
+        status,
+        stage: inference.status,
+        delivery,
+        pollingStop,
       });
     }
   );

@@ -299,6 +299,20 @@ export const ArtifactUrlSchema = z
 
 export type ArtifactUrl = z.infer<typeof ArtifactUrlSchema>;
 
+export const DeliveryStateSchema = z
+  .object({
+    resultStatus: ArtifactStatus,
+    evidenceStatus: ArtifactStatus,
+    pdfStatus: ArtifactStatus,
+    complete: z.boolean(),
+    reviewRequired: z.boolean(),
+    failed: z.boolean(),
+    deliveryTerminal: z.boolean(),
+  })
+  .strict();
+
+export type DeliveryState = z.infer<typeof DeliveryStateSchema>;
+
 export const PDF_REPORT_STATUSES = ["PENDING", "AVAILABLE", "FAILED"] as const;
 export const PdfReportStatus = z.enum(PDF_REPORT_STATUSES);
 export type PdfReportStatus = z.infer<typeof PdfReportStatus>;

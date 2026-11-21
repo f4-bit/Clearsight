@@ -951,10 +951,8 @@ describe("migration D adversarial regression coverage (QA)", () => {
       const scratch = await newClient();
       try {
         await scratch.query(`SET search_path TO ${metaSchema}`);
-        for (const name of MIGRATIONS) {
-          if (name === HARDENING_MIGRATION) {
-            continue;
-          }
+        const hardeningIndex = MIGRATIONS.indexOf(HARDENING_MIGRATION);
+        for (const name of MIGRATIONS.slice(0, hardeningIndex)) {
           await scratch.query(migrationSql(name));
         }
         // Metadata tables exist BEFORE D runs, so a loose grant loop would leak.
@@ -963,6 +961,9 @@ describe("migration D adversarial regression coverage (QA)", () => {
         );
         await scratch.query(`CREATE TABLE ${metaSchema}.test_meta (run_id text PRIMARY KEY)`);
         await scratch.query(migrationSql(HARDENING_MIGRATION));
+        for (const name of MIGRATIONS.slice(hardeningIndex + 1)) {
+          await scratch.query(migrationSql(name));
+        }
       } finally {
         await scratch.end();
       }
