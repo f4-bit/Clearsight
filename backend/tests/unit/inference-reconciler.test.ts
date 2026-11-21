@@ -252,6 +252,247 @@ describe("dispatch reconciler", () => {
     expect(clearIntervalFn).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes bounded candidates without dispatching ML work", async () => {
+    const candidates = [
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ];
+    const findCandidates = vi.fn(async () => candidates);
+    const publish = vi.fn(async () => ({
+      report: { status: "AVAILABLE", failureCode: null },
+      artifacts: [],
+    }));
+    const dispatch = vi.fn();
+    const logger = vi.fn();
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch: vi.fn(async () => []),
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch,
+      publication: { findCandidates, publish },
+      publicationBatchSize: 3,
+      intervalMs: 0,
+      logger,
+    });
+
+    await reconciler.runOnce();
+    reconciler.stop();
+
+    expect(findCandidates).toHaveBeenCalledWith(3);
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+  });
+
+  it("logs safe publication failure codes and candidate-query failures", async () => {
+    const logger = vi.fn();
+    const publish = vi
+      .fn()
+      .mockResolvedValueOnce({
+        report: { status: "FAILED", failureCode: "storage_upload_failed" },
+        artifacts: [],
+      })
+      .mockRejectedValueOnce({ code: "inference_not_found" });
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch: vi.fn(async () => []),
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch: vi.fn(),
+      publication: {
+        findCandidates: vi.fn(async () => [
+          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        ]),
+        publish,
+      },
+      intervalMs: 0,
+      logger,
+    });
+
+    await reconciler.runOnce();
+    reconciler.stop();
+
+    expect(logger).toHaveBeenCalledWith({
+      code: "storage_upload_failed",
+      inferenceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    expect(logger).toHaveBeenCalledWith({
+      code: "inference_not_found",
+      inferenceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+
+    const failingCandidates = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch: vi.fn(async () => []),
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch: vi.fn(),
+      publication: {
+        findCandidates: vi.fn(async () => {
+          throw new Error("db down");
+        }),
+        publish: vi.fn(),
+      },
+      intervalMs: 0,
+      logger,
+    });
+    await expect(failingCandidates.runOnce()).resolves.toBeUndefined();
+    failingCandidates.stop();
+    expect(logger).toHaveBeenCalledWith({
+      code: "publication_candidates_failed",
+    });
+  });
+
+  it("does not overlap publication reconciliation with itself", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const findCandidates = vi.fn(async () => {
+      markStarted();
+      await gate;
+      return [];
+    });
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch: vi.fn(async () => []),
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch: vi.fn(),
+      publication: { findCandidates, publish: vi.fn() },
+      intervalMs: 0,
+      logger: vi.fn(),
+    });
+
+    const first = reconciler.runOnce();
+    await started;
+    await reconciler.runOnce();
+    expect(findCandidates).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    reconciler.stop();
+  });
+
+  it("does not start publication while a dispatch claim is still in flight", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const claimPendingDispatchBatch = vi.fn(async () => {
+      await gate;
+      return [];
+    });
+    const findCandidates = vi.fn(async () => [] as string[]);
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch,
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch: vi.fn(),
+      publication: { findCandidates, publish: vi.fn() },
+      intervalMs: 0,
+      logger: vi.fn(),
+    });
+
+    const first = reconciler.runOnce();
+    await reconciler.runOnce();
+    // The same running guard blocks the whole loop: publication must not run
+    // while the dispatch phase of a previous runOnce is still pending.
+    expect(findCandidates).not.toHaveBeenCalled();
+    expect(claimPendingDispatchBatch).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(findCandidates).toHaveBeenCalledTimes(1);
+    reconciler.stop();
+  });
+
+  it("does not start a dispatch claim while publication is still in flight", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const claimPendingDispatchBatch = vi.fn(async () => []);
+    const findCandidates = vi.fn(async () => {
+      markStarted();
+      await gate;
+      return [] as string[];
+    });
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch,
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch: vi.fn(),
+      publication: { findCandidates, publish: vi.fn() },
+      intervalMs: 0,
+      logger: vi.fn(),
+    });
+
+    const first = reconciler.runOnce();
+    await started;
+    await reconciler.runOnce();
+    expect(claimPendingDispatchBatch).toHaveBeenCalledTimes(1);
+    expect(findCandidates).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    reconciler.stop();
+  });
+
+  it("keeps publishing the rest of the batch after a failure and retries that candidate next runOnce", async () => {
+    const candidateA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const candidateB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const findCandidates = vi.fn(async () => [candidateA, candidateB]);
+    const publish = vi
+      .fn()
+      .mockRejectedValueOnce({ code: "storage_unavailable" })
+      .mockResolvedValue({
+        report: { status: "AVAILABLE", failureCode: null },
+        artifacts: [],
+      });
+    const logger = vi.fn();
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch: vi.fn(async () => []),
+        markDispatchOutcome: vi.fn(async () => 1),
+      },
+      dispatch: vi.fn(),
+      publication: { findCandidates, publish },
+      intervalMs: 0,
+      logger,
+    });
+
+    await reconciler.runOnce();
+    // The failure of candidate A must not abort the batch: B still publishes.
+    expect(publish.mock.calls.map((call) => call[0])).toEqual([
+      candidateA,
+      candidateB,
+    ]);
+    expect(logger).toHaveBeenCalledWith({
+      code: "storage_unavailable",
+      inferenceId: candidateA,
+    });
+
+    await reconciler.runOnce();
+    // The failed candidate is attempted again on the next run.
+    expect(publish.mock.calls.map((call) => call[0])).toEqual([
+      candidateA,
+      candidateB,
+      candidateA,
+      candidateB,
+    ]);
+    reconciler.stop();
+  });
+
   it("does not schedule a timer when the interval is disabled", () => {
     const setIntervalFn = vi.fn();
     const reconciler = startDispatchReconciler({

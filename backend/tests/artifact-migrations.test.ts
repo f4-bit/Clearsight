@@ -11,6 +11,7 @@ const SCHEMA = "artifact_reports_rules";
 const MIGRATIONS = migrationNames();
 const ARTIFACT_MIGRATION = "20261118010000_artifact_reports";
 const DATA_VERSION_MIGRATION = "20261122000000_pdf_report_data_version_pending";
+const PUBLICATION_INDEX_MIGRATION = "20261123000000_publication_reconcile_index";
 const CHECKSUM = "a".repeat(64);
 
 const P = "00000000-0000-4000-8000-0000000002a1";
@@ -743,6 +744,45 @@ describe("migration B artifact and PDF persistence", () => {
     await expect(client.query("DELETE FROM pdf_reports WHERE id = $1", [R1])).rejects.toThrow(
       /published PDF reports cannot be deleted/,
     );
+  });
+
+  it("creates the publication reconcile partial index with the exact terminal predicate", async () => {
+    const result = await client.query(
+      "SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_inferences_publication_reconcile'",
+    );
+    expect(result.rows).toEqual([
+      { indexname: "idx_inferences_publication_reconcile" },
+    ]);
+
+    const def = await client.query(
+      "SELECT pg_get_indexdef('idx_inferences_publication_reconcile'::regclass) AS indexdef",
+    );
+    const indexdef = String(def.rows[0]?.indexdef ?? "");
+    // Matches the reconciler candidate scan ordering.
+    expect(indexdef).toMatch(/USING btree \(created_at, id\)/);
+    // Partial index: only the terminal publication statuses, nothing else.
+    expect(indexdef).toMatch(/WHERE/i);
+    expect(indexdef).toContain("COMPLETED");
+    expect(indexdef).toContain("REVIEW_REQUIRED");
+    expect(indexdef).not.toContain("FAILED");
+    expect(indexdef).not.toContain("QUEUED");
+    expect(indexdef).not.toContain("PROCESSING");
+    expect(indexdef).not.toContain("ACCEPTED");
+  });
+
+  it("replays the publication reconcile index migration idempotently", async () => {
+    // CREATE INDEX IF NOT EXISTS: replaying must neither fail nor duplicate.
+    await expect(
+      client.query(migrationSql(PUBLICATION_INDEX_MIGRATION)),
+    ).resolves.toBeDefined();
+    await expect(
+      client.query(migrationSql(PUBLICATION_INDEX_MIGRATION)),
+    ).resolves.toBeDefined();
+
+    const result = await client.query(
+      "SELECT count(*)::int AS count FROM pg_catalog.pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_inferences_publication_reconcile'",
+    );
+    expect(result.rows).toEqual([{ count: 1 }]);
   });
 
   it("replays the corrective pending-content migration without changing rows or weakening guards", async () => {

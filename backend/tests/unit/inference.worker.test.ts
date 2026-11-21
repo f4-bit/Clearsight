@@ -9,6 +9,18 @@ const mocks = vi.hoisted(() => {
     runOnce: reconcilerRunOnce,
     stop: reconcilerStop,
   }));
+  const publicationRepository = {
+    findPublicationCandidates: vi.fn(async () => [] as string[]),
+  };
+  const publicationService = {
+    publish: vi.fn(async () => ({ report: null, artifacts: [] })),
+  };
+  const createArtifactPublicationRepository = vi.fn(
+    () => publicationRepository,
+  );
+  const createDefaultArtifactPublicationService = vi.fn(
+    () => publicationService,
+  );
   return {
     redis: vi.fn(function () {
       return redisInstance;
@@ -21,6 +33,10 @@ const mocks = vi.hoisted(() => {
     reconcilerStop,
     reconcilerRunOnce,
     startDispatchReconciler,
+    publicationRepository,
+    publicationService,
+    createArtifactPublicationRepository,
+    createDefaultArtifactPublicationService,
   };
 });
 
@@ -31,6 +47,14 @@ vi.mock("bullmq", async (importOriginal) => {
 });
 vi.mock("../../src/workers/inference.reconciler.js", () => ({
   startDispatchReconciler: mocks.startDispatchReconciler,
+}));
+vi.mock("../../src/repositories/artifact-publication.repo.js", () => ({
+  createArtifactPublicationRepository:
+    mocks.createArtifactPublicationRepository,
+}));
+vi.mock("../../src/services/artifact-publication.js", () => ({
+  createDefaultArtifactPublicationService:
+    mocks.createDefaultArtifactPublicationService,
 }));
 
 import { UnrecoverableError } from "bullmq";
@@ -56,6 +80,10 @@ describe("inference worker bootstrap", () => {
     mocks.startDispatchReconciler.mockClear();
     mocks.reconcilerStop.mockClear();
     mocks.reconcilerRunOnce.mockClear();
+    mocks.createArtifactPublicationRepository.mockClear();
+    mocks.createDefaultArtifactPublicationService.mockClear();
+    mocks.publicationRepository.findPublicationCandidates.mockClear();
+    mocks.publicationService.publish.mockClear();
   });
 
   it("does not open Redis at import and only does it inside the no-arg boot", () => {
@@ -85,13 +113,17 @@ describe("inference worker bootstrap", () => {
     });
   });
 
-  it("starts the dispatch reconciler with the repository and stops it on worker close", () => {
+  it("starts the dispatch reconciler with the repository and stops it on worker close", async () => {
     startInferenceWorker();
 
     expect(mocks.startDispatchReconciler).toHaveBeenCalledTimes(1);
     const deps = mocks.startDispatchReconciler.mock.calls[0]![0] as {
       repository: unknown;
       dispatch: (record: unknown) => Promise<unknown>;
+      publication?: {
+        findCandidates: (limit: number) => Promise<readonly string[]>;
+        publish: (inferenceId: string) => Promise<unknown>;
+      };
       intervalMs?: number;
       batchSize?: number;
     };
@@ -99,6 +131,22 @@ describe("inference worker bootstrap", () => {
     expect(typeof deps.dispatch).toBe("function");
     expect(deps.intervalMs).toBeUndefined();
     expect(deps.batchSize).toBeUndefined();
+    expect(deps.publication).toBeDefined();
+    expect(mocks.createArtifactPublicationRepository).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.createDefaultArtifactPublicationService,
+    ).toHaveBeenCalledTimes(1);
+
+    await deps.publication!.findCandidates(7);
+    expect(
+      mocks.publicationRepository.findPublicationCandidates,
+    ).toHaveBeenCalledWith(7);
+    await deps.publication!.publish(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    expect(mocks.publicationService.publish).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
 
     const closed = mocks.workerInstance.on.mock.calls.find(
       (call) => call[0] === "closed",

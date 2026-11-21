@@ -19,6 +19,39 @@ const ARTIFACT_PUBLICATION_SELECT = {
   availableAt: true,
 } as const;
 
+const TERMINAL_PUBLICATION_STATUSES = [
+  "COMPLETED",
+  "REVIEW_REQUIRED",
+] as const;
+const MAX_PUBLICATION_CANDIDATE_LIMIT = 100;
+
+/**
+ * A required binary artifact still needs publication when it has no row yet,
+ * is PENDING (interrupted attempt) or is FAILED retryable. A permanent FAILED
+ * row is deliberately excluded so the reconciler does not loop forever.
+ */
+function needsArtifact(type: ArtifactType): Prisma.InferenceWhereInput {
+  return {
+    OR: [
+      { artifactRecords: { none: { artifactType: type } } },
+      {
+        artifactRecords: {
+          some: { artifactType: type, status: "PENDING" },
+        },
+      },
+      {
+        artifactRecords: {
+          some: {
+            artifactType: type,
+            status: "FAILED",
+            retryable: true,
+          },
+        },
+      },
+    ],
+  };
+}
+
 const PDF_REPORT_PUBLICATION_SELECT = {
   id: true,
   inferenceId: true,
@@ -137,6 +170,11 @@ export interface PdfReportListRow {
 }
 
 export interface ArtifactPublicationRepository {
+  /**
+   * Bounded ids of terminal inferences whose required artifacts/report still
+   * need publication or a retryable retry. It never returns raw result data.
+   */
+  findPublicationCandidates(limit: number): Promise<string[]>;
   findInference(inferenceId: string): Promise<PublicationInference | null>;
   findArtifact(
     inferenceId: string,
@@ -228,6 +266,48 @@ export function createArtifactPublicationRepository(
   db: PrismaClient,
 ): ArtifactPublicationRepository {
   return {
+    findPublicationCandidates: async (limit) => {
+      if (!Number.isInteger(limit) || limit < 1) {
+        return [];
+      }
+      const take = Math.min(limit, MAX_PUBLICATION_CANDIDATE_LIMIT);
+      const rows = await db.inference.findMany({
+        where: {
+          status: { in: [...TERMINAL_PUBLICATION_STATUSES] },
+          OR: [
+            needsArtifact("mask"),
+            needsArtifact("overlay"),
+            needsArtifact("pdf"),
+            // Repair a PDF AVAILABLE whose report row is missing. This is a
+            // pair-consistency case, not a retry of a permanent failure.
+            {
+              AND: [
+                { pdfReports: { none: {} } },
+                {
+                  artifactRecords: {
+                    some: { artifactType: "pdf", status: "AVAILABLE" },
+                  },
+                },
+              ],
+            },
+            { pdfReports: { some: { status: "PENDING" } } },
+            {
+              pdfReports: {
+                some: {
+                  status: "FAILED",
+                  artifact: { is: { retryable: true } },
+                },
+              },
+            },
+          ],
+        },
+        select: { id: true },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take,
+      });
+      return rows.map((row) => row.id);
+    },
+
     findInference: (inferenceId) =>
       db.inference.findUnique({
         where: { id: inferenceId },

@@ -785,9 +785,9 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - **4.8:** JIT re-firma desde `execution.image.storagePath` antes de cada submit; jobs nuevos no llevan URL firmada y legacy se ignora cuando hay `storagePath`; TTL 3600 se mantiene sin adoptar 300 s. `imageUrl` sigue siendo payload interno, sin cambio de frontend.
 - **Fuera de cierre:** REG-002/003/004 siguen para cierre humano; `gradcam`/`mask`/`overlay` y los agregados/PDF pertenecen a 2.3/6.x. `defects/regressions.md` no se edita.
 
-### D28. PDF básico, persistencia y publicación/reconciliación de artefactos (HITO27, tareas 6.1/6.2/3.5 QA PASSED; 3.6 pendiente)
+### D28. PDF básico, persistencia, publicación/reconciliación y revisión (HITO27, tareas 6.1/6.2/3.5/3.6/6.3 QA PASSED)
 
-**Decisión (aprobada; D28 validado por arquitecto con `--strict 0`):** D28.1-D28.5 fijan el contrato de HITO27 sobre la base `67942a1`. **6.1, 6.2 y 3.5 están implementadas y QA PASSED** (seam `artifact-content.ts` + renderer puro `pdf-report.ts`; publicación `artifact-publication.ts`/repo + `/reports`), incluidas las correcciones D1/D2. **3.6 no se ha iniciado**; 6.3/6.4 y la versión nueva por feedback/regeneración quedan pendientes. No se toca Azure/`.env` reales, PDF real de producción, modelos, migraciones históricas ni `0_init`; no se commitea.
+**Decisión (aprobada; D28 validado por arquitecto con `--strict 0`):** D28.1-D28.5 fijan el contrato de HITO27 sobre la base `67942a1`. **6.1, 6.2, 3.5, 3.6 y 6.3 están implementadas y QA PASSED** (seam `artifact-content.ts` + renderer puro `pdf-report.ts`; publicación `artifact-publication.ts`/repo + `/reports`; reconciliador de publicación; PDF de revisión). Incluye D1/D2. 6.4 y la versión nueva por feedback/regeneración quedan pendientes. No se toca Azure/`.env` reales, PDF real de producción, modelos, migraciones históricas ni `0_init`; no se commitea.
 
 **6.1 Renderer puro y seam de artefactos (D28.1-D28.2)**
 
@@ -806,12 +806,12 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - **Atomicidad del par (corrección QA D2):** `finalizePdfAvailable` exige `report.update.count=1` dentro de la TX; si es 0 lanza y hace rollback completo (nunca artifact `AVAILABLE` + report `FAILED`). También rechaza un artifact ya `AVAILABLE` con metadata divergente. El perdedor de un finalize concurrente refresca el estado y devuelve el `AVAILABLE` del ganador sin invocar `finalizePdfFailed` sobre filas `AVAILABLE`. Las guardas `status != AVAILABLE` y los triggers de inmutabilidad se mantienen.
 - **Migración correctiva D1**: `pdf_reports`/`artifact_records` ya cubren `sourceSnapshotId`, `version > 0`, `dataVersion` no vacío y `content_type='application/pdf'` en `AVAILABLE`; constraints existentes `pdf_reports_available_check` y `artifact_records_pdf_content_type_check` lo validan. No se crean tablas ni columnas. La única migración nueva es `20261122000000_pdf_report_data_version_pending`, que permite `data_version` y `rendering_inputs` solo PENDING→PENDING; no se editan migraciones históricas ni `0_init`.
 
-**3.5/3.6 Publicación, reconciliación y reintento (D28.4-D28.5)**
+**3.5/3.6 Publicación, reconciliación y reintento (D28.4-D28.5; QA PASSED)**
 
 - Desde `Inference.artifacts`/resultado se publican `ArtifactRecord` mask/overlay/pdf con tamaño/checksum/estado, se verifica el objeto y se reconcilian huérfanos/ausentes. El bucket mask/overlay/pdf es configurable con allowlist (`MINIO_BUCKET_MASK`/`OVERLAY`/`PDF` nuevos o `STORAGE_ALLOWED_BUCKETS` extendida) y **fail closed** si falta. Un artefacto ML **key-only sin URI** ⇒ `FAILED`; no se inventa ubicación.
 - El reintento de publicación/PDF (3.6) no reinfiere ni depende del short-circuit terminal: se ejecuta en un reconciliador o fase separada, **fuera** del processor terminal. La publicación ocurre **antes del CAS** para que el resultado clínico no se bloquee por storage.
 
-**Límites HITO27:** sin Azure/`.env` reales, PDF real de producción, modelos, full suite, migraciones históricas ni commit. 6.1/6.2/3.5 quedan `[x]` QA PASSED; 3.6 (reintento en reconciliador), 6.3 y 6.4 siguen pendientes; versión nueva por feedback/regeneración queda 6.3+/futuro; REG-004 no resuelto (cierre humano).
+**Límites HITO27:** sin Azure/`.env` reales, PDF real de producción, modelos, full suite, migraciones históricas ni commit. 6.1/6.2/3.5/3.6/6.3 quedan `[x]` QA PASSED; 6.4 y 2.3/2.4/2.5/2.6/4.10 siguen pendientes; versión nueva por feedback/regeneración queda futuro (post-6.3); REG-002/003/004/008 no resueltos (cierre humano).
 
 ### D29. Agregación de consulta, freeze, entrega y polling (HITO28, tareas 2.3/2.4/2.5/2.6/4.10; planificación)
 
@@ -820,7 +820,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 - **2.3 Agregación pura (D29.1):** `backend/src/services/consultation-completion.ts` calcula `analysisState` (`OPEN`/`IN_PROGRESS`/`REVIEW_REQUIRED`/`FAILED`/`PARTIAL`/`COMPLETED`), `reportState` (`NOT_REQUESTED`/`REPORT_PENDING`/`AVAILABLE`/`FAILED`), `completionState` (`INCOMPLETE`/`COMPLETE`) y `pollingStop` (`CONTINUE`/`COMPLETE`/`ACTION_REQUIRED`/`FAILED`) con la precedencia exacta de la spec. Lee en **batch** `ArtifactRecord`/`PdfReport` (estados reales; depende de 3.5). No se introduce enum DB persistido.
 - **2.6 Exposición (D29.2):** `GET /consultations/:id` devuelve los agregados calculados en lectura, sin persistirlos.
 - **2.5 Freeze (D29.3):** nueva operación explícita `POST /consultations/:id/required-executions`; verifica ownership, recibe IDs **existentes de la consulta** y escribe `requiredExecutionIds` + `requiredSetVersion` + `requiredSetFrozenAt` en una TX. Rechaza duplicados/ajenos y cambios tras el freeze (el trigger SQL ya está listo); no toca `consultation.status` ni reabre una consulta cerrada.
-- **2.4 Cierre (D29.4):** el worker ya trata `REVIEW_REQUIRED` como terminal; falta el agregado/delivery y el PDF de revisión de 6.3.
+- **2.4 Cierre (D29.4):** el worker ya trata `REVIEW_REQUIRED` como terminal; falta el agregado/delivery; el PDF de revisión 6.3 ya está implementado y QA PASSED.
 - **4.10 Polling/entrega (D29.5):** backoff 2 s→10 s y `Retry-After`; la entrega continúa después de `COMPLETED` usando los agregados de 2.3 y no declara completitud por `jobTerminal`.
 
 **Límites HITO28:** 2.3/2.4/2.5/2.6/4.10 permanecen `[ ]`; sin source hasta `arquitectovalidate`, sin full suite ni commit.
@@ -900,10 +900,11 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | ADR-069 | 6.1: PDF con IDs pseudónimos, snapshot/modelVersions/predictions, reportId/version, probabilidades/clase/CDR por tipo/calidad/fechas/warnings y aviso; 11 features rawPayload “no interpretables”; sin PHI identificatoria (`externalCode` excluido); `renderingInputs` sin `://` ni firma | implemented QA PASSED (HITO27) | D28.2 |
 | ADR-070 | 6.2: PdfReport+ArtifactRecord pdf misma inferencia/versión, idempotente y versionado; `sourceSnapshotId` obligatorio (legacy null no `AVAILABLE`); reutiliza URL de 3.4; retry retryable reutiliza misma fila/versión y refresca `dataVersion`+`renderingInputs` solo PENDING→PENDING; finalize atómico con rollback | implemented QA PASSED (HITO27/28; D1/D2) | D28.3 |
 | ADR-071 | 3.5: publicación/reconciliación verificada con tamaño/checksum/estado; allowlist de buckets mask/overlay/pdf fail closed; ML key-only sin URI ⇒ `FAILED`; sin inventar ubicación; par PDF/report nunca queda medio publicado | implemented QA PASSED (HITO27/28; D2) | D28.4 |
-| ADR-072 | 3.6: reintento de publicación/PDF sin reinferir, en reconciliador/fase separada fuera del processor terminal; publicación antes del CAS para no bloquear el resultado clínico por storage | planned HITO27 | D28.5 |
-| ADR-073 | 2.3: agregación pura `consultation-completion.ts` con precedencia exacta y lectura batch de ArtifactRecord/PdfReport; sin enum DB persistido | planned HITO28 | D29.1 |
+| ADR-072 | 3.6: reintento de publicación/PDF sin reinferir, en reconciliador/fase separada fuera del processor terminal; candidatos terminales con artifact/report faltante, PENDING o FAILED retryable (fallos permanentes excluidos), mismo `running`, batch inyectable, logs seguros e índice parcial `idx_inferences_publication_reconcile` | implemented QA PASSED (HITO27/28) | D28.5 |
+| ADR-073 | 2.3: agregación pura `consultation-completion.ts` con precedencia exacta y lectura batch de ArtifactRecord/PdfReport; sin enum DB persistido | planned HITO28 | D29.1 (6.3 → ADR-076) |
 | ADR-074 | 2.5: freeze por operación explícita `POST /consultations/:id/required-executions` (ownership, IDs de la consulta, TX, sin duplicados/ajenos/cambios tras freeze, sin tocar `consultation.status`) | planned HITO28 | D29.3 |
 | ADR-075 | 2.6/4.10: `GET /consultations/:id` expone agregados sin persistir; polling 2 s→10 s con `Retry-After` y entrega posterior a `COMPLETED` según agregados, sin completitud por `jobTerminal` | planned HITO28 | D29.2, D29.5 |
+| ADR-076 | 6.3: PDF de `REVIEW_REQUIRED` declara revisión requerida, evidencia parcial y artefactos/imágenes faltantes; Grad-CAM/SHAP `NOT_SUPPORTED` sin imágenes simuladas | implemented QA PASSED (HITO27/28) | D28.2, ADR-019 |
 
 ## Risks / Trade-offs
 
@@ -968,7 +969,7 @@ La serialización canónica es JSON con claves ordenadas, sin espacios, UTF-8, l
 | 6.1: EXIF del original sobrevive al PDF | Re-encode defensivo con `sharp` sin EXIF antes de embeber; test que inspecciona metadata del JPEG/PNG. |
 | 6.1: PDF demasiado grande o memoria excesiva | Límite de dimensiones/calidad y tamaño máximo de salida; test de rechazo seguro. |
 | 6.2: fila PDF `AVAILABLE` sin snapshot o content-type inválido | `sourceSnapshotId` obligatorio y `application/pdf`; el constraint existente rechaza la publicación y no se crea una migración nueva. |
-| 3.5: bucket PDF ausente en Azure deploy | Allowlist configurable fail closed; 3.5/3.6 quedan pendientes y el deploy no se declara listo. |
+| 3.5: bucket PDF ausente en Azure deploy | Allowlist configurable fail closed; 3.5/3.6 QA PASSED en local, pero el deploy Azure sigue pendiente y no se declara listo. |
 | 3.5: artefacto ML key-only sin ubicación | Se marca `FAILED`; no se reconstruye bucket ni se inventa URL. |
 | 2.3: versión de PDF ambigua al agregar | Se elige la versión más alta publicada sin `latest` en la descarga; la versión se informa explícitamente. |
 

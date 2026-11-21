@@ -4,11 +4,29 @@ import type { DispatchPendingOutcome } from "../services/inference-dispatch.js";
 
 export const DEFAULT_DISPATCH_RECONCILE_INTERVAL_MS = 10_000;
 export const DEFAULT_DISPATCH_RECONCILE_BATCH_SIZE = 20;
+export const DEFAULT_PUBLICATION_RECONCILE_BATCH_SIZE = 20;
 
 export interface DispatchReconcilerLogEvent {
   readonly code: string;
   readonly recordId?: string;
   readonly inferenceId?: string;
+}
+
+/** Structural subset of `ArtifactPublicationResult`; no service import here. */
+export interface PublicationReconcilerOutcome {
+  readonly report: {
+    readonly status: string;
+    readonly failureCode: string | null;
+  } | null;
+  readonly artifacts: readonly {
+    readonly status: string;
+    readonly failureCode: string | null;
+  }[];
+}
+
+export interface PublicationReconcilerDeps {
+  findCandidates(limit: number): Promise<readonly string[]>;
+  publish(inferenceId: string): Promise<PublicationReconcilerOutcome>;
 }
 
 export interface DispatchReconcilerDeps {
@@ -17,9 +35,12 @@ export interface DispatchReconcilerDeps {
     "claimPendingDispatchBatch" | "markDispatchOutcome"
   >;
   readonly dispatch: (record: IdempotencyRecord) => Promise<DispatchPendingOutcome>;
+  /** Optional 3.6 publication reconciliation in the same bounded loop. */
+  readonly publication?: PublicationReconcilerDeps;
   /** 0 disables the timer; `runOnce()` remains available for tests. */
   readonly intervalMs?: number;
   readonly batchSize?: number;
+  readonly publicationBatchSize?: number;
   readonly setIntervalFn?: typeof setInterval;
   readonly clearIntervalFn?: typeof clearInterval;
   readonly logger?: (event: DispatchReconcilerLogEvent) => void;
@@ -32,6 +53,29 @@ export interface DispatchReconciler {
 
 function defaultLogger(event: DispatchReconcilerLogEvent): void {
   console.error("[DispatchReconciler]", event);
+}
+
+function publicationFailureCode(
+  outcome: PublicationReconcilerOutcome,
+): string | null {
+  if (outcome.report?.status === "FAILED") {
+    return outcome.report.failureCode ?? "publication_failed";
+  }
+  const failedArtifact = outcome.artifacts.find(
+    (artifact) => artifact.status === "FAILED",
+  );
+  return failedArtifact?.failureCode ?? null;
+}
+
+function publicationErrorCode(error: unknown): string {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return (error as { code: string }).code;
+  }
+  return "publication_failed";
 }
 
 /**
@@ -52,42 +96,77 @@ export function startDispatchReconciler(
   let running = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
+  const reconciliateDispatch = async (): Promise<void> => {
+    const claimed = await deps.repository.claimPendingDispatchBatch(batchSize);
+    for (const record of claimed) {
+      let outcome: DispatchPendingOutcome;
+      try {
+        outcome = await deps.dispatch(record);
+      } catch {
+        outcome = { ok: false, code: "dispatch_failed" };
+      }
+
+      try {
+        await deps.repository.markDispatchOutcome(record.id, {
+          dispatched: outcome.ok,
+          lastErrorCode: outcome.ok ? null : outcome.code,
+        });
+      } catch {
+        logger({
+          code: "mark_outcome_failed",
+          recordId: record.id,
+          inferenceId: record.inferenceId,
+        });
+      }
+
+      if (!outcome.ok) {
+        logger({
+          code: outcome.code,
+          recordId: record.id,
+          inferenceId: record.inferenceId,
+        });
+      }
+    }
+  };
+
+  const reconcilePublication = async (): Promise<void> => {
+    if (deps.publication === undefined) {
+      return;
+    }
+    const publicationBatchSize =
+      deps.publicationBatchSize ?? DEFAULT_PUBLICATION_RECONCILE_BATCH_SIZE;
+    let candidates: readonly string[];
+    try {
+      candidates = await deps.publication.findCandidates(publicationBatchSize);
+    } catch {
+      logger({ code: "publication_candidates_failed" });
+      return;
+    }
+
+    for (const inferenceId of candidates) {
+      try {
+        const outcome = await deps.publication.publish(inferenceId);
+        const failureCode = publicationFailureCode(outcome);
+        if (failureCode !== null) {
+          logger({ code: failureCode, inferenceId });
+        }
+      } catch (error) {
+        // Never log driver messages, references, URLs or PHI.
+        logger({ code: publicationErrorCode(error), inferenceId });
+      }
+    }
+  };
+
   const runOnce = async (): Promise<void> => {
     if (running) return;
     running = true;
     try {
-      const claimed = await deps.repository.claimPendingDispatchBatch(batchSize);
-      for (const record of claimed) {
-        let outcome: DispatchPendingOutcome;
-        try {
-          outcome = await deps.dispatch(record);
-        } catch {
-          outcome = { ok: false, code: "dispatch_failed" };
-        }
-
-        try {
-          await deps.repository.markDispatchOutcome(record.id, {
-            dispatched: outcome.ok,
-            lastErrorCode: outcome.ok ? null : outcome.code,
-          });
-        } catch {
-          logger({
-            code: "mark_outcome_failed",
-            recordId: record.id,
-            inferenceId: record.inferenceId,
-          });
-        }
-
-        if (!outcome.ok) {
-          logger({
-            code: outcome.code,
-            recordId: record.id,
-            inferenceId: record.inferenceId,
-          });
-        }
+      try {
+        await reconciliateDispatch();
+      } catch {
+        logger({ code: "claim_failed" });
       }
-    } catch {
-      logger({ code: "claim_failed" });
+      await reconcilePublication();
     } finally {
       running = false;
     }

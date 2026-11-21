@@ -1,7 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { FastifyInstance } from "fastify";
+import { OPS, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import sharp from "sharp";
 import type { Prisma } from "../src/generated/prisma/client.js";
 import {
@@ -23,6 +32,7 @@ import type {
 } from "../src/services/artifact-reference.js";
 import { renderBasicPdf } from "../src/services/pdf-report.js";
 import { StorageProviderError } from "../src/services/storage-provider.js";
+import { startDispatchReconciler } from "../src/workers/inference.reconciler.js";
 import type { ArtifactStoragePort } from "../src/services/storage.js";
 import { FEATURES } from "./fixtures/clinical.js";
 import { bearer, buildTestApp } from "./helpers/app.js";
@@ -1308,5 +1318,405 @@ describe("artifact publication QA gap coverage (6.2/3.5)", () => {
       availableAt: null,
       failureCode: "artifact_object_missing",
     });
+  });
+});
+
+describe("publication reconciler (3.6)", () => {
+  /** Extracts text and counts rendered image XObjects (no simulated images). */
+  async function extractPdfText(
+    pdf: Buffer,
+  ): Promise<{ text: string; imageCount: number }> {
+    const loadingTask = getDocument({
+      data: new Uint8Array(pdf),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      disableFontFace: true,
+      verbosity: 0,
+    });
+    const doc = await loadingTask.promise;
+    const imageOps = new Set(
+      [
+        OPS.paintImageXObject,
+        OPS.paintInlineImageXObject,
+        OPS.paintImageMaskXObject,
+      ].filter((value): value is number => typeof value === "number"),
+    );
+    let text = "";
+    let imageCount = 0;
+    for (let index = 1; index <= doc.numPages; index += 1) {
+      const page = await doc.getPage(index);
+      const content = await page.getTextContent();
+      text +=
+        content.items
+          .map((item) => ("str" in item ? item.str : ""))
+          .join(" ") + "\n";
+      const operators = await page.getOperatorList();
+      for (const fn of operators.fnArray) {
+        if (imageOps.has(fn)) {
+          imageCount += 1;
+        }
+      }
+    }
+    await doc.destroy();
+    return { text: text.replace(/\s+/g, " ").trim(), imageCount };
+  }
+
+  async function runReconcilerOnce(
+    publication: ReturnType<typeof publicationFor>,
+    hooks: { publishSpy?: (inferenceId: string) => void } = {},
+  ): Promise<{ dispatch: ReturnType<typeof vi.fn>; logger: ReturnType<typeof vi.fn> }> {
+    const dispatch = vi.fn();
+    const logger = vi.fn();
+    const repository = createArtifactPublicationRepository(prisma);
+    const reconciler = startDispatchReconciler({
+      repository: {
+        claimPendingDispatchBatch: async () => [],
+        markDispatchOutcome: async () => 1,
+      },
+      dispatch,
+      publication: {
+        findCandidates: (limit) => repository.findPublicationCandidates(limit),
+        publish: async (inferenceId) => {
+          hooks.publishSpy?.(inferenceId);
+          return publication.publish(inferenceId);
+        },
+      },
+      publicationBatchSize: 10,
+      intervalMs: 0,
+      logger,
+    });
+    await reconciler.runOnce();
+    reconciler.stop();
+    return { dispatch, logger };
+  }
+
+  it("publishes a terminal inference without artifacts and does not dispatch ML", async () => {
+    const study = await seedStudy(doctor.id);
+    const { dispatch, logger } = await runReconcilerOnce(publicationFor());
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+    const artifacts = await prisma.artifactRecord.findMany({
+      where: { inferenceId: study.inference.id },
+    });
+    expect(
+      artifacts
+        .filter((row) => row.status === "AVAILABLE")
+        .map((row) => row.artifactType)
+        .sort(),
+    ).toEqual(["mask", "overlay", "pdf"]);
+    const report = await prisma.pdfReport.findFirst({
+      where: { inferenceId: study.inference.id },
+    });
+    expect(report?.status).toBe("AVAILABLE");
+    expect(uploads).toHaveLength(1);
+
+    const repository = createArtifactPublicationRepository(prisma);
+    await expect(
+      repository.findPublicationCandidates(10),
+    ).resolves.not.toContain(study.inference.id);
+  });
+
+  it("retries a retryable storage failure through the reconciler", async () => {
+    const study = await seedStudy(doctor.id);
+    const failingStorage: ArtifactPublicationStoragePort = {
+      storageId: publicationStorage.storageId,
+      loadBytes: publicationStorage.loadBytes,
+      async upload() {
+        throw new StorageProviderError("storage_unavailable");
+      },
+    };
+    await runReconcilerOnce(publicationFor({ storage: failingStorage }));
+
+    const failedReport = await prisma.pdfReport.findFirst({
+      where: { inferenceId: study.inference.id },
+      include: { artifact: true },
+    });
+    expect(failedReport).toMatchObject({
+      status: "FAILED",
+      version: 1,
+      artifact: {
+        failureCode: "storage_upload_failed",
+        retryable: true,
+      },
+    });
+    const failedReportId = failedReport?.id;
+
+    // The candidate survives the storage failure and is selected again.
+    const repositoryAfterFailure = createArtifactPublicationRepository(prisma);
+    await expect(
+      repositoryAfterFailure.findPublicationCandidates(10),
+    ).resolves.toContain(study.inference.id);
+
+    await runReconcilerOnce(publicationFor());
+
+    const retried = await prisma.pdfReport.findFirst({
+      where: { inferenceId: study.inference.id },
+      include: { artifact: true },
+    });
+    expect(retried).toMatchObject({
+      id: failedReportId,
+      version: 1,
+      status: "AVAILABLE",
+      artifact: { status: "AVAILABLE" },
+    });
+    expect(
+      await prisma.pdfReport.count({
+        where: { inferenceId: study.inference.id },
+      }),
+    ).toBe(1);
+    const pdfRows = await prisma.artifactRecord.findMany({
+      where: { inferenceId: study.inference.id, artifactType: "pdf" },
+    });
+    expect(pdfRows).toHaveLength(1);
+    expect(pdfRows[0]?.status).toBe("AVAILABLE");
+    expect(uploads).toHaveLength(1);
+  });
+
+  it("bounds candidates and ignores non-terminal inferences", async () => {
+    const first = await seedStudy(doctor.id);
+    const second = await seedStudy(doctor.id);
+    const nonTerminal = await seedStudy(doctor.id);
+    await prisma.inference.update({
+      where: { id: nonTerminal.inference.id },
+      data: { status: "QUEUED" },
+    });
+
+    const repository = createArtifactPublicationRepository(prisma);
+    const bounded = await repository.findPublicationCandidates(1);
+    expect(bounded).toHaveLength(1);
+
+    const all = await repository.findPublicationCandidates(10);
+    expect(all).toContain(first.inference.id);
+    expect(all).toContain(second.inference.id);
+    expect(all).not.toContain(nonTerminal.inference.id);
+  });
+
+  it("does not keep selecting a permanent publication failure", async () => {
+    const study = await seedStudy(doctor.id, {
+      artifacts: {
+        mask: "case/mask.png",
+        overlay: OVERLAY_REFERENCE,
+      },
+    });
+    await runReconcilerOnce(
+      publicationFor({
+        env: { ...CONTENT_ENV, MINIO_BUCKET_MASK: undefined },
+      }),
+    );
+
+    const repository = createArtifactPublicationRepository(prisma);
+    await expect(
+      repository.findPublicationCandidates(10),
+    ).resolves.not.toContain(study.inference.id);
+
+    // A later run with a healthy configuration must not re-attempt the
+    // permanent failure: no publish call, no upload and no new version.
+    const publishSpy = vi.fn();
+    const { logger } = await runReconcilerOnce(publicationFor(), {
+      publishSpy,
+    });
+    expect(publishSpy).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+    expect(uploads).toHaveLength(0);
+    const report = await prisma.pdfReport.findFirst({
+      where: { inferenceId: study.inference.id },
+      include: { artifact: true },
+    });
+    expect(report).toMatchObject({
+      status: "FAILED",
+      version: 1,
+      artifact: {
+        failureCode: "artifact_bucket_unconfigured",
+        retryable: false,
+      },
+    });
+  });
+
+  it("does not republish an already published terminal inference", async () => {
+    const study = await seedStudy(doctor.id);
+    const firstSpy = vi.fn();
+    await runReconcilerOnce(publicationFor(), { publishSpy: firstSpy });
+    expect(firstSpy).toHaveBeenCalledTimes(1);
+    expect(uploads).toHaveLength(1);
+    const firstReport = await prisma.pdfReport.findFirst({
+      where: { inferenceId: study.inference.id },
+    });
+    expect(firstReport?.status).toBe("AVAILABLE");
+
+    const secondSpy = vi.fn();
+    const { dispatch, logger } = await runReconcilerOnce(publicationFor(), {
+      publishSpy: secondSpy,
+    });
+    expect(secondSpy).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+    expect(uploads).toHaveLength(1);
+
+    // Idempotence: no duplicate report or artifact rows and the published
+    // report id/version stay immutable.
+    const reports = await prisma.pdfReport.findMany({
+      where: { inferenceId: study.inference.id },
+    });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.id).toBe(firstReport?.id);
+    expect(reports[0]?.version).toBe(1);
+    for (const artifactType of ["mask", "overlay", "pdf"]) {
+      const rows = await prisma.artifactRecord.findMany({
+        where: { inferenceId: study.inference.id, artifactType },
+      });
+      expect(rows).toHaveLength(1);
+    }
+  });
+
+  it("publishes a REVIEW_REQUIRED terminal with the review PDF text and no simulated images", async () => {
+    const study = await seedStudy(doctor.id);
+    await prisma.inference.update({
+      where: { id: study.inference.id },
+      data: { status: "REVIEW_REQUIRED" },
+    });
+
+    const repository = createArtifactPublicationRepository(prisma);
+    await expect(
+      repository.findPublicationCandidates(10),
+    ).resolves.toContain(study.inference.id);
+
+    const publishSpy = vi.fn();
+    const { dispatch, logger } = await runReconcilerOnce(publicationFor(), {
+      publishSpy,
+    });
+    expect(publishSpy).toHaveBeenCalledWith(study.inference.id);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+
+    const report = await prisma.pdfReport.findFirst({
+      where: { inferenceId: study.inference.id },
+    });
+    expect(report).toMatchObject({ status: "AVAILABLE", version: 1 });
+
+    expect(uploads).toHaveLength(1);
+    const extracted = await extractPdfText(uploads[0]!.body);
+    expect(extracted.text).toContain("Revisión requerida");
+    expect(extracted.text).toContain("Reporte parcial de revisión");
+    expect(extracted.text).toContain("Grad-CAM: NOT_SUPPORTED");
+    expect(extracted.text).toContain("SHAP: NOT_SUPPORTED");
+    // Only the three real evidence images: no simulated Grad-CAM/SHAP figures.
+    expect(extracted.imageCount).toBe(3);
+  });
+
+  it("returns only plain ids and rejects invalid candidate limits", async () => {
+    await seedStudy(doctor.id);
+    await seedStudy(doctor.id);
+    const repository = createArtifactPublicationRepository(prisma);
+
+    for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        repository.findPublicationCandidates(limit),
+      ).resolves.toEqual([]);
+    }
+
+    const ids = await repository.findPublicationCandidates(10);
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    for (const id of ids) {
+      expect(typeof id).toBe("string");
+      expect(id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+    }
+  });
+
+  it("clamps the candidate batch to a hard maximum", async () => {
+    const count = 101;
+    const patientIds = Array.from({ length: count }, () => randomUUID());
+    await prisma.patient.createMany({
+      data: patientIds.map((id) => ({ id, ownerDoctorId: doctor.id })),
+    });
+    const consultationIds = Array.from({ length: count }, () => randomUUID());
+    await prisma.consultation.createMany({
+      data: consultationIds.map((id, index) => ({
+        id,
+        patientId: patientIds[index]!,
+        doctorId: doctor.id,
+        status: "COMPLETED",
+      })),
+    });
+    const imageIds = Array.from({ length: count }, () => randomUUID());
+    await prisma.image.createMany({
+      data: imageIds.map((id, index) => ({
+        id,
+        consultationId: consultationIds[index]!,
+        eyeSide: "OD",
+        storagePath: `clamp/${index}.jpg`,
+      })),
+    });
+    await prisma.inference.createMany({
+      data: imageIds.map((imageId, index) => ({
+        imageId,
+        consultationId: consultationIds[index]!,
+        eyeSide: "OD",
+        status: "COMPLETED",
+      })),
+    });
+
+    const repository = createArtifactPublicationRepository(prisma);
+    const bounded = await repository.findPublicationCandidates(500);
+    expect(bounded).toHaveLength(100);
+  });
+
+  it("selects interrupted PENDING attempts and pair-inconsistent pdf rows", async () => {
+    const repository = createArtifactPublicationRepository(prisma);
+
+    // Interrupted attempt: a mask row stuck PENDING and nothing else published.
+    const interrupted = await seedStudy(doctor.id);
+    await repository.ensurePendingArtifact({
+      inferenceId: interrupted.inference.id,
+      artifactType: "mask",
+      version: 1,
+    });
+
+    // Pair inconsistency: every artifact AVAILABLE but the report row missing.
+    const pairBroken = await seedStudy(doctor.id);
+    for (const [artifactType, contentType] of [
+      ["mask", "image/png"],
+      ["overlay", "image/png"],
+      ["pdf", "application/pdf"],
+    ] as const) {
+      const row = await repository.ensurePendingArtifact({
+        inferenceId: pairBroken.inference.id,
+        artifactType,
+        version: 1,
+      });
+      await repository.markArtifactAvailable(row.id, {
+        storageId: "minio-local",
+        bucketOrContainer: "pdf-bucket",
+        key: `${pairBroken.inference.id}/v1.${artifactType}`,
+        contentType,
+        sizeBytes: 10,
+        checksumSha256: "a".repeat(64),
+        availableAt: new Date("2026-11-20T11:00:00.000Z"),
+      });
+    }
+
+    // Interrupted report attempt: the pdf report row is still PENDING.
+    const reportPending = await seedStudy(doctor.id);
+    await repository.ensurePendingArtifact({
+      inferenceId: reportPending.inference.id,
+      artifactType: "pdf",
+      version: 1,
+    });
+    await repository.ensurePendingPdfReport({
+      id: randomUUID(),
+      inferenceId: reportPending.inference.id,
+      version: 1,
+      sourceSnapshotId: reportPending.snapshot!.id,
+      dataVersion: `pdfv1:${"5".repeat(64)}`,
+      modelVersions: {},
+      renderingInputs: { kind: "pending-attempt" },
+    });
+
+    const candidates = await repository.findPublicationCandidates(10);
+    expect(candidates).toContain(interrupted.inference.id);
+    expect(candidates).toContain(pairBroken.inference.id);
+    expect(candidates).toContain(reportPending.inference.id);
   });
 });

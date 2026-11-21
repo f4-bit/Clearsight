@@ -6,8 +6,10 @@ import {
   createInferenceRunRepository,
   type InferenceRunRepository,
 } from "../repositories/inference-run.repo.js";
+import { createArtifactPublicationRepository } from "../repositories/artifact-publication.repo.js";
 import { createIdempotencyRepository } from "../repositories/idempotency.repo.js";
 import { parseArtifactLocation } from "../services/artifact-reference.js";
+import { createDefaultArtifactPublicationService } from "../services/artifact-publication.js";
 import { createInferenceDispatchService } from "../services/inference-dispatch.js";
 import { mlClient } from "../services/ml-client.js";
 import { StorageService } from "../services/storage.js";
@@ -145,9 +147,16 @@ export function startInferenceWorker(): Worker<InferenceJobData> {
     signMlDownloadUrl,
     enqueue: enqueueInferenceLazily,
   });
+  const publicationRepository = createArtifactPublicationRepository(prisma);
+  const publicationService = createDefaultArtifactPublicationService(prisma);
   const reconciler = startDispatchReconciler({
     repository: idempotencyRepository,
     dispatch: (record) => dispatchService.dispatchPendingExecution(record),
+    publication: {
+      findCandidates: (limit) =>
+        publicationRepository.findPublicationCandidates(limit),
+      publish: (inferenceId) => publicationService.publish(inferenceId),
+    },
   });
 
   const worker = new Worker<InferenceJobData>(

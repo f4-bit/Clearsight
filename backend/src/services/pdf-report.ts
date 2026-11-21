@@ -478,7 +478,7 @@ function normalizeInput(input: RenderBasicPdfInput): NormalizedRenderInput {
   const warnings: string[] = [];
   if (review) {
     warnings.push(
-      "Estado REVIEW_REQUIRED: reporte parcial; la ejecución no se declara completa.",
+      "Revisión requerida: el resultado requiere revisión humana; la ejecución no se declara completa.",
     );
   }
   if (missingArtifacts.length > 0) {
@@ -493,8 +493,6 @@ function normalizeInput(input: RenderBasicPdfInput): NormalizedRenderInput {
       }
     }
   }
-  warnings.push("Grad-CAM: no incluido (NOT_SUPPORTED).");
-  warnings.push("SHAP: no incluido (NOT_SUPPORTED).");
   warnings.push(
     "Este reporte es apoyo a investigación y no sustituye el criterio médico.",
   );
@@ -847,6 +845,12 @@ export async function renderBasicPdf(
         doc,
         writer,
         fonts,
+        "Revisión requerida: la ejecución requiere revisión humana.",
+      );
+      writeText(
+        doc,
+        writer,
+        fonts,
         "Reporte parcial de revisión: no se declara completitud.",
       );
     }
@@ -932,6 +936,20 @@ export async function renderBasicPdf(
     writeHeading(doc, writer, fonts, "Advertencias y limitaciones");
     normalized.warnings.forEach((line) =>
       writeText(doc, writer, fonts, `- ${line}`),
+    );
+
+    writeHeading(doc, writer, fonts, "Explicabilidad");
+    writeText(
+      doc,
+      writer,
+      fonts,
+      "Grad-CAM: NOT_SUPPORTED (no incluido en el PDF básico).",
+    );
+    writeText(
+      doc,
+      writer,
+      fonts,
+      "SHAP: NOT_SUPPORTED (no incluido en el PDF básico).",
     );
 
     writeHeading(doc, writer, fonts, "Evidencia embebida");

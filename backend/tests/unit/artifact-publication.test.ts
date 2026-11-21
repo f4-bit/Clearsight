@@ -167,6 +167,10 @@ class FakePublicationRepository implements ArtifactPublicationRepository {
     };
   }
 
+  async findPublicationCandidates(): Promise<string[]> {
+    return [];
+  }
+
   async findInference(): Promise<PublicationInference | null> {
     return this.inference;
   }

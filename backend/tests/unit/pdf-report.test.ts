@@ -233,8 +233,12 @@ describe("renderBasicPdf", () => {
     expect(extracted.text).toContain("CDR de área y CDR vertical no son intercambiables");
     expect(extracted.text).toContain("Probabilidades canónicas");
     expect(extracted.text).toContain("Este reporte es apoyo a investigación y no sustituye el criterio médico");
-    expect(extracted.text).toContain("Grad-CAM: no incluido (NOT_SUPPORTED)");
-    expect(extracted.text).toContain("SHAP: no incluido (NOT_SUPPORTED)");
+    expect(extracted.text).toContain(
+      "Grad-CAM: NOT_SUPPORTED (no incluido en el PDF básico)",
+    );
+    expect(extracted.text).toContain(
+      "SHAP: NOT_SUPPORTED (no incluido en el PDF básico)",
+    );
     expect(extracted.text).toContain("Imagen original sanitizada (sin EXIF)");
     expect(extracted.text).toContain("Mask de segmentación");
     expect(extracted.text).toContain("Overlay de segmentación");
@@ -279,9 +283,12 @@ describe("renderBasicPdf", () => {
 
     expect(extracted.imageCount).toBe(1);
     expect(extracted.text).toContain("REVIEW_REQUIRED");
+    expect(extracted.text).toContain("Revisión requerida");
     expect(extracted.text).toContain("Reporte parcial de revisión");
     expect(extracted.text).toContain("Evidencia faltante: mask, overlay");
     expect(extracted.text).toContain("Evidencia parcial: falta mask, overlay");
+    expect(extracted.text).toContain("Grad-CAM: NOT_SUPPORTED");
+    expect(extracted.text).toContain("SHAP: NOT_SUPPORTED");
   });
 
   it("rejects a corrupt image even in review mode", async () => {
@@ -589,6 +596,7 @@ describe("renderBasicPdf", () => {
 
     expect(extracted.imageCount).toBe(0);
     expect(extracted.text).toContain("REVIEW_REQUIRED");
+    expect(extracted.text).toContain("Revisión requerida");
     expect(extracted.text).toContain("Reporte parcial de revisión");
     expect(extracted.text).toContain("no se declara completitud");
     expect(extracted.text).toContain(
@@ -597,5 +605,7 @@ describe("renderBasicPdf", () => {
     expect(extracted.text).toContain(
       "Evidencia faltante: imagen original, mask, overlay",
     );
+    expect(extracted.text).toContain("Grad-CAM: NOT_SUPPORTED");
+    expect(extracted.text).toContain("SHAP: NOT_SUPPORTED");
   });
 });
