@@ -1,202 +1,48 @@
-"use client";
+import type { StudySnapshot, SubmissionEvent } from "@/lib/studies";
+import type { CaptureEyeSlots } from "@/types/capture";
+import { CaptureCompletedPanel } from "./CaptureCompletedPanel";
 
-import React from "react";
-import type { EyeSide } from "@/types/clinical";
-import {
-  CAPTURE_EYE_LABELS,
-  CAPTURE_EYE_ORDER,
-  CAPTURE_STAGE_LIST,
-  type CaptureEyeRunBadge,
-  type CaptureEyeSlot,
-  type CaptureProcessingSnapshot,
-} from "@/types/capture";
-import {
-  MOCK_TOTAL_PROCESSING_SECONDS,
-  stageTimeLabel,
-} from "@/lib/capture/mockStudy";
-
-interface CaptureProcessingPanelProps {
-  snapshot: CaptureProcessingSnapshot;
-  eyeSlots: Record<EyeSide, CaptureEyeSlot>;
-}
-
-function formatElapsedTimer(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+function submissionLabel(event: SubmissionEvent | null) {
+  switch (event?.stage) {
+    case "patient": return "Guardando paciente…";
+    case "consultation": return "Registrando consulta…";
+    case "upload": return `Subiendo retinografía ${event.side}…`;
+    case "inference": return `Enviando análisis ${event.side}…`;
+    case "freeze": return "Registrando los análisis del caso…";
+    default: return "Preparando envío…";
+  }
 }
 
 export function CaptureProcessingPanel({
-  snapshot,
-  eyeSlots,
-}: CaptureProcessingPanelProps) {
-  const progressRatio = Math.min(
-    1,
-    snapshot.elapsedSeconds / MOCK_TOTAL_PROCESSING_SECONDS,
-  );
-  const progressPercent = Math.round(progressRatio * 100);
-
-  const badgeStyle = (badge: CaptureEyeRunBadge) => {
-    switch (badge) {
-      case "EN CURSO":
-        return {
-          container: "bg-[#17140C] border-[#3B2E15] text-[#D4973B]",
-          dot: "bg-[#D4973B]",
-        };
-      case "LISTO":
-        return {
-          container: "bg-[#153B25] border-[#1E5136] text-clinical-green",
-          dot: "bg-clinical-green",
-        };
-      case "EN COLA":
-      default:
-        return {
-          container: "bg-cockpit-subtle border-[#27272A] text-zinc-400",
-          dot: "bg-cockpit-text-dim",
-        };
-    }
-  };
+  event, eyeSlots, snapshot, submitted,
+}: {
+  event: SubmissionEvent | null;
+  eyeSlots: CaptureEyeSlots;
+  snapshot: StudySnapshot | null;
+  submitted: boolean;
+}) {
+  const label = !submitted ? submissionLabel(event)
+    : !snapshot ? "Consultando estado del estudio…"
+    : snapshot.consultation.completionState === "COMPLETE" ? "Estudio completado"
+    : snapshot.consultation.analysisState === "REVIEW_REQUIRED" ? "Revisión requerida"
+    : snapshot.consultation.pollingStop === "FAILED" ? "Análisis o publicación con errores"
+    : snapshot.consultation.analysisState === "COMPLETED" ? "Publicando informe…"
+    : "En cola o en análisis";
 
   return (
-    <div className="flex-1 h-full min-w-0 flex flex-col p-5 overflow-hidden">
-      {/* Header bar matching Frame bMne9 */}
-      <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
-          ESTADO DEL ESTUDIO
-        </span>
-        <span className="text-[10px] text-cockpit-text-dim font-mono">
-          Transcurrido {formatElapsedTimer(snapshot.elapsedSeconds)}
-        </span>
+    <section className="flex min-h-0 flex-1 flex-col gap-3 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="cockpit-label">Estado del estudio</h2>
+        <p role="status" className="text-xs text-amber-300">{label}</p>
       </div>
-
-      {/* Progress track (3px, gold fill over #1C1C22) */}
-      <div className="h-[3px] w-full bg-cockpit-border rounded-full overflow-hidden mb-4 shrink-0">
-        <div
-          className="h-full bg-clinical-gold transition-all duration-300"
-          style={{ width: `${progressPercent}%` }}
-        />
-      </div>
-
-      {/* Miniaturas OD / OS */}
-      <div className="grid grid-cols-2 gap-4 mb-4 flex-1 min-h-[200px]">
-        {CAPTURE_EYE_ORDER.map((side) => {
-          const slot = eyeSlots[side];
-          const badge = snapshot.eyeBadges[side];
-          const badgeUi = badgeStyle(badge);
-
-          return (
-            <div
-              key={side}
-              className="flex flex-col h-full bg-cockpit-card border border-cockpit-border rounded-md p-3 overflow-hidden"
-            >
-              <div className="flex items-center justify-between mb-2 shrink-0">
-                <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
-                  {CAPTURE_EYE_LABELS[side]}
-                </span>
-                <div
-                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9px] font-semibold ${badgeUi.container}`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${badgeUi.dot}`} />
-                  <span>{badge}</span>
-                </div>
-              </div>
-
-              {/* Viewport canvas */}
-              <div className="flex-1 min-h-[140px] bg-[#08080A] border border-cockpit-border rounded flex items-center justify-center overflow-hidden relative">
-                {slot.asset?.previewUrl ? (
-                  <img
-                    src={slot.asset.previewUrl}
-                    alt={`Retinografía ${side}`}
-                    className="max-h-full max-w-full object-contain"
-                  />
-                ) : (
-                  <div
-                    className="w-28 h-28 rounded-full shadow-lg relative flex items-center justify-center"
-                    style={{
-                      background:
-                        "radial-gradient(circle at 45% 50%, #4A1B0E 0%, #301007 35%, #180603 65%, #0B0302 85%, #08080A 100%)",
-                    }}
-                  >
-                    <div
-                      className={`w-6 h-7 rounded-full absolute opacity-90 ${
-                        side === "OD" ? "left-6" : "right-6"
-                      }`}
-                      style={{
-                        background:
-                          "radial-gradient(circle at 40% 45%, #F5CE7A 0%, #D89838 50%, #854817 90%)",
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Pipeline de 7 Etapas */}
-      <div className="flex flex-col gap-1.5">
-        <span className="text-[9px] font-bold tracking-wider text-cockpit-text-dim uppercase mb-1">
-          PIPELINE DE ANÁLISIS
-        </span>
-
-        {CAPTURE_STAGE_LIST.map((stage) => {
-          const state = snapshot.stageStates[stage.id];
-          const timeText = stageTimeLabel(stage.id, state);
-
-          if (state === "active") {
-            return (
-              <div
-                key={stage.id}
-                className="flex items-center justify-between px-3 py-2 bg-cockpit-panel border border-cockpit-border-subtle rounded text-[11px]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <span className="h-2 w-2 rounded-full bg-[#D4973B] animate-pulse" />
-                  <span className="font-semibold text-cockpit-text">
-                    {stage.label}
-                  </span>
-                </div>
-                <span className="font-mono text-[9px] text-[#D4973B]">
-                  {timeText}
-                </span>
-              </div>
-            );
-          }
-
-          if (state === "done") {
-            return (
-              <div
-                key={stage.id}
-                className="flex items-center justify-between px-3 py-1.5 text-[11px]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-clinical-green" />
-                  <span className="text-zinc-400">{stage.label}</span>
-                </div>
-                <span className="font-mono text-[9px] text-cockpit-text-dim">
-                  {timeText}
-                </span>
-              </div>
-            );
-          }
-
-          // pending
-          return (
-            <div
-              key={stage.id}
-              className="flex items-center justify-between px-3 py-1.5 text-[11px]"
-            >
-              <div className="flex items-center gap-2.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-zinc-700" />
-                <span className="text-cockpit-text-dim">{stage.label}</span>
-              </div>
-              <span className="font-mono text-[9px] text-cockpit-text-dim">
-                {timeText}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+      {!submitted && event?.stage === "upload" && (
+        <div className="flex items-center gap-3">
+          <progress className="h-2 flex-1 accent-amber-400" max={100}
+            value={event.percent ?? undefined} aria-label={`Carga de imagen ${event.side}`} />
+          {event.percent !== null && <span className="font-mono text-xs">{event.percent}%</span>}
+        </div>
+      )}
+      <CaptureCompletedPanel eyeSlots={eyeSlots} executions={snapshot?.executions ?? []} />
+    </section>
   );
 }

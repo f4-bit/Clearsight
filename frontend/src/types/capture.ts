@@ -1,197 +1,72 @@
-/**
- * ClearSight Capture Flow (frontend slice).
- * Domain shapes mirror types/clinical.ts and ml/service/schemas.py.
- * The capture study collects a retinography per eye plus the 11-contract
- * clinical features and hands a bilateral study to the inference queue.
- */
+import type { ClinicalFeatures, EyeSide } from "@/types/clinical";
 
-import type {
-  ClinicalFeatures,
-  DiagnosticLabel,
-  EyeSide,
-  JobStatus,
-} from "@/types/clinical";
-
-/** Shortest-side resolution gate (frontend counterpart of AGENTS.md §3.3). */
 export const CAPTURE_MIN_SHORTEST_SIDE_PX = 512;
-
-/** File size limit. Assumption until the ingestion API publishes its bound. */
 export const CAPTURE_MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const CAPTURE_EYE_ORDER = ["OD", "OS"] as const;
+export const CAPTURE_EYE_LABELS = {
+  OD: "OD · Ojo derecho",
+  OS: "OS · Ojo izquierdo",
+} as const;
 
-/** Mandatory bilateral order: never mirrored or inverted (AGENTS.md §3.2). */
-export const CAPTURE_EYE_ORDER: EyeSide[] = ["OD", "OS"];
-
-export const CAPTURE_EYE_LABELS: Record<EyeSide, string> = {
-  OD: "OD · OJO DERECHO",
-  OS: "OS · OJO IZQUIERDO",
-};
-
-/** A loaded retinography for one eye before the study is submitted. */
 export interface CaptureEyeAsset {
-  fileName: string;
-  bytes: number;
-  widthPx: number;
-  heightPx: number;
-  /** Local object URL for preview; null when the asset is a canned mock. */
-  previewUrl: string | null;
+  file: File;
+  previewUrl: string;
+  width: number;
+  height: number;
 }
 
-/** Format labels accepted by the ingestion pipeline. */
-export const CAPTURE_ACCEPTED_FORMATS = ["JPG", "PNG"] as const;
-export type CaptureAcceptedFormat = (typeof CAPTURE_ACCEPTED_FORMATS)[number];
+export type CaptureEyeSlot =
+  | { status: "empty" | "validating" }
+  | { status: "invalid"; message: string }
+  | { status: "ready"; asset: CaptureEyeAsset };
 
-/** Per-eye validation outcome for the three visible quality checks. */
-export interface CaptureEyeValidation {
-  formatLabel: CaptureAcceptedFormat | null;
-  formatOk: boolean;
-  resolutionOk: boolean;
-  sizeOk: boolean;
-}
-
-export interface CaptureEyeSlot {
-  asset: CaptureEyeAsset | null;
-  validation: CaptureEyeValidation | null;
-}
-
-export function slotIsEyeValid(slot: CaptureEyeSlot): boolean {
-  return (
-    slot.asset !== null &&
-    slot.validation !== null &&
-    slot.validation.formatOk &&
-    slot.validation.resolutionOk &&
-    slot.validation.sizeOk
-  );
-}
-
-/** Returns true if an asset is present but failed any quality/format validation. */
-export function slotHasValidationError(slot: CaptureEyeSlot): boolean {
-  if (slot.asset === null || slot.validation === null) return false;
-  return (
-    !slot.validation.formatOk ||
-    !slot.validation.resolutionOk ||
-    !slot.validation.sizeOk
-  );
-}
-
-/** Form draft state: string values so inputs can stay incomplete. */
+export type CaptureEyeSlots = Record<EyeSide, CaptureEyeSlot>;
 export type CaptureClinicalValues = Record<keyof ClinicalFeatures, string>;
 
-export function createEmptyClinicalValues(): CaptureClinicalValues {
-  return {
-    Age: "",
-    Gender: "",
-    dioptre_1: "",
-    dioptre_2: "",
-    astigmatism: "",
-    Phakic_Pseudophakic: "",
-    Pneumatic: "",
-    Perkins: "",
-    Pachymetry: "",
-    Axial_Length: "",
-    VF_DM: "",
-  };
-}
-
-export function countFilledFeatures(values: CaptureClinicalValues): number {
-  let filled = 0;
-  for (const key of Object.keys(values) as (keyof CaptureClinicalValues)[]) {
-    if (values[key].trim() !== "") filled += 1;
-  }
-  return filled;
-}
-
-export const CLINICAL_FEATURE_COUNT = 11;
-
-/**
- * Submit gate: every one of the 11 contract biomarkers must be present and
- * parseable. Fabricated `0` defaults are never sent to the classifier.
- */
-export function clinicalValuesAreValid(values: CaptureClinicalValues): boolean {
-  for (const key of Object.keys(values) as (keyof CaptureClinicalValues)[]) {
-    if (values[key].trim() === "") return false;
-    const parsed = Number.parseFloat(values[key].trim().replace(",", "."));
-    if (!Number.isFinite(parsed)) return false;
-  }
-  return true;
-}
-
-/** Strict mapping onto the inference contract; callers must gate on clinicalValuesAreValid. */
-export function clinicalFeaturesFromValues(
-  values: CaptureClinicalValues,
-): ClinicalFeatures {
-  if (!clinicalValuesAreValid(values)) {
-    throw new Error(
-      "Incomplete clinical feature values cannot enter the inference contract",
-    );
-  }
-  const num = (key: keyof CaptureClinicalValues): number =>
-    Number.parseFloat(values[key].trim().replace(",", "."));
-  return {
-    Age: num("Age"),
-    Gender: num("Gender"),
-    dioptre_1: num("dioptre_1"),
-    dioptre_2: num("dioptre_2"),
-    astigmatism: num("astigmatism"),
-    Phakic_Pseudophakic: num("Phakic_Pseudophakic"),
-    Pneumatic: num("Pneumatic"),
-    Perkins: num("Perkins"),
-    Pachymetry: num("Pachymetry"),
-    Axial_Length: num("Axial_Length"),
-    VF_DM: num("VF_DM"),
-  };
-}
-
-export type CapturePhase = "draft" | "processing" | "completed";
-
-/**
- * Visible pipeline labels, 1:1 with the mockup copy and the JobStatus contract.
- * Client-side submission hops carry no jobStatus; every service stage maps to it.
- */
-export interface CaptureFlowStage {
-  id: "verification" | "upload" | "downloading" | "localizing" | "segmenting" | "classifying" | "result";
+export const CLINICAL_FIELDS: ReadonlyArray<{
+  key: keyof ClinicalFeatures;
   label: string;
-  jobStatus?: JobStatus;
-}
-
-export const CAPTURE_STAGE_LIST: CaptureFlowStage[] = [
-  { id: "verification", label: "Verificación y anonimizado" },
-  { id: "upload", label: "Envío al servicio de análisis" },
-  { id: "downloading", label: "Descarga de la retinografía", jobStatus: "DOWNLOADING" },
-  { id: "localizing", label: "Localización del disco óptico", jobStatus: "LOCALIZING" },
-  { id: "segmenting", label: "Segmentación de disco y copa", jobStatus: "SEGMENTING" },
-  { id: "classifying", label: "Clasificación multimodal", jobStatus: "CLASSIFYING" },
-  { id: "result", label: "Resultado clínico" },
+  unit?: string;
+}> = [
+  { key: "Age", label: "Edad", unit: "años" },
+  { key: "Gender", label: "Sexo" },
+  { key: "dioptre_1", label: "Esfera refractiva", unit: "D" },
+  { key: "dioptre_2", label: "Cilindro refractivo", unit: "D" },
+  { key: "astigmatism", label: "Eje astigmático", unit: "°" },
+  { key: "Phakic/Pseudophakic", label: "Cristalino (código del modelo)" },
+  { key: "Pneumatic", label: "Tonómetro neumático", unit: "mmHg" },
+  { key: "Perkins", label: "Tonómetro Perkins", unit: "mmHg" },
+  { key: "Pachymetry", label: "Paquimetría", unit: "µm" },
+  { key: "Axial_Length", label: "Longitud axial", unit: "mm" },
+  { key: "VF_DM", label: "Desviación media del campo visual", unit: "dB" },
 ];
 
-export type CaptureStageState = "done" | "active" | "pending";
-
-export type CaptureEyeRunBadge = "EN COLA" | "EN CURSO" | "LISTO";
-
-export interface CaptureProcessingSnapshot {
-  stageStates: Record<CaptureFlowStage["id"], CaptureStageState>;
-  eyeBadges: Record<EyeSide, CaptureEyeRunBadge>;
-  activeStageLabel: string | null;
-  elapsedSeconds: number;
-  finished: boolean;
+export function createEmptyClinicalValues(): CaptureClinicalValues {
+  return Object.fromEntries(CLINICAL_FIELDS.map(({ key }) => [key, ""])) as CaptureClinicalValues;
 }
 
-export interface CaptureStudySummary {
-  /** Study identifier assigned on submit; null while the draft is pending. */
-  studyId: string | null;
-  createdAtIso: string;
+export function parseClinicalValue(key: keyof ClinicalFeatures, input: string): number | null {
+  const text = input.trim().replace(",", ".");
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value)) return null;
+  if (key === "Age" && (!Number.isInteger(value) || value < 0 || value > 130)) return null;
+  if ((key === "Gender" || key === "Phakic/Pseudophakic") && value !== 0 && value !== 1) return null;
+  return value;
 }
 
-/** Human-safe presentation of the tri-class model label on the capture seat. */
-export const CONSENSUS_LABEL_ES: Record<DiagnosticLabel, string> = {
-  Non_Glaucoma: "Normal",
-  Suspicious_Glaucoma: "Sospecha de Glaucoma",
-  Glaucoma: "Glaucoma",
-};
+export function clinicalFeaturesFromValues(values: CaptureClinicalValues): ClinicalFeatures | null {
+  const entries = CLINICAL_FIELDS.map(({ key }) => [key, parseClinicalValue(key, values[key])] as const);
+  if (entries.some(([, value]) => value === null)) return null;
+  return Object.fromEntries(entries) as unknown as ClinicalFeatures;
+}
+
+export function formatClinicalValue(key: keyof ClinicalFeatures, value: unknown, unit?: string): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  if (key === "Gender") return value === 0 ? "Femenino" : value === 1 ? "Masculino" : "—";
+  return unit ? `${value} ${unit}` : String(value);
+}
 
 export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-export function formatDimension(eye: CaptureEyeAsset): string {
-  return `${eye.widthPx} × ${eye.heightPx} px`;
 }

@@ -2,6 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .cockpit-button {
+    @apply inline-flex items-center justify-center gap-2 rounded border border-cockpit-border-subtle bg-cockpit-card px-3 py-2 text-xs font-medium text-cockpit-text transition-colors hover:bg-cockpit-panel focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 aria-pressed:border-sky-800 aria-pressed:text-sky-200 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .cockpit-primary {
+    @apply border-sky-800/80 bg-sky-950/70 text-sky-200 hover:bg-sky-900/80;
+  }
+
+  .cockpit-input {
+    @apply rounded border border-cockpit-border-subtle bg-cockpit-bg px-3 py-2 text-sm text-cockpit-text placeholder:text-cockpit-text-dim focus:outline-none focus-visible:border-sky-500 disabled:opacity-50;
+  }
+
+  .cockpit-label {
+    @apply text-[10px] font-semibold uppercase tracking-wider text-cockpit-text-muted;
+  }
+}
+
 @layer base {
   :root {
     --background: 0 0% 4%;

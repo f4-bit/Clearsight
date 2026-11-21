@@ -1,370 +1,153 @@
 "use client";
 
-import React, { useRef } from "react";
+import { ImagePlus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { EyeSide } from "@/types/clinical";
 import {
   CAPTURE_EYE_LABELS,
   CAPTURE_EYE_ORDER,
   CAPTURE_MAX_FILE_BYTES,
   CAPTURE_MIN_SHORTEST_SIDE_PX,
-  formatDimension,
   formatFileSize,
-  type CaptureAcceptedFormat,
-  type CaptureEyeAsset,
   type CaptureEyeSlot,
-  type CaptureEyeValidation,
+  type CaptureEyeSlots,
 } from "@/types/capture";
 
 interface CaptureLoadPanelProps {
-  eyeSlots: Record<EyeSide, CaptureEyeSlot>;
-  onEyeSlotChange: (side: EyeSide, slot: CaptureEyeSlot) => void;
-  onEyeSlotClear: (side: EyeSide) => void;
+  eyeSlots: CaptureEyeSlots;
+  onChange: (side: EyeSide, slot: CaptureEyeSlot) => void;
 }
 
-function detectFormat(file: File): CaptureAcceptedFormat | null {
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".jpg") || name.endsWith(".jpeg") || file.type === "image/jpeg") {
-    return "JPG";
-  }
-  if (name.endsWith(".png") || file.type === "image/png") {
-    return "PNG";
-  }
-  return null;
+async function isJpegOrPng(file: File) {
+  const bytes = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  return jpeg || [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value);
 }
 
-export function CaptureLoadPanel({
-  eyeSlots,
-  onEyeSlotChange,
-  onEyeSlotClear,
-}: CaptureLoadPanelProps) {
-  const odFileInputRef = useRef<HTMLInputElement>(null);
-  const osFileInputRef = useRef<HTMLInputElement>(null);
+function readDimensions(url: string) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = reject;
+    image.src = url;
+  });
+}
 
-  const getFileInputRef = (side: EyeSide) =>
-    side === "OD" ? odFileInputRef : osFileInputRef;
+export function CaptureEyeDropzone({
+  side, slot, onChange, compact = false, disabled = false,
+}: {
+  side: EyeSide;
+  slot: CaptureEyeSlot;
+  onChange: (slot: CaptureEyeSlot) => void;
+  compact?: boolean;
+  disabled?: boolean;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const selection = useRef(0);
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => () => { selection.current += 1; }, []);
 
-  const handleFileProcess = (side: EyeSide, file: File) => {
-    const format = detectFormat(file);
-    const sizeOk = file.size > 0 && file.size <= CAPTURE_MAX_FILE_BYTES;
-    const formatOk = format !== null;
-
-    const objectUrl = URL.createObjectURL(file);
-    const img = new Image();
-
-    img.onload = () => {
-      const minDimension = Math.min(img.width, img.height);
-      const resolutionOk = minDimension >= CAPTURE_MIN_SHORTEST_SIDE_PX;
-
-      const validation: CaptureEyeValidation = {
-        formatLabel: format,
-        formatOk,
-        resolutionOk,
-        sizeOk,
-      };
-
-      const asset: CaptureEyeAsset = {
-        fileName: file.name,
-        bytes: file.size,
-        widthPx: img.width,
-        heightPx: img.height,
-        previewUrl: objectUrl,
-      };
-
-      onEyeSlotChange(side, { asset, validation });
-    };
-
-    img.onerror = () => {
-      const validation: CaptureEyeValidation = {
-        formatLabel: format,
-        formatOk: false,
-        resolutionOk: false,
-        sizeOk,
-      };
-      const asset: CaptureEyeAsset = {
-        fileName: file.name,
-        bytes: file.size,
-        widthPx: 0,
-        heightPx: 0,
-        previewUrl: null,
-      };
-      onEyeSlotChange(side, { asset, validation });
-    };
-
-    img.src = objectUrl;
-  };
-
-  const handleDrop = (side: EyeSide, e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileProcess(side, e.dataTransfer.files[0]);
+  async function choose(file: File) {
+    if (disabled) return;
+    const sequence = ++selection.current;
+    if (file.size > CAPTURE_MAX_FILE_BYTES) {
+      onChange({ status: "invalid", message: "El archivo supera el límite de 20 MB." });
+      return;
     }
-  };
-
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
+    onChange({ status: "validating" });
+    let previewUrl: string | undefined;
+    try {
+      if (!await isJpegOrPng(file)) {
+        if (sequence === selection.current) onChange({ status: "invalid", message: "Selecciona una imagen JPEG o PNG." });
+        return;
+      }
+      previewUrl = URL.createObjectURL(file);
+      const { width, height } = await readDimensions(previewUrl);
+      if (sequence !== selection.current) return;
+      if (Math.min(width, height) < CAPTURE_MIN_SHORTEST_SIDE_PX) {
+        onChange({ status: "invalid", message: "La imagen debe tener al menos 512 px por lado." });
+        return;
+      }
+      onChange({ status: "ready", asset: { file, previewUrl, width, height } });
+      previewUrl = undefined;
+    } catch {
+      if (sequence === selection.current) onChange({ status: "invalid", message: "La imagen está dañada o no se puede leer." });
+    } finally {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    }
+  }
 
   return (
-    <div className="flex-1 h-full min-w-0 flex flex-col p-5 overflow-hidden">
-      {/* Header bar matching Frame g1U4Y */}
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
-          CARGA DE RETINOGRAFÍAS
-        </span>
-        <span className="text-[10px] text-cockpit-text-dim font-normal">
-          Un ojo por estudio · mínimo 512 px
-        </span>
+    <section onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        const file = event.dataTransfer.files[0];
+        if (file) void choose(file);
+      }}
+      className={`flex min-w-0 flex-col rounded-md border bg-cockpit-card p-3.5 ${compact ? "min-h-[11rem]" : "min-h-[17rem]"} ${dragging ? "border-sky-500" : "border-cockpit-border"}`}>
+      <header className="mb-2.5 flex items-center justify-between gap-2">
+        <h2 className="cockpit-label">{CAPTURE_EYE_LABELS[side]}</h2>
+        {slot.status === "ready" && <span className="text-[10px] text-emerald-400">VALIDADA</span>}
+      </header>
+      <input ref={input} className="sr-only" tabIndex={-1} type="file"
+        aria-label={`Archivo ${side}`} accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={disabled}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) void choose(file);
+        }} />
+      <div className="relative grid flex-1 place-items-center overflow-hidden rounded border border-cockpit-border bg-[#08080A]">
+        {slot.status === "ready" ? (
+          <img className="absolute inset-0 h-full w-full object-contain p-2" src={slot.asset.previewUrl} alt={`Retinografía ${side}`} />
+        ) : (
+          <div className="grid justify-items-center gap-3 px-3 py-6 text-center">
+            <ImagePlus className="h-6 w-6 text-cockpit-text-muted" aria-hidden="true" />
+            {slot.status === "invalid" ? (
+              <p role="alert" className="text-xs text-rose-300">{slot.message}</p>
+            ) : (
+              <p className="text-xs text-cockpit-text-muted" role="status">
+                {slot.status === "validating" ? "Validando imagen…" : "Arrastra aquí la retinografía"}
+              </p>
+            )}
+            <button type="button" className="cockpit-button" disabled={disabled} onClick={() => input.current?.click()}>Elegir archivo</button>
+          </div>
+        )}
       </div>
+      {slot.status === "ready" ? (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-xs">
+          <span className="min-w-0 truncate font-mono text-cockpit-text-muted">
+            {slot.asset.file.name} · {slot.asset.width} × {slot.asset.height} · {formatFileSize(slot.asset.file.size)}
+          </span>
+          <div className="flex items-center gap-3">
+            <button type="button" className="text-sky-400 hover:underline disabled:opacity-50" disabled={disabled} onClick={() => input.current?.click()}>Reemplazar</button>
+            <button type="button" className="text-cockpit-text-muted hover:underline disabled:opacity-50" disabled={disabled} onClick={() => {
+              selection.current += 1;
+              onChange({ status: "empty" });
+            }}>Quitar</button>
+          </div>
+        </div>
+      ) : slot.status === "invalid" && (
+        <button type="button" className="mt-2 self-end text-xs text-cockpit-text-muted hover:underline"
+          disabled={disabled} onClick={() => onChange({ status: "empty" })}>Quitar archivo</button>
+      )}
+    </section>
+  );
+}
 
-      {/* Bilateral Retinal Dropzones: OD on the LEFT, OS on the RIGHT (AGENTS.md §3.2) */}
-      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0 h-full">
-        {CAPTURE_EYE_ORDER.map((side) => {
-          const slot = eyeSlots[side];
-          const isLoaded = slot.asset !== null && slot.validation !== null;
-          const isAllValid =
-            isLoaded &&
-            slot.validation!.formatOk &&
-            slot.validation!.resolutionOk &&
-            slot.validation!.sizeOk;
-
-          const fileInputRef = getFileInputRef(side);
-
-          return (
-            <div
-              key={side}
-              className="flex flex-col h-full min-h-0 bg-cockpit-card border border-cockpit-border rounded-md p-3.5 overflow-hidden"
-            >
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".jpg,.jpeg,.png,image/jpeg,image/png"
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
-                    handleFileProcess(side, e.target.files[0]);
-                  }
-                }}
-              />
-
-              {/* Card Header */}
-              <div className="flex items-center justify-between mb-2.5 shrink-0">
-                <span className="text-[10px] font-bold tracking-wider text-cockpit-text-dim uppercase">
-                  {CAPTURE_EYE_LABELS[side]}
-                </span>
-
-                {isLoaded ? (
-                  <div
-                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9px] font-semibold ${
-                      isAllValid
-                        ? "bg-[#153B25] border-[#1E5136] text-clinical-green"
-                        : "bg-rose-950/40 border-rose-800/60 text-clinical-red"
-                    }`}
-                  >
-                    <span
-                      className={`h-1.5 w-1.5 rounded-full ${
-                        isAllValid ? "bg-clinical-green" : "bg-clinical-red"
-                      }`}
-                    />
-                    <span>{isAllValid ? "CARGADO" : "ERROR DE IMAGEN"}</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-cockpit-subtle border border-[#27272A] text-[9px] font-semibold text-zinc-400">
-                    <span className="h-1.5 w-1.5 rounded-full bg-cockpit-text-dim" />
-                    <span>PENDIENTE</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Card Body: Retinal Viewport (Loaded) OR Dropzone (Empty) - fills all vertical space */}
-              <div
-                onDrop={(e) => handleDrop(side, e)}
-                onDragOver={handleDragOver}
-                className="flex-1 min-h-0 flex flex-col justify-between bg-cockpit-bg border border-cockpit-border rounded overflow-hidden"
-              >
-                {isLoaded && slot.asset ? (
-                  <>
-                    {/* Retinal Canvas Stage */}
-                    <div className="flex-1 min-h-0 flex items-center justify-center bg-[#08080A] relative overflow-hidden p-4">
-                      {slot.asset.previewUrl ? (
-                        <img
-                          src={slot.asset.previewUrl}
-                          alt={`Retinografía ${side}`}
-                          className="max-h-full max-w-full object-contain rounded"
-                        />
-                      ) : (
-                        /* Anatomical fundus radial ellipse matching cockpit grammar (S14) */
-                        <div
-                          className="w-[300px] h-[300px] max-w-[85%] max-h-[85%] aspect-square rounded-full shadow-2xl relative flex items-center justify-center"
-                          style={{
-                            background:
-                              "radial-gradient(circle at 45% 50%, #4A1B0E 0%, #301007 35%, #180603 65%, #0B0302 85%, #08080A 100%)",
-                          }}
-                        >
-                          {/* Inner optic disc representation */}
-                          <div
-                            className={`w-12 h-14 rounded-full absolute opacity-90 shadow-inner ${
-                              side === "OD" ? "left-[70px]" : "right-[70px]"
-                            }`}
-                            style={{
-                              background:
-                                "radial-gradient(circle at 40% 45%, #F5CE7A 0%, #D89838 50%, #854817 90%)",
-                              filter: "blur(0.5px)",
-                            }}
-                          >
-                            <div className="w-5 h-7 rounded-full bg-[#FFE4A0] opacity-80 m-auto mt-2 blur-[0.5px]" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* File Meta Row */}
-                    <div className="h-9 px-3 bg-cockpit-surface border-t border-cockpit-border flex items-center justify-between shrink-0">
-                      <div className="flex items-center gap-2 text-[10px] font-mono text-cockpit-text truncate max-w-[65%]">
-                        <span className="truncate">{slot.asset.fileName}</span>
-                        <span className="text-cockpit-text-dim shrink-0">
-                          {formatDimension(slot.asset)} · {formatFileSize(slot.asset.bytes)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="text-[10px] text-clinical-sky hover:underline font-medium"
-                        >
-                          Reemplazar
-                        </button>
-                        <span className="text-cockpit-border">·</span>
-                        <button
-                          type="button"
-                          onClick={() => onEyeSlotClear(side)}
-                          className="text-[10px] text-zinc-400 hover:text-clinical-red transition-colors"
-                        >
-                          Quitar
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  /* Empty Dropzone State - fills vertical space and centers cleanly */
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex-1 min-h-0 flex flex-col items-center justify-center cursor-pointer p-6 hover:bg-cockpit-card/40 transition-colors"
-                  >
-                    <div className="w-12 h-12 rounded-full bg-cockpit-subtle border border-cockpit-border flex items-center justify-center mb-3 text-cockpit-text-muted">
-                      <svg
-                        className="w-6 h-6 text-cockpit-text-dim"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={1.5}
-                          d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                        />
-                      </svg>
-                    </div>
-                    <span className="text-xs text-cockpit-text-muted mb-1 text-center font-medium">
-                      Arrastre o seleccione la retinografía
-                    </span>
-                    <span className="text-[10px] text-cockpit-text-dim mb-4 text-center">
-                      JPG o PNG · resolución mínima 512 px
-                    </span>
-                    <button
-                      type="button"
-                      className="px-3.5 py-1.5 rounded bg-cockpit-subtle border border-[#27272A] text-[11px] font-medium text-cockpit-text hover:bg-cockpit-panel transition-colors"
-                    >
-                      Elegir archivo
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Card Validations Footer */}
-              <div className="mt-3 pt-2.5 border-t border-cockpit-border flex flex-col gap-1.5 text-[10px] shrink-0">
-                {isLoaded && slot.validation ? (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          slot.validation.formatOk ? "bg-clinical-green" : "bg-clinical-red"
-                        }`}
-                      />
-                      <span
-                        className={
-                          slot.validation.formatOk ? "text-cockpit-text-muted" : "text-clinical-red font-medium"
-                        }
-                      >
-                        {slot.validation.formatOk
-                          ? `Formato compatible · ${slot.validation.formatLabel ?? "JPG"}`
-                          : "Formato no compatible (solo JPG o PNG)"}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          slot.validation.resolutionOk
-                            ? "bg-clinical-green"
-                            : "bg-clinical-red"
-                        }`}
-                      />
-                      <span
-                        className={
-                          slot.validation.resolutionOk
-                            ? "text-cockpit-text-muted"
-                            : "text-clinical-red font-medium"
-                        }
-                      >
-                        {slot.validation.resolutionOk
-                          ? `Resolución ${Math.min(
-                              slot.asset?.widthPx ?? 0,
-                              slot.asset?.heightPx ?? 0,
-                            )} px ≥ mínimo 512 px`
-                          : "Resolución insuficiente (lado menor < 512 px)"}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          slot.validation.sizeOk ? "bg-clinical-green" : "bg-clinical-red"
-                        }`}
-                      />
-                      <span
-                        className={
-                          slot.validation.sizeOk ? "text-cockpit-text-muted" : "text-clinical-red font-medium"
-                        }
-                      >
-                        {slot.validation.sizeOk
-                          ? `Peso ${formatFileSize(slot.asset?.bytes ?? 0)} dentro del límite`
-                          : "Peso de archivo superior al límite de 20 MB"}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-zinc-700" />
-                      <span className="text-cockpit-text-dim">Sin imagen cargada</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-zinc-700" />
-                      <span className="text-cockpit-text-dim">
-                        Formatos aceptados · JPG, PNG
-                      </span>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          );
-        })}
+export function CaptureLoadPanel({ eyeSlots, onChange }: CaptureLoadPanelProps) {
+  return (
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="cockpit-label">Carga de retinografías</h2>
+        <p className="text-xs text-cockpit-text-muted">Uno o ambos ojos · JPEG/PNG · 512 px por lado · hasta 20 MB</p>
       </div>
-    </div>
+      <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+        {CAPTURE_EYE_ORDER.map((side) => (
+          <CaptureEyeDropzone key={side} side={side} slot={eyeSlots[side]} onChange={(slot) => onChange(side, slot)} />
+        ))}
+      </div>
+    </section>
   );
 }

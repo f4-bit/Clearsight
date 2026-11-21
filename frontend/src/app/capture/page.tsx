@@ -1,311 +1,210 @@
-﻿"use client";
+"use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { CaptureTopBar } from "@/components/capture/CaptureTopBar";
-import { CaptureLoadPanel } from "@/components/capture/CaptureLoadPanel";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import { SessionGate } from "@/components/Session";
 import { CaptureClinicalForm } from "@/components/capture/CaptureClinicalForm";
+import { CaptureLoadPanel } from "@/components/capture/CaptureLoadPanel";
 import { CaptureProcessingPanel } from "@/components/capture/CaptureProcessingPanel";
-import { CaptureCompletedPanel } from "@/components/capture/CaptureCompletedPanel";
 import { CaptureStudyPanel } from "@/components/capture/CaptureStudyPanel";
+import { CaptureTopBar } from "@/components/capture/CaptureTopBar";
+import { api, errorMessage } from "@/lib/api";
+import { submitStudy, type Submission, type SubmissionEvent } from "@/lib/studies";
+import { useStudy } from "@/lib/useStudy";
+import type { Patient } from "@/types/api";
 import {
-  captureProcessingSnapshot,
-  clampElapsed,
-  MOCK_TOTAL_PROCESSING_SECONDS,
-} from "@/lib/capture/mockStudy";
-import {
-  createMockClinicalValues,
-  createMockCompletedResults,
-  createMockEyeSlots,
-  genderLabel,
-  MOCK_CONSENSUS,
-  MOCK_SUBMITTED_STUDY_ID,
-} from "@/lib/capture/mockFixtures";
-import {
-  CAPTURE_EYE_ORDER,
-  clinicalValuesAreValid,
-  CONSENSUS_LABEL_ES,
-  slotHasValidationError,
-  slotIsEyeValid,
-  type CaptureClinicalValues,
-  type CaptureEyeSlot,
-  type CapturePhase,
-  type CaptureProcessingSnapshot,
+  CAPTURE_EYE_ORDER, createEmptyClinicalValues, clinicalFeaturesFromValues,
+  type CaptureEyeSlot, type CaptureEyeSlots,
 } from "@/types/capture";
+import type { EyeSide } from "@/types/clinical";
 
-function utcTimeLabel(iso: string): string {
-  return new Date(iso).toLocaleTimeString("es-ES", { timeZone: "UTC" });
-}
-
-type CaptureEyeSlotsBySide = Record<"OD" | "OS", CaptureEyeSlot>;
+const PATIENTS_PER_PAGE = 20;
+const emptySlots: CaptureEyeSlots = { OD: { status: "empty" }, OS: { status: "empty" } };
 
 export default function CapturePage() {
-  const router = useRouter();
-  const [phase, setPhase] = useState<CapturePhase>("draft");
-  const [studyId, setStudyId] = useState<string | null>(null);
-  const [submittedAtIso, setSubmittedAtIso] = useState<string | null>(null);
-  const [eyeSlots, setEyeSlots] = useState<CaptureEyeSlotsBySide>(() =>
-    createMockEyeSlots(),
-  );
-  const [clinical, setClinical] = useState<CaptureClinicalValues>(() =>
-    createMockClinicalValues(),
-  );
-  const [snapshot, setSnapshot] = useState<CaptureProcessingSnapshot | null>(null);
-  const [completedAtIso, setCompletedAtIso] = useState<string | null>(null);
-  const completionHandledRef = useRef(false);
+  return <SessionGate role="OFTALMOLOGO">{() => <CaptureWorkspace />}</SessionGate>;
+}
 
-  const completedResults = useMemo(() => createMockCompletedResults(), []);
+function CaptureWorkspace() {
+  const slots = useRef<CaptureEyeSlots>(emptySlots);
+  const submission = useRef<Submission | null>(null);
+  const busy = useRef(false);
+  const [eyeSlots, setEyeSlots] = useState(emptySlots);
+  const [clinical, setClinical] = useState(createEmptyClinicalValues);
+  const [patientId, setPatientId] = useState("");
+  const [externalCode, setExternalCode] = useState("");
+  const [event, setEvent] = useState<SubmissionEvent | null>(null);
+  const [consultationId, setConsultationId] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const features = clinicalFeaturesFromValues(clinical);
+  const study = useStudy(consultationId);
+  const attempt = submission.current;
+  const selectedEyes = CAPTURE_EYE_ORDER.filter((side) => eyeSlots[side].status === "ready");
+  const canSubmit = Boolean(features && patientId && selectedEyes.length &&
+    CAPTURE_EYE_ORDER.every((side) => ["ready", "empty"].includes(eyeSlots[side].status)));
 
-  const validEyeCount = useMemo(
-    () =>
-      CAPTURE_EYE_ORDER.filter((side) => {
+  useEffect(() => () => {
+    for (const slot of Object.values(slots.current)) {
+      if (slot.status === "ready") URL.revokeObjectURL(slot.asset.previewUrl);
+    }
+  }, []);
+
+  function changeSlot(side: EyeSide, slot: CaptureEyeSlot) {
+    const previous = slots.current[side];
+    if (previous.status === "ready") URL.revokeObjectURL(previous.asset.previewUrl);
+    slots.current = { ...slots.current, [side]: slot };
+    setEyeSlots(slots.current);
+  }
+
+  function reset() {
+    CAPTURE_EYE_ORDER.forEach((side) => changeSlot(side, { status: "empty" }));
+    submission.current = null;
+    setClinical(createEmptyClinicalValues());
+    setPatientId("");
+    setExternalCode("");
+    setEvent(null);
+    setConsultationId(null);
+    setError("");
+  }
+
+  async function send() {
+    if (busy.current) return;
+    let current = submission.current;
+    if (!current) {
+      if (!canSubmit || !features) return;
+      const eyes: Submission["eyes"] = {};
+      for (const side of selectedEyes) {
         const slot = eyeSlots[side];
-        return slotIsEyeValid(slot);
-      }).length,
-    [eyeSlots],
-  );
-
-  /** True if any loaded asset failed validation (blocks submission until corrected or cleared). */
-  const hasInvalidEye = useMemo(
-    () =>
-      CAPTURE_EYE_ORDER.some((side) => {
-        const slot = eyeSlots[side];
-        return slotHasValidationError(slot);
-      }),
-    [eyeSlots],
-  );
-
-  /** Submit gate: every contract biomarker must be present and parseable. */
-  const clinicalReady = useMemo(
-    () => clinicalValuesAreValid(clinical),
-    [clinical],
-  );
-
-  const startedAtMs = submittedAtIso
-    ? new Date(submittedAtIso).getTime()
-    : null;
-
-  useEffect(() => {
-    if (phase !== "processing" || startedAtMs === null) return;
-
-    const tick = window.setInterval(() => {
-      const elapsed = clampElapsed((Date.now() - startedAtMs) / 1000);
-      const nextSnapshot = captureProcessingSnapshot(elapsed);
-      setSnapshot(nextSnapshot);
-
-      if (nextSnapshot.finished && !completionHandledRef.current) {
-        completionHandledRef.current = true;
-        setCompletedAtIso(new Date().toISOString());
-        setPhase("completed");
-        window.clearInterval(tick);
+        if (slot.status === "ready") eyes[side] = { asset: slot.asset, key: crypto.randomUUID() };
       }
-    }, 250);
-
-    return () => window.clearInterval(tick);
-  }, [phase, startedAtMs]);
-
-  const handleCancelDraft = () => {
-    setEyeSlots(createMockEyeSlots());
-    setSubmittedAtIso(null);
-  };
-
-  const handleSubmitStudy = () => {
-    if (validEyeCount === 0 || hasInvalidEye || !clinicalReady) return;
-    const submittedAt = new Date().toISOString();
-    setStudyId(MOCK_SUBMITTED_STUDY_ID);
-    setSubmittedAtIso(submittedAt);
-    setSnapshot(captureProcessingSnapshot(0));
-    setPhase("processing");
-  };
-
-  const handleCancelProcessing = () => {
-    completionHandledRef.current = false;
-    setSnapshot(null);
-    setSubmittedAtIso(null);
-    setStudyId(null);
-    setCompletedAtIso(null);
-    setPhase("draft");
-  };
-
-  const handleHideProcessing = () => {
-    router.push("/");
-  };
-
-  const handleNewStudy = () => {
-    completionHandledRef.current = false;
-    setEyeSlots(createMockEyeSlots());
-    setClinical(createMockClinicalValues());
-    setSubmittedAtIso(null);
-    setStudyId(null);
-    setSnapshot(null);
-    setCompletedAtIso(null);
-    setPhase("draft");
-  };
-
-  const remainingSeconds = Math.max(
-    0,
-    Math.ceil(MOCK_TOTAL_PROCESSING_SECONDS - (snapshot?.elapsedSeconds ?? 0)),
-  );
-
-  const pillText =
-    phase === "draft"
-      ? `${validEyeCount} de 2 ojos cargados`
-      : phase === "processing"
-        ? `Procesando · ${snapshot?.activeStageLabel ?? "iniciando"}`
-        : `${CONSENSUS_LABEL_ES[MOCK_CONSENSUS.label]} (${(MOCK_CONSENSUS.confidence * 100).toFixed(0)}% probabilidad)`;
+      current = {
+        patientId: patientId === "new" ? null : patientId,
+        consultation: null,
+        clinical: features,
+        externalCode: externalCode.trim() || null,
+        eyes,
+      };
+      submission.current = current;
+    }
+    if (current.creationUnconfirmed) return;
+    busy.current = true;
+    setPending(true);
+    setError("");
+    try {
+      setConsultationId((await submitStudy(current, setEvent)).id);
+    } catch (failure) {
+      setError(current.creationUnconfirmed
+        ? `No se pudo confirmar la creación del ${current.creationUnconfirmed === "consulta" ? "caso" : "paciente"}. Puede haberse guardado. Verifica su registro antes de iniciar otro envío.`
+        : errorMessage(failure));
+    } finally {
+      busy.current = false;
+      setPending(false);
+    }
+  }
 
   return (
-    <main className="h-screen w-screen flex flex-col bg-cockpit-bg text-cockpit-text overflow-hidden">
-      <CaptureTopBar
-        phase={phase}
-        studyIdLabel={studyId ?? "PENDIENTE"}
-        scopeLabel={
-          studyId
-            ? `${clinical.Age} años · ${genderLabel(clinical.Gender)} · Bilateral`
-            : "Carga bilateral"
-        }
-        timeLabel={utcTimeLabel(submittedAtIso ?? new Date().toISOString())}
-        pillText={pillText}
-        actionLabel={
-          phase === "draft" ? "Cancelar" : phase === "processing" ? "Ocultar" : "Ir a la cola"
-        }
-        onAction={
-          phase === "draft"
-            ? handleCancelDraft
-            : phase === "processing"
-              ? handleHideProcessing
-              : () => router.push("/")
-        }
-      />
-
-      {/* Main workspace: per-phase body on the left, summary panel on the right */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-        {phase === "draft" ? (
+    <main className="flex min-h-screen flex-col lg:h-screen">
+      <CaptureTopBar studyId={attempt?.consultation?.id} />
+      <div className="flex flex-1 flex-col lg:min-h-0 lg:flex-row lg:overflow-auto">
+        {attempt ? (
           <>
-            <CaptureLoadPanel
-              eyeSlots={eyeSlots}
-              onEyeSlotChange={(side, slot) =>
-                setEyeSlots((prev) => ({ ...prev, [side]: slot }))
-              }
-              onEyeSlotClear={(side) =>
-                setEyeSlots((prev) => ({
-                  ...prev,
-                  [side]: { asset: null, validation: null },
-                }))
-              }
-            />
-            <CaptureClinicalForm
-              values={clinical}
-              onChange={(field, value) =>
-                setClinical((prev) => ({ ...prev, [field]: value }))
-              }
-            />
-          </>
-        ) : phase === "processing" ? (
-          <>
-            <CaptureProcessingPanel
-              snapshot={snapshot ?? captureProcessingSnapshot(0)}
-              eyeSlots={eyeSlots}
-            />
-            <CaptureStudyPanel
-              phase="processing"
-              clinical={clinical}
-              eyeSlots={eyeSlots}
-            />
+            <CaptureProcessingPanel event={event} eyeSlots={eyeSlots}
+              snapshot={study.snapshot} submitted={consultationId !== null} />
+            <CaptureStudyPanel clinical={attempt.clinical} />
           </>
         ) : (
           <>
-            <CaptureCompletedPanel
-              eyeSlots={eyeSlots}
-              results={completedResults}
-              completedAtIso={
-                completedAtIso ?? submittedAtIso ?? new Date().toISOString()
-              }
-            />
-            <CaptureStudyPanel
-              phase="completed"
-              clinical={clinical}
-              eyeSlots={eyeSlots}
-            />
+            <section className="flex flex-1 min-w-0 flex-col gap-5 p-5">
+              <PatientPicker value={patientId} onChange={setPatientId}
+                externalCode={externalCode} onCodeChange={setExternalCode} />
+              <CaptureLoadPanel eyeSlots={eyeSlots} onChange={changeSlot} />
+            </section>
+            <CaptureClinicalForm values={clinical}
+              onChange={(field, value) => setClinical((previous) => ({ ...previous, [field]: value }))} />
           </>
         )}
       </div>
-
-      {/* Footer action bar */}
-      <footer className="h-12 w-full bg-cockpit-surface border-t border-cockpit-border px-5 flex items-center justify-between">
-        <span className="text-[11px] text-cockpit-text-muted">
-          {phase === "draft" &&
-            (hasInvalidEye
-              ? "Atención: una de las imágenes presenta un error de validación. Corríjala o quítela para enviar el estudio."
-              : "Se requiere al menos un ojo. El estudio entra en la cola al enviarse y puede continuar trabajando.")}
-          {phase === "processing" &&
-            `Tiempo estimado restante: ${remainingSeconds} s · El estudio permanece en la cola si sale de esta pantalla.`}
-          {phase === "completed" &&
-            "El estudio queda disponible en el historial y en la cola de validación."}
+      <footer className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-t border-cockpit-border bg-cockpit-surface px-5 py-2">
+        <span className="text-xs text-cockpit-text-muted">
+          {error || study.error
+            ? <span role="alert" className="text-amber-300">{error || study.error}</span>
+            : !attempt ? `${selectedEyes.length} de 2 ojos validados · Completa las 11 variables para enviar`
+            : consultationId ? "Consulta registrada" : "Guardando estudio…"}
         </span>
-        <div className="flex items-center gap-3">
-          {phase === "draft" && (
+        <div className="flex flex-wrap items-center gap-2">
+          {!attempt && <><Link href="/" className="cockpit-button">Volver</Link>
+            <button onClick={send} disabled={!canSubmit} className="cockpit-button cockpit-primary">Enviar estudio</button></>}
+          {attempt && !pending && (
             <>
-              <button
-                disabled
-                title="No disponible en esta versión"
-                className="px-3 py-1 rounded text-[11px] font-medium bg-cockpit-panel border border-cockpit-border-subtle text-zinc-400 opacity-50 cursor-not-allowed"
-              >
-                Guardar borrador
-              </button>
-              <button
-                onClick={handleSubmitStudy}
-                disabled={validEyeCount === 0 || hasInvalidEye || !clinicalReady}
-                title={
-                  hasInvalidEye
-                    ? "Corrija o elimine la imagen con error antes de enviar el estudio"
-                    : validEyeCount === 0
-                      ? "Se requiere al menos un ojo válido"
-                      : !clinicalReady
-                        ? "Complete los 11 campos del modelo"
-                        : undefined
-                }
-                className="px-3 py-1 rounded text-[11px] font-semibold bg-clinical-action-light hover:bg-white text-clinical-action-on-light transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Enviar estudio
-              </button>
-            </>
-          )}
-          {phase === "processing" && (
-            <>
-              <button
-                onClick={handleCancelProcessing}
-                className="px-3 py-1 rounded text-[11px] font-medium bg-cockpit-panel border border-cockpit-border-subtle text-zinc-400 hover:bg-cockpit-card transition-colors"
-              >
-                Cancelar estudio
-              </button>
-              <button
-                disabled
-                title="No disponible en esta versión"
-                className="px-3 py-1 rounded text-[11px] font-semibold bg-clinical-action-light text-clinical-action-on-light opacity-50 cursor-not-allowed"
-              >
-                Ir a la cola de estudios
-              </button>
-            </>
-          )}
-          {phase === "completed" && (
-            <>
-              <button
-                onClick={handleNewStudy}
-                className="px-3 py-1 rounded text-[11px] font-medium bg-cockpit-panel border border-cockpit-border-subtle text-zinc-400 hover:bg-cockpit-card transition-colors"
-              >
-                Nuevo estudio
-              </button>
-              <button
-                onClick={() => router.push("/")}
-                className="px-3 py-1 rounded text-[11px] font-semibold bg-clinical-action-light hover:bg-white text-clinical-action-on-light transition-colors"
-              >
-                Ver estudio en el cockpit
-              </button>
+              <button onClick={reset} className="cockpit-button">Nueva captura</button>
+              {error && !consultationId && !attempt.creationUnconfirmed && (
+                <button onClick={send} className="cockpit-button cockpit-primary">Reintentar envío</button>
+              )}
+              {study.error && <button onClick={study.retry} className="cockpit-button">Consultar estado</button>}
+              {attempt.consultation && <Link href={`/studies/${attempt.consultation.id}`} className="cockpit-button cockpit-primary">Abrir caso clínico</Link>}
             </>
           )}
         </div>
       </footer>
     </main>
+  );
+}
+
+function PatientPicker({ value, onChange, externalCode, onCodeChange }: {
+  value: string;
+  onChange: (id: string) => void;
+  externalCode: string;
+  onCodeChange: (code: string) => void;
+}) {
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [page, setPage] = useState(0);
+  const [retry, setRetry] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    api<Patient[]>(`/patients?limit=${PATIENTS_PER_PAGE}&offset=${page * PATIENTS_PER_PAGE}`, { signal: controller.signal })
+      .then((items) => { if (!controller.signal.aborted) setPatients(items); })
+      .catch((failure: unknown) => { if (!controller.signal.aborted) setError(errorMessage(failure)); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [page, retry]);
+
+  return (
+    <section className="flex flex-wrap items-end gap-3 rounded-md border border-cockpit-border bg-cockpit-card p-3.5">
+      <label className="grid flex-1 min-w-[12rem] gap-1.5">
+        <span className="cockpit-label">Paciente</span>
+        <select value={value} onChange={(change) => onChange(change.target.value)} className="cockpit-input">
+          <option value="">{loading ? "Cargando pacientes…" : "Seleccionar paciente"}</option>
+          <option value="new">Crear paciente pseudonimizado</option>
+          {patients.map((patient) => <option key={patient.id} value={patient.id}>
+            {patient.externalCode || `#${patient.id.slice(0, 8).toUpperCase()}`}
+          </option>)}
+        </select>
+      </label>
+      {value === "new" && <label className="grid flex-1 min-w-[12rem] gap-1.5">
+        <span className="cockpit-label">Código pseudónimo (opcional)</span>
+        <input className="cockpit-input" maxLength={64} value={externalCode}
+          onChange={(change) => onCodeChange(change.target.value)} />
+      </label>}
+      <div className="flex gap-2">
+        <button className="cockpit-button" disabled={page === 0 || loading} onClick={() => {
+          if (value !== "new") onChange("");
+          setPage((current) => current - 1);
+        }}>Anterior</button>
+        <button className="cockpit-button" disabled={patients.length < PATIENTS_PER_PAGE || loading} onClick={() => {
+          if (value !== "new") onChange("");
+          setPage((current) => current + 1);
+        }}>Siguiente</button>
+      </div>
+      {error && <div className="flex w-full items-center gap-2">
+        <span role="alert" className="text-xs text-amber-300">{error}</span>
+        <button className="cockpit-button" onClick={() => setRetry((current) => current + 1)}>Reintentar</button>
+      </div>}
+    </section>
   );
 }

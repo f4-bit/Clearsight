@@ -1,12 +1,20 @@
 # Clearsight
 Clinical ophthalmology platform for glaucoma detection from bilateral retinographies (see PROJECT.md).
 - frontend/: Next.js clinical UI
-- backend/: FastAPI service, DB models, Celery workers
+- backend/: Fastify API, Prisma data layer, BullMQ workers
 - ml/: model architectures, ONNX inference, Grad-CAM, MLOps
 - docker/: image build stubs
 - scripts/: developer and MLOps helper stubs
 
 ----
+
+## Frontend local
+
+La interfaz se abre en `http://localhost:3000` con Docker Compose. El proxy de Next.js expone la API clínica en `/api`, con destino interno `http://backend:8000`. Para ejecutar Next.js directamente en el equipo, el destino predeterminado es `http://localhost:8080`. Se puede ajustar con `API_INTERNAL_URL`.
+
+Configura `AUTH_PUBLIC_ORIGIN` con el origen exacto que abre el navegador. Para MinIO, configura `MINIO_BROWSER_ORIGIN` con su origen accesible desde ese navegador. Compose usa `http://localhost:9000` por defecto. Usa HTTPS para un origen de producción.
+
+Con el backend y el servicio ML listos, crea la primera cuenta ADMIN con `npm run admin:bootstrap` en el backend y usa **Usuarios** para crear la cuenta OFTALMOLOGO. Las instrucciones de migración, configuración y bootstrap están en [backend/README.md](backend/README.md).
 
 # ML
 The CNN segmentation model is here: [CNN model](https://huggingface.co/F4-bit/Clearsight-CD-Segmentation-CNN-Base-model)

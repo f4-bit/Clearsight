@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
+import { SessionProvider } from "@/components/Session";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ClearSight — Estación de Diagnóstico Clínico de Glaucoma",
   description:
-    "Plataforma clínica de triaje multimodal y explicabilidad visual (Grad-CAM y segmentación copa/disco) para oftalmología.",
+    "Plataforma clínica de triaje multimodal y segmentación de copa y disco para oftalmología.",
 };
 
 export default function RootLayout({
@@ -22,7 +23,9 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
         />
       </head>
-      <body className="h-full bg-cockpit-bg text-cockpit-text antialiased">{children}</body>
+      <body className="h-full bg-cockpit-bg text-cockpit-text antialiased">
+        <SessionProvider>{children}</SessionProvider>
+      </body>
     </html>
   );
 }

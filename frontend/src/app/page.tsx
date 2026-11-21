@@ -1,75 +1,67 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState, type FormEvent } from "react";
+import { ResearchExport } from "@/components/ResearchExport";
+import { SessionGate } from "@/components/Session";
 import { TopBar } from "@/components/TopBar";
-import { BilateralCanvas } from "@/components/BilateralCanvas";
-import { TelemetrySidebar } from "@/components/TelemetrySidebar";
-import { MOCK_STUDY } from "@/lib/mockData";
-import { FeedbackCreate, FeedbackRead } from "@/types/clinical";
+import { UUID_PATTERN, type SessionUser } from "@/types/api";
 
-export default function ClinicalCockpitPage() {
-  const [reportExportPending, setReportExportPending] = useState(false);
-  const [lastSubmittedFeedback, setLastSubmittedFeedback] = useState<FeedbackRead | null>(null);
-  const exportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+export default function HomePage() {
+  return <SessionGate>{(user) => <Workspace user={user} />}</SessionGate>;
+}
 
-  useEffect(() => {
-    return () => {
-      if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
-    };
-  }, []);
+function Workspace({ user }: { user: SessionUser }) {
+  const router = useRouter();
+  const [id, setId] = useState("");
+  const [error, setError] = useState("");
+  const clinical = user.role === "OFTALMOLOGO";
 
-  const handleExportReport = () => {
-    if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
-    setReportExportPending(true);
-    exportTimerRef.current = setTimeout(() => {
-      setReportExportPending(false);
-      exportTimerRef.current = null;
-    }, 2500);
-  };
-
-  const handleSubmitFeedback = (feedback: FeedbackCreate) => {
-    const recorded: FeedbackRead = {
-      ...feedback,
-      id: "fb-" + Date.now(),
-      created_at: new Date().toISOString(),
-    };
-    setLastSubmittedFeedback(recorded);
-  };
+  function open(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const key = id.trim().toLowerCase();
+    if (!UUID_PATTERN.test(key)) {
+      setError("Ingresa el identificador completo en formato UUID.");
+      return;
+    }
+    router.push(`/${clinical ? "studies" : "executions"}/${key}`);
+  }
 
   return (
-    <main className="h-screen w-screen flex flex-col bg-cockpit-bg text-cockpit-text overflow-hidden">
-      {/* 1. Top Instrument Bar */}
-      <TopBar
-        study={MOCK_STUDY}
-        onExportReport={handleExportReport}
-        reportExportPending={reportExportPending}
-      />
-
-      {/* Degradation State Banner (REVIEW_REQUIRED) */}
-      {(MOCK_STUDY.status === "REVIEW_REQUIRED" ||
-        MOCK_STUDY.od.quality.review_required ||
-        MOCK_STUDY.os.quality.review_required) && (
-        <div className="bg-amber-500/20 border-b border-amber-800/60 px-4 py-2 text-amber-300 text-xs flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="font-bold">⚠️ ADVERTENCIA CLÍNICA:</span>
-            <span>
-              Opacidad de medios o calidad de segmentación limítrofe detectada. La clasificación
-              automática se encuentra condicionada a supervisión presencial obligatoria.
-            </span>
-          </div>
-          <span className="font-mono text-[11px] text-amber-400">Estado: REVISIÓN REQUERIDA</span>
+    <main className="flex min-h-screen flex-col">
+      <TopBar title="Estación de diagnóstico oftalmológico" role={user.role} />
+      <div className="mx-auto grid w-full max-w-5xl gap-4 p-5 sm:p-8">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-lg font-semibold">{clinical ? "Estudios clínicos" : "Estación de trabajo"}</h2>
+          <span className="text-xs text-cockpit-text-muted">{user.email}</span>
         </div>
-      )}
-
-      {/* 2. Main Workspace */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-        <BilateralCanvas od={MOCK_STUDY.od} os={MOCK_STUDY.os} />
-
-        <TelemetrySidebar
-          study={MOCK_STUDY}
-          onSubmitFeedback={handleSubmitFeedback}
-          lastFeedback={lastSubmittedFeedback}
-        />
+        <div className="grid gap-4 md:grid-cols-2">
+          {clinical ? (
+            <section className="grid content-start gap-3 rounded-md border border-cockpit-border bg-cockpit-card p-5">
+              <h3 className="text-sm font-semibold">Nueva captura</h3>
+              <p className="text-xs text-cockpit-text-muted">Selecciona un paciente y adjunta una o dos retinografías para análisis.</p>
+              <Link className="cockpit-button cockpit-primary justify-self-start" href="/capture">Iniciar captura</Link>
+            </section>
+          ) : user.role === "ADMIN" ? (
+            <section className="grid content-start gap-3 rounded-md border border-cockpit-border bg-cockpit-card p-5">
+              <h3 className="text-sm font-semibold">Administración</h3>
+              <p className="text-xs text-cockpit-text-muted">Consulta y gestiona las cuentas y sus perfiles de acceso.</p>
+              <Link className="cockpit-button justify-self-start" href="/admin/users">Gestionar usuarios</Link>
+            </section>
+          ) : null}
+          <form className="grid content-start gap-3 rounded-md border border-cockpit-border bg-cockpit-card p-5" onSubmit={open}>
+            <h3 className="text-sm font-semibold">{clinical ? "Abrir estudio" : "Consultar ejecución autorizada"}</h3>
+            <label className="grid gap-1">
+              <span className="cockpit-label">{clinical ? "ID de consulta" : "ID de ejecución"}</span>
+              <input className="cockpit-input font-mono" required value={id} maxLength={50}
+                onChange={(event) => { setId(event.target.value); setError(""); }} />
+            </label>
+            {error && <p role="alert" className="text-xs text-amber-300">{error}</p>}
+            <button className="cockpit-button justify-self-start">Abrir</button>
+          </form>
+          {!clinical && <ResearchExport />}
+        </div>
       </div>
     </main>
   );
