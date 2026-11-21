@@ -378,7 +378,6 @@ def test_deploy_script_declares_required_resources() -> None:
         "MINIO_BUCKET_OVERLAY",
         "MINIO_BUCKET_PDF",
         "ML_SERVICE_URL",
-        "REDIS_URL",
         "raw-retinas",
         "gradcam-overlays",
         "segmentation-masks",
@@ -1084,19 +1083,12 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
     ]:
         assert assignment in backend_env, assignment
     assert any(item.startswith("ML_SERVICE_URL=https://") for item in backend_env)
-
-    redis_values = [item for item in backend_env if item.startswith("REDIS_URL=")]
-    assert len(redis_values) == 1, backend_env
-    redis_url = redis_values[0].split("=", 1)[1]
-    assert redis_url.startswith("redis://clearsight-run123-redis.")
-    assert redis_url.endswith(":6379/0")
-    assert "rediss://" not in redis_url
-    assert "secretref:" not in redis_url
+    assert not any(item.startswith("REDIS_URL=") for item in backend_env)
     assert not any("redis" in item for item in _option_values(backend, "--secrets"))
 
     worker = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-worker")
     worker_env = _option_values(worker, "--env-vars")
-    assert f"REDIS_URL={redis_url}" in worker_env
+    assert not any(item.startswith("REDIS_URL=") for item in worker_env)
     assert not any("redis" in item for item in _option_values(worker, "--secrets"))
 
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
@@ -1155,7 +1147,7 @@ def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path
 
 
 @requires_powershell
-def test_deploy_redis_is_internal_container_app(tmp_path: Path) -> None:
+def test_deploy_does_not_provision_redis(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
     args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
@@ -1164,28 +1156,17 @@ def test_deploy_redis_is_internal_container_app(tmp_path: Path) -> None:
     entries = _read_log(tmp_path / "az-calls.jsonl")
     assert not [entry for entry in entries if _args_start(entry, ["redis"])]
 
-    redis_app = _entry_with_name(
-        entries, ["containerapp", "create"], "clearsight-run123-redis"
+    containerapp_creates = [
+        entry for entry in entries if _args_start(entry, ["containerapp", "create"])
+    ]
+    assert containerapp_creates, "expected container app creates"
+    for entry in containerapp_creates:
+        assert _option_values(entry, "--image") != ["redis:7-alpine"], entry
+        assert _option_values(entry, "--transport") != ["tcp"], entry
+    assert not any(
+        _option_values(entry, "--name") == ["clearsight-run123-redis"]
+        for entry in containerapp_creates
     )
-    assert _option_values(redis_app, "--image") == ["redis:7-alpine"]
-    assert _option_values(redis_app, "--target-port") == ["6379"]
-    assert _option_values(redis_app, "--ingress") == ["internal"]
-    assert _option_values(redis_app, "--transport") == ["tcp"]
-    assert _option_values(redis_app, "--min-replicas") == ["1"]
-    assert _option_values(redis_app, "--max-replicas") == ["1"]
-    assert not _option_values(redis_app, "--secrets")
-
-    for app_name in ("clearsight-run123-backend", "clearsight-run123-worker"):
-        app = _entry_with_name(entries, ["containerapp", "create"], app_name)
-        env_values = _option_values(app, "--env-vars")
-        redis_values = [item for item in env_values if item.startswith("REDIS_URL=")]
-        assert len(redis_values) == 1, env_values
-        value = redis_values[0].split("=", 1)[1]
-        assert value.startswith("redis://clearsight-run123-redis.")
-        assert value.endswith(":6379/0")
-        assert "rediss://" not in value
-        assert "secretref:" not in value
-        assert not any("redis" in item for item in _option_values(app, "--secrets"))
 
 
 @requires_powershell
@@ -1299,7 +1280,6 @@ def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path)
     assert "--enable-workload-profiles" in env_create["args"]
 
     profile_creates = [
-        (["containerapp", "create"], "clearsight-run123-redis"),
         (["containerapp", "create"], "clearsight-run123-ml"),
         (["containerapp", "create"], "clearsight-run123-backend"),
         (["containerapp", "create"], "clearsight-run123-worker"),
