@@ -13,7 +13,9 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    CI=1 \
+    NO_COLOR=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ ./
@@ -21,7 +23,9 @@ COPY frontend/ ./
 # Build the production bundle when the project defines a build script. The guard
 # keeps the image buildable while the Next.js app is still being scaffolded.
 RUN if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.build ? 0 : 1)"; then \
-        npm run build; \
+        npm run build > /tmp/build.log 2>&1; rc=$?; \
+        tr -cd '\11\12\15\40-\176' < /tmp/build.log; \
+        exit $rc; \
     fi
 
 EXPOSE 3000
