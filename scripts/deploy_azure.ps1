@@ -975,12 +975,16 @@ try {
     $workerSecrets = @(
         "database-url=$databaseUrl",
         "azure-storage-key=$storageKey",
+        "jwt-secret=$jwtSecret",
+        "export-hmac-secret=$exportSecret",
         "ml-api-token=$mlToken"
     )
     $workerEnv = @(
         "NODE_ENV=production",
         "DATABASE_URL=secretref:database-url",
         "AZURE_STORAGE_ACCOUNT_KEY=secretref:azure-storage-key",
+        "JWT_SECRET=secretref:jwt-secret",
+        "EXPORT_HMAC_SECRET=secretref:export-hmac-secret",
         "ML_API_TOKEN=secretref:ml-api-token",
         "ML_SERVICE_URL=https://$mlFqdn"
     ) + $commonBuckets
@@ -1000,7 +1004,7 @@ try {
             "--registry-password", $acrPass,
             "--cpu", "0.5",
             "--memory", "1.0Gi",
-            "--min-replicas", "0",
+            "--min-replicas", "1",
             "--max-replicas", "1",
             "--secrets"
         ) + $workerSecrets + @("--env-vars") + $workerEnv + @("--workload-profile-name", $WorkloadProfileName, "--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create worker"

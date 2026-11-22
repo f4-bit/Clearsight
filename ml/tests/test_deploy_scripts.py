@@ -1100,8 +1100,16 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
 
     worker = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-worker")
     worker_env = _option_values(worker, "--env-vars")
+    for assignment in [
+        "JWT_SECRET=secretref:jwt-secret",
+        "EXPORT_HMAC_SECRET=secretref:export-hmac-secret",
+    ]:
+        assert assignment in worker_env, assignment
     assert not any(item.startswith("REDIS_URL=") for item in worker_env)
     assert not any("redis" in item for item in _option_values(worker, "--secrets"))
+    worker_secrets = _option_values(worker, "--secrets")
+    assert any(item.startswith("jwt-secret=") for item in worker_secrets)
+    assert any(item.startswith("export-hmac-secret=") for item in worker_secrets)
 
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
     assert "ML_INFERENCE_BACKEND=pytorch" in _option_values(ml_app, "--env-vars")
