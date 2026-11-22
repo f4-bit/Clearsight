@@ -279,7 +279,9 @@ export function createInferencePoller(
     timer = schedule(() => {
       void runOnce();
     }, intervalMs);
-    timer.unref?.();
+    // The timer must stay ref'd: in the standalone worker the Prisma pool is
+    // lazy, so an unref'd timer would let the event loop drain and the process
+    // exit before the first poll runs.
   }
 
   return {
@@ -365,4 +367,7 @@ if (
 ) {
   console.log("[Worker] Starting standalone Clearsight PostgreSQL inference worker...");
   startInferenceWorker();
+  // Ref'd keep-alive: the standalone process must not exit even if a timer is
+  // unexpectedly unref'd while the lazy Prisma pool has no other handles.
+  setInterval(() => {}, 1 << 30);
 }

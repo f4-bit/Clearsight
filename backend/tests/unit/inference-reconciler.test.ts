@@ -225,9 +225,8 @@ describe("dispatch reconciler", () => {
     });
   });
 
-  it("schedules a non-blocking interval and clears it on stop", () => {
-    const unref = vi.fn();
-    const timer = { unref } as unknown as ReturnType<typeof setInterval>;
+  it("schedules a ref'd interval and clears it on stop", () => {
+    const timer = {} as ReturnType<typeof setInterval>;
     const setIntervalFn = vi.fn((..._args: unknown[]) => timer);
     const clearIntervalFn = vi.fn();
     const reconciler = startDispatchReconciler({
@@ -244,7 +243,6 @@ describe("dispatch reconciler", () => {
 
     expect(setIntervalFn).toHaveBeenCalledTimes(1);
     expect(setIntervalFn.mock.calls[0]![1]).toBe(5_000);
-    expect(unref).toHaveBeenCalledTimes(1);
 
     reconciler.stop();
     expect(clearIntervalFn).toHaveBeenCalledWith(timer);
