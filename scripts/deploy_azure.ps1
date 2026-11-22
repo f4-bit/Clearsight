@@ -8,11 +8,15 @@
 
       1. Resource group (tags on every resource)
       2. Blob Storage account + containers (raw, gradcam, mask, overlay, pdf, models)
-      3. Azure Container Registry (Basic) and five SHA-tagged images
+      3. Azure Container Registry (Basic) and four SHA-tagged images
       4. PostgreSQL Flexible Server + database + firewall
       5. Container Apps environment
-      6. Manual Container Apps jobs: prisma:deploy (migrate) and admin:bootstrap
-      7. Container Apps: ml-service, backend, worker, frontend
+      6. Container Apps: ml-service, backend, worker, frontend
+
+    The backend image applies `prisma:deploy` migrations on startup and, when
+    `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` are configured, runs
+    `admin:bootstrap` before starting the server. This avoids Container Apps
+    Jobs, which are not available in the "express" tier.
 
     Redis is intentionally NOT provisioned. The backend and worker use the
     PostgreSQL-backed inference queue and the ML service runs with an in-memory
@@ -241,8 +245,6 @@ $MlApp = "$RunPrefix-ml"
 $BackendApp = "$RunPrefix-backend"
 $WorkerApp = "$RunPrefix-worker"
 $FrontendApp = "$RunPrefix-frontend"
-$MigrateJob = "$RunPrefix-migrate"
-$BootstrapJob = "$RunPrefix-bootstrap"
 
 # A workload-profiles (non-express) environment is required for TCP ingress.
 # The default profile is "Consumption"; the script verifies it after creating
@@ -469,7 +471,6 @@ $script:Manifest = [ordered]@{
     resources       = @()
     images          = [ordered]@{}
     endpoints       = [ordered]@{}
-    jobs            = [ordered]@{ migrate = "not-created"; bootstrap = "not-created" }
     cleanup         = [ordered]@{ status = "not-started"; checkedAt = $null; residuals = @(); message = "" }
 }
 
@@ -490,14 +491,12 @@ $ImageSha = $ImageSha.ToLowerInvariant()
 
 $imageRefs = [ordered]@{
     "backend"    = "clearsight-backend:$ImageSha"
-    "migrate"    = "clearsight-migrate:$ImageSha"
     "worker"     = "clearsight-worker:$ImageSha"
     "frontend"   = "clearsight-frontend:$ImageSha"
     "ml-service" = "clearsight-ml-service:$ImageSha"
 }
 $dockerfiles = @{
     "backend"    = "docker/backend.Dockerfile"
-    "migrate"    = "docker/migrate.Dockerfile"
     "worker"     = "docker/worker.Dockerfile"
     "frontend"   = "docker/frontend.Dockerfile"
     "ml-service" = "docker/ml-service.Dockerfile"
@@ -518,7 +517,6 @@ function Write-Plan {
     Write-Host "  PostgreSQL     : $PostgresName/$PostgresDatabase"
     Write-Host "  Redis          : not provisioned (PostgreSQL queue in backend/worker; in-memory in ML)"
     Write-Host "  Container apps : $MlApp, $BackendApp, $WorkerApp, $FrontendApp"
-    Write-Host "  Jobs           : $MigrateJob (prisma:deploy), $BootstrapJob (admin:bootstrap)"
     Write-Host "  Images         : $($imageRefs.Values -join ', ')"
     Write-Host "  Manifest       : $script:ManifestPath"
     Write-Host "  Tags           : $($tagArgs -join ', ')"
@@ -553,23 +551,6 @@ function Assert-DeployGate {
             throw "GATE: el provider $namespace no está registrado (permisos/quota no verificados)."
         }
     }
-}
-
-function Wait-AzJobSucceeded {
-    param([string]$JobName, [int]$TimeoutSeconds = 900)
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $status = Get-AzValue @(
-            "containerapp", "job", "execution", "list",
-            "--name", $JobName,
-            "--resource-group", $rgName,
-            "--query", "[0].properties.status", "-o", "tsv"
-        ) -Operation "job execution $JobName"
-        if ($status -eq "Succeeded") { return }
-        if ($status -eq "Failed") { throw "El job '$JobName' falló." }
-        Start-Sleep -Seconds 10
-    }
-    throw "Timeout esperando al job '$JobName'."
 }
 
 function Invoke-Cleanup {
@@ -864,76 +845,6 @@ try {
         "STORAGE_DOWNLOAD_TTL_SECONDS=3600"
     )
 
-    # 8. Manual jobs: migrate then bootstrap --------------------------------
-    Invoke-AzCli (@(
-        "containerapp", "job", "create",
-        "--name", $MigrateJob,
-        "--resource-group", $rgName,
-        "--environment", $EnvName,
-        "--trigger-type", "Manual",
-        "--replica-timeout", "600",
-        "--replica-retry-limit", "1",
-        "--image", $imageRefs["migrate"],
-        "--registry-server", $acrLoginServer,
-        "--registry-username", $acrUser,
-        "--registry-password", $acrPass,
-        "--cpu", "0.5",
-        "--memory", "1.0Gi",
-        "--secrets", "database-url=$databaseUrl",
-        "--env-vars", "NODE_ENV=production", "DATABASE_URL=secretref:database-url",
-        "--workload-profile-name", $WorkloadProfileName,
-        "--tags"
-    ) + $tagArgs + @("--output", "none")) -Operation "job create migrate"
-    $migrateJobId = Get-AzValue @("containerapp", "job", "show", "--name", $MigrateJob, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "job id migrate"
-    Add-ManifestResource -Type "containerapp.job" -Name $MigrateJob -Id $migrateJobId -ResourceTags $tags -Extra @{ purpose = "prisma:deploy" }
-    $script:CreatedAny = $true
-    Save-Manifest
-
-    Invoke-AzCli @("containerapp", "job", "start", "--name", $MigrateJob, "--resource-group", $rgName, "--output", "none") -Operation "job start migrate"
-    Wait-AzJobSucceeded -JobName $MigrateJob
-    $script:Manifest["jobs"]["migrate"] = "succeeded"
-    Save-Manifest
-
-    $bootstrapPassword = ConvertTo-PlainText $BootstrapAdminPassword
-    if ($BootstrapAdminEmail -and $bootstrapPassword) {
-        Register-Secret $bootstrapPassword | Out-Null
-        Invoke-AzCli (@(
-            "containerapp", "job", "create",
-            "--name", $BootstrapJob,
-            "--resource-group", $rgName,
-            "--environment", $EnvName,
-            "--trigger-type", "Manual",
-            "--replica-timeout", "600",
-            "--replica-retry-limit", "0",
-            "--image", $imageRefs["backend"],
-            "--registry-server", $acrLoginServer,
-            "--registry-username", $acrUser,
-            "--registry-password", $acrPass,
-            "--cpu", "0.5",
-            "--memory", "1.0Gi",
-            "--command", "npm", "run", "admin:bootstrap",
-            "--secrets", "database-url=$databaseUrl", "bootstrap-admin-password=$bootstrapPassword",
-            "--env-vars", "NODE_ENV=production", "DATABASE_URL=secretref:database-url",
-            "BOOTSTRAP_ADMIN_EMAIL=$BootstrapAdminEmail",
-            "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password",
-            "--workload-profile-name", $WorkloadProfileName,
-            "--tags"
-        ) + $tagArgs + @("--output", "none")) -Operation "job create bootstrap"
-        $bootstrapJobId = Get-AzValue @("containerapp", "job", "show", "--name", $BootstrapJob, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "job id bootstrap"
-        Add-ManifestResource -Type "containerapp.job" -Name $BootstrapJob -Id $bootstrapJobId -ResourceTags $tags -Extra @{ purpose = "admin:bootstrap" }
-        $script:CreatedAny = $true
-        Save-Manifest
-
-        Invoke-AzCli @("containerapp", "job", "start", "--name", $BootstrapJob, "--resource-group", $rgName, "--output", "none") -Operation "job start bootstrap"
-        Wait-AzJobSucceeded -JobName $BootstrapJob
-        $script:Manifest["jobs"]["bootstrap"] = "succeeded"
-    }
-    else {
-        Write-Warn "Bootstrap admin omitido: pase -BootstrapAdminEmail y -BootstrapAdminPassword (SecureString)."
-        $script:Manifest["jobs"]["bootstrap"] = "skipped-missing-credentials"
-    }
-    Save-Manifest
-
     # 9. ML service ----------------------------------------------------------
     $mlSecrets = @("azure-storage-key=$storageKey", "ml-api-token=$mlToken")
     $mlEnv = @(
@@ -1003,6 +914,19 @@ try {
         "ML_API_TOKEN=secretref:ml-api-token",
         "ML_SERVICE_URL=https://$mlFqdn"
     ) + $commonBuckets
+    $bootstrapPassword = ConvertTo-PlainText $BootstrapAdminPassword
+    if ($BootstrapAdminEmail -and $bootstrapPassword) {
+        Register-Secret $bootstrapPassword | Out-Null
+        $backendSecrets += "bootstrap-admin-password=$bootstrapPassword"
+        $backendEnv += @(
+            "BOOTSTRAP_ADMIN_EMAIL=$BootstrapAdminEmail",
+            "BOOTSTRAP_ADMIN_FULL_NAME=Clearsight Administrator",
+            "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password"
+        )
+    }
+    else {
+        Write-Warn "Bootstrap admin omitido: pase -BootstrapAdminEmail y -BootstrapAdminPassword (SecureString) para crear el administrador inicial."
+    }
     if (Test-AzExists @("containerapp", "show", "--name", $BackendApp, "--resource-group", $rgName)) {
         $backendAppId = Get-AzValue @("containerapp", "show", "--name", $BackendApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "backend app id"
         Assert-RunOwnership "container app" $BackendApp $backendAppId

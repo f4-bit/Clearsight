@@ -332,7 +332,6 @@ TAGGED_CREATES = [
     ["acr", "create"],
     ["postgres", "flexible-server", "create"],
     ["containerapp", "env", "create"],
-    ["containerapp", "job", "create"],
     ["containerapp", "create"],
 ]
 
@@ -386,14 +385,22 @@ def test_deploy_script_declares_required_resources() -> None:
         "models",
         "prisma:deploy",
         "admin:bootstrap",
+        "BOOTSTRAP_ADMIN_EMAIL",
+        "BOOTSTRAP_ADMIN_FULL_NAME",
+        "bootstrap-admin-password",
         '"containerapp", "create"',
-        '"containerapp", "job", "create"',
         "manifest.json",
         "--tags",
     ]:
         assert token in content, f"Expected token '{token}' in deploy_azure.ps1"
 
-    for forbidden in [".env.azure", "docker/init.sql", "psycopg2", "prisma:seed"]:
+    for forbidden in [
+        ".env.azure",
+        "docker/init.sql",
+        "psycopg2",
+        "prisma:seed",
+        '"containerapp", "job", "create"',
+    ]:
         assert forbidden not in content, f"Unexpected token '{forbidden}' in deploy_azure.ps1"
 
 
@@ -442,7 +449,6 @@ def test_deploy_plan_mode_does_not_mutate(tmp_path: Path) -> None:
     assert manifest["tags"]["project"] == "clearsight"
     assert set(manifest["images"]) == {
         "backend",
-        "migrate",
         "worker",
         "frontend",
         "ml-service",
@@ -470,15 +476,17 @@ def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> No
             assert tags["owner"] == "dev"
 
     builds = [entry for entry in entries if _args_start(entry, ["acr", "build"])]
-    assert len(builds) == 5
+    assert len(builds) == 4
     built_images = {entry["args"][entry["args"].index("--image") + 1] for entry in builds}
     assert built_images == {
         "clearsight-backend:deadbeefcafe",
-        "clearsight-migrate:deadbeefcafe",
         "clearsight-worker:deadbeefcafe",
         "clearsight-frontend:deadbeefcafe",
         "clearsight-ml-service:deadbeefcafe",
     }
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
 
     manifest = json.loads(_manifest_path(tmp_path).read_text(encoding="utf-8"))
     assert manifest["mode"] == "apply"
@@ -491,7 +499,6 @@ def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> No
         "acr",
         "postgres",
         "containerapp.env",
-        "containerapp.job",
         "containerapp",
     }
     assert expected_types <= types
@@ -563,7 +570,7 @@ def test_deploy_gate_blocks_disabled_subscription(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_apply_failure_runs_cleanup_in_finally(tmp_path: Path) -> None:
     env = _stub_environment(
-        tmp_path, {"fail_commands": ["containerapp job create"]}
+        tmp_path, {"fail_commands": ["containerapp create"]}
     )
     args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
@@ -1085,6 +1092,11 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
     assert any(item.startswith("ML_SERVICE_URL=https://") for item in backend_env)
     assert not any(item.startswith("REDIS_URL=") for item in backend_env)
     assert not any("redis" in item for item in _option_values(backend, "--secrets"))
+    assert not any(item.startswith("BOOTSTRAP_ADMIN_") for item in backend_env)
+    assert not any(
+        item.startswith("bootstrap-admin-password=")
+        for item in _option_values(backend, "--secrets")
+    )
 
     worker = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-worker")
     worker_env = _option_values(worker, "--env-vars")
@@ -1094,20 +1106,15 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
     assert "ML_INFERENCE_BACKEND=pytorch" in _option_values(ml_app, "--env-vars")
 
-    migrate = _entry_with_name(
-        entries, ["containerapp", "job", "create"], "clearsight-run123-migrate"
-    )
-    assert _option_values(migrate, "--image") == ["clearsight-migrate:deadbeefcafe"]
-    assert "DATABASE_URL=secretref:database-url" in _option_values(migrate, "--env-vars")
-
     assert any(
         _args_start(entry, ["storage", "container", "create"])
         and _option_values(entry, "--name") == ["clinical-reports"]
         for entry in entries
     )
-    purposes = {resource.get("purpose") for resource in manifest["resources"]}
-    assert "prisma:deploy" in purposes
-    assert manifest["jobs"]["migrate"] == "succeeded"
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
+    assert "jobs" not in manifest
 
 
 @requires_powershell
@@ -1206,7 +1213,7 @@ def test_deploy_manifest_marks_group_created_by_run_and_teardown_deletes_it(
 
 
 @requires_powershell
-def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) -> None:
+def test_deploy_backend_receives_bootstrap_env_and_secret(tmp_path: Path) -> None:
     canary = "BootstrapQaCanary1!x"
     env = _stub_environment(tmp_path)
     values = {
@@ -1233,21 +1240,38 @@ def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) 
     assert result.returncode == 0, result.stdout + result.stderr
 
     entries = _read_log(tmp_path / "az-calls.jsonl")
-    bootstrap = _entry_with_name(
-        entries, ["containerapp", "job", "create"], "clearsight-run123-bootstrap"
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
+
+    backend = _entry_with_name(
+        entries, ["containerapp", "create"], "clearsight-run123-backend"
     )
-    assert _option_values(bootstrap, "--command") == ["npm", "run", "admin:bootstrap"]
-    assert "seed" not in " ".join(bootstrap["args"]).lower()
+    backend_env = _option_values(backend, "--env-vars")
+    for assignment in [
+        "BOOTSTRAP_ADMIN_EMAIL=qa-bootstrap@example.test",
+        "BOOTSTRAP_ADMIN_FULL_NAME=Clearsight Administrator",
+        "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password",
+    ]:
+        assert assignment in backend_env, assignment
+    assert "DATABASE_URL=secretref:database-url" in backend_env
+
+    bootstrap_secrets = [
+        value
+        for value in _option_values(backend, "--secrets")
+        if value.startswith("bootstrap-admin-password=")
+    ]
+    assert bootstrap_secrets == [f"bootstrap-admin-password={canary}"], bootstrap_secrets
+
+    assert "seed" not in " ".join(backend["args"]).lower()
 
     manifest_text = _manifest_path(tmp_path).read_text(encoding="utf-8")
-    manifest = json.loads(manifest_text)
-    assert manifest["jobs"]["bootstrap"] == "succeeded"
     assert canary not in result.stdout + result.stderr
     assert canary not in manifest_text
 
 
 @requires_powershell
-def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path) -> None:
+def test_deploy_uses_workload_profiles_for_env_and_all_apps(tmp_path: Path) -> None:
     canary = "WorkloadProfileCanary1!x"
     env = _stub_environment(tmp_path)
     values = {
@@ -1284,12 +1308,14 @@ def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path)
         (["containerapp", "create"], "clearsight-run123-backend"),
         (["containerapp", "create"], "clearsight-run123-worker"),
         (["containerapp", "create"], "clearsight-run123-frontend"),
-        (["containerapp", "job", "create"], "clearsight-run123-migrate"),
-        (["containerapp", "job", "create"], "clearsight-run123-bootstrap"),
     ]
     for prefix, name in profile_creates:
         entry = _entry_with_name(entries, prefix, name)
         assert _option_values(entry, "--workload-profile-name") == ["Consumption"], name
+
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
 
     assert any(
         _args_start(entry, ["containerapp", "env", "show"])
