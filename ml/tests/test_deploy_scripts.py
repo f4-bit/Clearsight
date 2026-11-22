@@ -1106,6 +1106,18 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
     assert "ML_INFERENCE_BACKEND=pytorch" in _option_values(ml_app, "--env-vars")
 
+    expected_images = {
+        "clearsight-run123-backend": "clearsight-backend:deadbeefcafe",
+        "clearsight-run123-worker": "clearsight-worker:deadbeefcafe",
+        "clearsight-run123-ml": "clearsight-ml-service:deadbeefcafe",
+        "clearsight-run123-frontend": "clearsight-frontend:deadbeefcafe",
+    }
+    for name, short_image in expected_images.items():
+        app = _entry_with_name(entries, ["containerapp", "create"], name)
+        assert _option_values(app, "--image") == [
+            f"clearsightrun123.azurecr.io/{short_image}"
+        ], name
+
     assert any(
         _args_start(entry, ["storage", "container", "create"])
         and _option_values(entry, "--name") == ["clinical-reports"]
