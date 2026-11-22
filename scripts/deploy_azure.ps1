@@ -7,7 +7,7 @@
     Creates an isolated Azure run identified by `clearsight-<runId>`:
 
       1. Resource group (tags on every resource)
-      2. Blob Storage account + containers (raw, gradcam, mask, overlay, pdf, models)
+      2. Blob Storage account + containers (raw, gradcam, mask, overlay, pdf)
       3. Azure Container Registry (Basic) and four SHA-tagged images
       4. PostgreSQL Flexible Server + database + firewall
       5. Container Apps environment
@@ -94,8 +94,6 @@ param(
     [securestring]$PostgresPassword,
     [string]$BootstrapAdminEmail = "",
     [securestring]$BootstrapAdminPassword,
-    [string]$ModelsDir = "",
-    [switch]$SkipModelUpload,
     [string]$ManifestRoot = "",
     [int]$CleanupTimeoutSeconds = 300,
     [int]$CleanupPollSeconds = 10
@@ -286,11 +284,9 @@ $Containers = @(
     "gradcam-overlays",
     "segmentation-masks",
     "segmentation-overlays",
-    "clinical-reports",
-    "models"
+    "clinical-reports"
 )
 
-if (-not $ModelsDir) { $ModelsDir = Join-Path $RepoRoot "models_cache" }
 if (-not $ManifestRoot) { $ManifestRoot = Join-Path $RepoRoot "artifacts/azure-runs" }
 $script:ManifestPath = [System.IO.Path]::Combine($ManifestRoot, $runIdSafe, "manifest.json")
 
@@ -655,35 +651,6 @@ try {
             "--public-access", "off",
             "--output", "none"
         ) -Operation "storage container $container"
-    }
-
-    if ($SkipModelUpload) {
-        Write-Warn "Skipping model upload (-SkipModelUpload)."
-    }
-    elseif (-not (Test-Path -LiteralPath $ModelsDir)) {
-        Write-Warn "Models directory '$ModelsDir' not found; skipping upload."
-    }
-    else {
-        $modelFiles = @(Get-ChildItem -LiteralPath $ModelsDir -File -ErrorAction SilentlyContinue)
-        if ($modelFiles.Count -eq 0) {
-            Write-Warn "No model artifacts found in '$ModelsDir'; skipping upload."
-        }
-        else {
-            Write-Info "Uploading $($modelFiles.Count) artifact(s) to the 'models' container..."
-            foreach ($file in $modelFiles) {
-                Invoke-AzCli @(
-                    "storage", "blob", "upload",
-                    "--account-name", $StorageName,
-                    "--account-key", $storageKey,
-                    "--container-name", "models",
-                    "--name", $file.Name,
-                    "--file", $file.FullName,
-                    "--overwrite",
-                    "--only-show-errors",
-                    "--output", "none"
-                ) -Operation "storage blob upload"
-            }
-        }
     }
 
     # 3. Registry + images ---------------------------------------------------

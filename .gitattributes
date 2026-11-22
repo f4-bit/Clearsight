@@ -1,3 +1,4 @@
 backend/prisma/migrations/**/migration.sql text eol=lf
 backend/prisma/baseline/*.json text eol=lf
 docker/init.sql text eol=lf
+*.sh text eol=lf

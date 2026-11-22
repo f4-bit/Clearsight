@@ -382,7 +382,6 @@ def test_deploy_script_declares_required_resources() -> None:
         "segmentation-masks",
         "segmentation-overlays",
         "clinical-reports",
-        "models",
         "prisma:deploy",
         "admin:bootstrap",
         "BOOTSTRAP_ADMIN_EMAIL",
@@ -458,7 +457,7 @@ def test_deploy_plan_mode_does_not_mutate(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -514,7 +513,7 @@ def test_deploy_manifest_and_output_do_not_contain_secrets(tmp_path: Path) -> No
         "canary_redis_key": "CANARY_REDIS_KEY_0123456789",
     }
     env = _stub_environment(tmp_path, canaries)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -535,7 +534,7 @@ def test_deploy_gate_blocks_context_mismatch(tmp_path: Path) -> None:
     env = _stub_environment(
         tmp_path, {"subscription_id": "99999999-9999-9999-9999-999999999999"}
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE" in result.stdout + result.stderr
@@ -548,7 +547,7 @@ def test_deploy_gate_blocks_unregistered_provider(tmp_path: Path) -> None:
     env = _stub_environment(
         tmp_path, {"providers": {"Microsoft.App": "NotRegistered"}}
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE" in result.stdout + result.stderr
@@ -559,7 +558,7 @@ def test_deploy_gate_blocks_unregistered_provider(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_gate_blocks_disabled_subscription(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path, {"state": "Disabled"})
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE" in result.stdout + result.stderr
@@ -572,7 +571,7 @@ def test_deploy_apply_failure_runs_cleanup_in_finally(tmp_path: Path) -> None:
     env = _stub_environment(
         tmp_path, {"fail_commands": ["containerapp create"]}
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
 
@@ -587,7 +586,7 @@ def test_deploy_apply_failure_runs_cleanup_in_finally(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_keep_for_debug_skips_cleanup(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload", "-KeepForDebug"]
+    args = _deploy_args(tmp_path) + ["-Apply", "-KeepForDebug"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -820,7 +819,7 @@ def test_deploy_apply_manifest_never_exposes_secret_names_or_connection_strings(
         "canary_redis_key": "CANARY_REDIS_KEY_QA_0123456789",
     }
     env = _stub_environment(tmp_path, canaries)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -934,7 +933,7 @@ def test_deploy_gate_blocks_missing_blank_or_negative_infinity(
 @requires_powershell
 def test_deploy_apply_with_unconfirmed_budget_creates_nothing(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path, BudgetUsd="NaN") + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path, BudgetUsd="NaN") + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "BLOQUEO" in result.stdout + result.stderr
@@ -1047,7 +1046,7 @@ def test_teardown_group_delete_timeout_reports_residual_and_fails(tmp_path: Path
 @requires_powershell
 def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1131,6 +1130,14 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
         and _option_values(entry, "--name") == ["clinical-reports"]
         for entry in entries
     )
+    assert not any(
+        _args_start(entry, ["storage", "container", "create"])
+        and _option_values(entry, "--name") == ["models"]
+        for entry in entries
+    ), "deploy must not create the 'models' container"
+    assert not [
+        entry for entry in entries if _args_start(entry, ["storage", "blob", "upload"])
+    ], "deploy must not upload model blobs"
     assert not [
         entry for entry in entries if _args_start(entry, ["containerapp", "job"])
     ], "deploy must not create Container Apps jobs"
@@ -1140,7 +1147,7 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
 @requires_powershell
 def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1176,7 +1183,7 @@ def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path
 @requires_powershell
 def test_deploy_does_not_provision_redis(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1201,7 +1208,7 @@ def test_deploy_manifest_marks_group_created_by_run_and_teardown_deletes_it(
     tmp_path: Path,
 ) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload", "-KeepForDebug"]
+    args = _deploy_args(tmp_path) + ["-Apply", "-KeepForDebug"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1252,7 +1259,6 @@ def test_deploy_backend_receives_bootstrap_env_and_secret(tmp_path: Path) -> Non
     parts = [f"-{key} '{value}'" for key, value in values.items()]
     parts += [
         "-Apply",
-        "-SkipModelUpload",
         f"-BootstrapAdminPassword (ConvertTo-SecureString '{canary}' -AsPlainText -Force)",
     ]
     command = f"& '{DEPLOY_SCRIPT}' " + " ".join(parts)
@@ -1310,7 +1316,6 @@ def test_deploy_uses_workload_profiles_for_env_and_all_apps(tmp_path: Path) -> N
     parts = [f"-{key} '{value}'" for key, value in values.items()]
     parts += [
         "-Apply",
-        "-SkipModelUpload",
         f"-BootstrapAdminPassword (ConvertTo-SecureString '{canary}' -AsPlainText -Force)",
     ]
     command = f"& '{DEPLOY_SCRIPT}' " + " ".join(parts)
@@ -1358,7 +1363,7 @@ def test_deploy_refuses_preexisting_resource_group_of_another_run(
         tmp_path,
         {"pre_existing": [RESOURCE_GROUP], "id_tags": {rg_id: live_tags}},
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "no se reutiliza ni se borra" in result.stdout + result.stderr
