@@ -72,3 +72,12 @@ Per the user's policy (one commit per phase, verified by the user before the nex
 - Phase 4: validation (build + tests + docker build + E2E).
 - Phase 5: PR squash/merge of `feat/backend-core` against `master` (Keren decides with the
   user before PR creation; no direct writes to master).
+
+## D7 — Azure deployment on the Container Apps "express" tier
+
+The real Azure E2E run (Azure for Students, `northcentralus`) passes on a Container Apps **express**
+environment: HTTP-only, with no Jobs, TCP ingress, dedicated workload profiles, init containers or
+sidecars, and scale-to-zero. The deployment therefore applies Prisma migrations from the backend image
+entrypoint (`migrate-on-startup`), uses the PostgreSQL-backed inference queue (no Redis) and keeps the
+worker alive with a ref'd keepalive. Eight fixes landed on `master`. Business as usual for local dev is
+unchanged. See `docs/hito30-azure-e2e-express-runbook.md`.

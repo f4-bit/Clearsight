@@ -64,6 +64,15 @@ npm run dev
   `enqueueInference` usa el `prisma` global/schema `public`; schema no-public queda
   pendiente. REG-002/003/004/008 no se declaran resueltos (cierre humano).
 
+### Despliegue Azure (tier express)
+
+El despliegue en Azure aplica las migraciones desde el entrypoint de la imagen de backend
+(`docker/backend-entrypoint.sh` → `prisma:deploy`, más bootstrap idempotente si hay `BOOTSTRAP_ADMIN_*`),
+usa la cola de inferencia PostgreSQL (sin Redis) y un worker keep-alive. La cuenta real de Container
+Apps corre en tier **`express`** (HTTP-only: sin Jobs, TCP ingress, workload profiles dedicados, init
+containers ni sidecars; escala a cero), por lo que no se usan Jobs de migración/bootstrap. Guía,
+arquitectura y diagnóstico: `docs/hito30-azure-e2e-express-runbook.md`.
+
 ## Storage provider (3.2)
 
 - `STORAGE_PROVIDER=minio` es el default retrocompatible y `azure` es explícito; cualquier otro valor falla cerrado. `STORAGE_ID` es lógico y por defecto es `minio-local` o `azure-blob-default` según el provider.

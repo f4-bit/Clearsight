@@ -14,6 +14,8 @@
 >
 > **HITO29 (QA PASSED):** 4.11 `[x]`; la cola asíncrona de inferencia pasa de BullMQ/Redis a PostgreSQL (`inferences` + poller `SKIP LOCKED` + lease 300 s + backoff `2s·2^attempts` cap 120 s + CAS terminal + agotamiento→`FAILED`). `enqueueInference` ya no toca Redis y `REDIS_URL` queda opcional. Se conservan asíncrono, reintentos, reconciliación 4.6, publicación 3.6 y JIT 4.8. Evidencia QA: unit **46 files / 714 tests**, integración **32 files / 600 tests**, `typecheck`/`build` **0**, Docker limpio. Límites: ventana de fencing residual (lease expirado con processor vivo → solo trabajo desperdiciado; el CAS garantiza un único resultado terminal), filas legacy sin snapshot → `FAILED invalid_job_context`, y `enqueueInference` atado a Prisma global/schema `public` (schema no-public pendiente). REG-002/003/004/008 no resueltos; `defects/regressions.md` intacto.
 
+> **HITO30 — E2E Azure real en tier express (QA PASSED):** despliegue real en Azure for Students (`northcentralus`) con entorno de Container Apps tier **`express`** (HTTP-only). `scripts/e2e_azure_pipeline.ps1` pasó el flujo clínico completo: negative-auth 401, login admin/doctor, provisión de doctor, paciente pseudonimizado, consulta, subida/sanitización de imagen, inferencia `202`→`COMPLETED`, artefactos mask/overlay AVAILABLE, PDF AVAILABLE v1, URLs firmadas, descarga+validación PNG/PDF, feedback y delivery-recheck; `export` SKIPPED (403 sin grant, esperado en run API-only). 8 fixes en master (`e919073`, `0dc0b32`, `e95ba96`, `94c98ef`, `1154869`, `56c3bc4`, `79a5e98`, `1680c1a`) y teardown limpio (`ResourceGroupNotFound`, sin recursos residuales). Limitaciones del tier express: sin Jobs, TCP ingress, workload profiles dedicados, init containers ni sidecars; escala a cero. Mitigaciones: migrate-on-startup, cola PostgreSQL y worker keep-alive. **No resuelve REG-002/003/004/008.** Detalle en `docs/hito30-azure-e2e-express-runbook.md`.
+
 ## 0. Documentación y salvaguardas
 
 - [x] 0.1 Crear `defects/regressions.md` con entradas solo estáticas, activas/resueltas, sin inventar runtime ni datos sensibles.
@@ -535,12 +537,13 @@
   - **Coverage:** RF02; “Nombres canónicos, mapeo y lateralidad”.
   - **Cierre 7.3:** `sanitizer.ts` añade límite de entrada 20 MiB y errores tipados seguros; tests cubren JPEG/PNG >=512 px, EXIF eliminado, oversize, bytes inválidos y fallo de sharp. Lateralidad ya validada en creación; multipart 50 MB sin cambios. 7.3 `[x]`.
 
-- [ ] 7.4 Crear E2E real Azure posterior con autenticación, imagen → Blob → ML → mask/overlay → DB → PDF → URLs.
+- [x] 7.4 Crear E2E real Azure posterior con autenticación, imagen → Blob → ML → mask/overlay → DB → PDF → URLs. **QA PASSED HITO30 (tier express).**
   - **Scope:** E2E de Azure real solo con B6 confirmado (presupuesto/duración/scope y contexto/permisos) y cleanup final; incluye stores ausentes; ver `contracts/testing-runbook.md` fase 6.
   - **When/Then:** WHEN se ejecuta en Azure autorizado THEN verifica el flujo completo, negative-auth y la firma/descarga; WHEN falta un store THEN reporta fallo explícito; WHEN termina THEN limpia con manifest y verifica residuos.
   - **Depends on:** 3.2, 3.4, 6.1, 6.2.
-  - **Test:** comando E2E Azure (no ejecutar en este change; B6 parcial, no deployment ready).
+  - **Test:** `scripts/e2e_azure_pipeline.ps1` contra backend real (HITO30). **QA PASSED:** 401 sin Bearer, login admin/doctor, provisión doctor, paciente pseudonimizado, consulta, subida/sanitización, inferencia `202`→`COMPLETED`, mask/overlay AVAILABLE, PDF v1 AVAILABLE, URLs firmadas, descarga PNG/PDF validada, feedback y delivery-recheck; `export` SKIPPED (403 sin grant, esperado API-only). Teardown `ResourceGroupNotFound`, sin residuos.
   - **Coverage:** “Pruebas con recursos creados sin filtrar secretos”, “Abstracción de almacenamiento dual y firma por provider”.
+  - **Cierre HITO30:** run real en Azure for Students (`northcentralus`) sobre entorno Container Apps tier **`express`** (HTTP-only): sin Jobs, TCP ingress, workload profiles dedicados, init containers ni sidecars; escala a cero. Mitigado con migrate-on-startup (`docker/backend-entrypoint.sh`), cola PostgreSQL y worker keep-alive; 8 fixes en master (`e919073`, `0dc0b32`, `e95ba96`, `94c98ef`, `1154869`, `56c3bc4`, `79a5e98`, `1680c1a`). Detalle en `docs/hito30-azure-e2e-express-runbook.md`. **No resuelve REG-002/003/004/008.** 7.4 `[x]`.
 
 - [x] 7.5 Crear medición reproducible de RNF sin declarar cumplimiento anticipado.
   - **Scope:** benchmark de p95 carga→resultado **de flujo completo** (no solo forward), 50 concurrentes, cobertura, AUC y disponibilidad; documentación de entorno; `scripts/benchmark_latency.py` actual es baseline forward-only y no evidencia el p95 full-flow.
@@ -659,3 +662,23 @@
 | Email real con governance (B8) | “Sesiones, refresh, logout y recuperación seguros”; “Envío real de email no configurado” | 5.9, D-08 | Memory sink; envío real solo a destinatarios autorizados, sin PHI/enlaces secretos ni versionado de direcciones/credenciales |
 | DB feedback/SQLAlchemy fuera de alcance (B9) | “Database Feedback Source for Retraining” | D-09 | Revisión de alcance; sin dependencia nueva |
 | RNF medidos | “Criterio medible de generación institucional (HU08)” + metas RNF del design | 6.4, 7.5 | Benchmarks aislados; no afirmar sin evidencia |
+
+## 12. Hito 30 — E2E Azure real en tier express (QA PASSED)
+
+> Cierre documental del hito. No edita source/tests, no re-ejecuta suites ni hace commit. Corresponde a 7.4.
+
+- [x] 12.1 E2E Azure real en entorno Container Apps tier **`express`** sobre Azure for Students (`northcentralus`).
+  - **Resultado real (PASSED):** negative-auth 401; login admin y doctor; provisión de doctor vía `POST /admin/users`; paciente pseudonimizado; consulta; subida y sanitización de imagen; inferencia `202 QUEUED`→`COMPLETED`; artefactos `mask`/`overlay` AVAILABLE; PDF AVAILABLE v1; URLs firmadas; descarga y validación PNG/PDF; feedback; delivery-recheck. `export` **SKIPPED** (`403` sin grant; esperado en run API-only). Teardown limpio (`ResourceGroupNotFound`), sin recursos Azure residuales.
+  - **Fixes aplicados (en `master`, pusheados):**
+    - `e919073` — backend ML a PyTorch (los `.onnx` no se aprovisionaban).
+    - `0dc0b32` — manejo del stderr nativo de `az` bajo `ErrorActionPreference=Stop`.
+    - `e95ba96` — migrate-on-startup: elimina los Jobs `migrate`/`bootstrap`; el backend corre `prisma:deploy` + bootstrap idempotente en el entrypoint.
+    - `94c98ef` — nombres de imagen totalmente calificados con el `loginServer` del ACR.
+    - `1154869` — pines `fastapi`/`pydantic`/`uvicorn` alineados (`strict_content_type` requiere FastAPI>=0.132).
+    - `56c3bc4` — modelos empaquetados en la imagen ML para evitar descarga runtime sin disco.
+    - `79a5e98` — secretos `JWT`/`HMAC` y `min-replicas 1` en el worker.
+    - `1680c1a` — keep-alive del worker: se quitó `timer.unref()` que vaciaba el event loop.
+  - **Limitaciones del tier express:** no soporta Jobs, TCP ingress, workload profiles dedicados, init containers ni sidecars; escala a cero. Confirmado por `(ExpressEnvironmentResourceNotSupported)` y documentación de Microsoft.
+  - **Mitigaciones:** migrate-on-startup (`docker/backend-entrypoint.sh`), cola de inferencia PostgreSQL (sin Redis) y worker keep-alive con `min-replicas 1` donde se requiere.
+  - **Regresiones:** este hito **no** declara resueltos REG-002/003/004/008; el cierre sigue siendo humano y `defects/regressions.md` no se edita.
+  - **Runbook:** `docs/hito30-azure-e2e-express-runbook.md`.
