@@ -1318,3 +1318,129 @@ def test_deploy_refuses_preexisting_resource_group_of_another_run(
     assert "no se reutiliza ni se borra" in result.stdout + result.stderr
     entries = _read_log(tmp_path / "az-calls.jsonl")
     assert _mutation_entries(entries) == [], entries
+
+
+# ---------------------------------------------------------------------------
+# Native stderr handling in Invoke-AzCli / Get-AzValue (PS 5.1 RemoteException).
+# ---------------------------------------------------------------------------
+
+STDERR_MARKER = "az-stub-progress-marker"
+
+
+def _write_native_az_stub(tmp_path: Path, exit_code: int) -> Path:
+    """Write a native (non-PowerShell) stub that always writes to stderr."""
+
+    if os.name == "nt":
+        stub = tmp_path / "az-native-stub.cmd"
+        stub.write_text(
+            "@echo off\r\n"
+            f">&2 echo {STDERR_MARKER}\r\n"
+            f"exit /b {exit_code}\r\n",
+            encoding="ascii",
+        )
+    else:
+        stub = tmp_path / "az-native-stub.sh"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{STDERR_MARKER}' >&2\n"
+            f"exit {exit_code}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+    return stub
+
+
+def _write_az_helper_harness(tmp_path: Path) -> Path:
+    """Harness that loads the two az helpers from the deploy AST and invokes one."""
+
+    harness = tmp_path / "deploy-az-helper-harness.ps1"
+    harness.write_text(
+        "param(\n"
+        "    [Parameter(Mandatory = $true)][string]$ScriptPath,\n"
+        "    [Parameter(Mandatory = $true)][string]$FunctionName\n"
+        ")\n"
+        '$ErrorActionPreference = "Stop"\n'
+        "Set-StrictMode -Version Latest\n"
+        "$script:AzExe = $env:CLEARSIGHT_AZ_EXE\n"
+        "if (-not $script:AzExe) {\n"
+        '    [Console]::Error.WriteLine("harness: CLEARSIGHT_AZ_EXE is not set")\n'
+        "    exit 4\n"
+        "}\n"
+        "$tokens = $null\n"
+        "$parseErrors = $null\n"
+        "$ast = [System.Management.Automation.Language.Parser]::ParseFile("
+        "$ScriptPath, [ref]$tokens, [ref]$parseErrors)\n"
+        "if ($parseErrors -and $parseErrors.Count -gt 0) {\n"
+        '    [Console]::Error.WriteLine("harness: parse errors")\n'
+        "    exit 2\n"
+        "}\n"
+        '$wanted = @("Invoke-AzCli", "Get-AzValue")\n'
+        "$definitions = $ast.FindAll({ param($node) "
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst] "
+        "-and $wanted -contains $node.Name }, $true)\n"
+        "foreach ($definition in $definitions) {\n"
+        "    . ([scriptblock]::Create($definition.Extent.Text))\n"
+        "}\n"
+        "try {\n"
+        '    if ($FunctionName -eq "Invoke-AzCli") {\n'
+        '        Invoke-AzCli @("storage", "blob", "upload") '
+        '-Operation "storage blob upload"\n'
+        "    }\n"
+        '    elseif ($FunctionName -eq "Get-AzValue") {\n'
+        '        $null = Get-AzValue @("account", "show", "--query", "id", '
+        '"-o", "tsv") -Operation "account context"\n'
+        "    }\n"
+        "    else {\n"
+        '        [Console]::Error.WriteLine("harness: unknown function")\n'
+        "        exit 3\n"
+        "    }\n"
+        '    Write-Output "NO_THROW"\n'
+        "    exit 0\n"
+        "}\n"
+        "catch {\n"
+        '    Write-Output ("THREW:" + $_.Exception.Message)\n'
+        "    exit 1\n"
+        "}\n",
+        encoding="utf-8-sig",
+    )
+    return harness
+
+
+@requires_powershell
+@pytest.mark.parametrize("function_name", ["Invoke-AzCli", "Get-AzValue"])
+def test_az_helpers_ignore_stderr_on_success(
+    tmp_path: Path, function_name: str
+) -> None:
+    stub = _write_native_az_stub(tmp_path, 0)
+    env = os.environ.copy()
+    env["CLEARSIGHT_AZ_EXE"] = str(stub)
+
+    result = _run_powershell(
+        _write_az_helper_harness(tmp_path),
+        ["-ScriptPath", str(DEPLOY_SCRIPT), "-FunctionName", function_name],
+        env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "NO_THROW" in result.stdout, result.stdout + result.stderr
+    assert "THREW:" not in result.stdout, result.stdout + result.stderr
+
+
+@requires_powershell
+@pytest.mark.parametrize("function_name", ["Invoke-AzCli", "Get-AzValue"])
+def test_az_helpers_raise_with_stderr_on_failure(
+    tmp_path: Path, function_name: str
+) -> None:
+    stub = _write_native_az_stub(tmp_path, 1)
+    env = os.environ.copy()
+    env["CLEARSIGHT_AZ_EXE"] = str(stub)
+
+    result = _run_powershell(
+        _write_az_helper_harness(tmp_path),
+        ["-ScriptPath", str(DEPLOY_SCRIPT), "-FunctionName", function_name],
+        env,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "THREW:" in result.stdout, result.stdout + result.stderr
+    message = result.stdout.split("THREW:", 1)[1].strip()
+    assert message, result.stdout + result.stderr
+    assert STDERR_MARKER in message, result.stdout + result.stderr

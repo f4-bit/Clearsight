@@ -320,9 +320,31 @@ function Invoke-AzCli {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [string]$Operation = "az"
     )
-    & $script:AzExe @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed (exit $LASTEXITCODE): $Operation"
+    # Native stderr (az progress/warnings) is surfaced as a RemoteException
+    # under $ErrorActionPreference = "Stop" in PowerShell 5.1 and can abort the
+    # deploy with an empty message. Run the native call under "Continue" and
+    # capture stderr to a temp file so the exit code and stderr remain readable.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        & $script:AzExe @Arguments 2>$stderrPath
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $stderrText = ""
+            if (Test-Path -LiteralPath $stderrPath) {
+                $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+            }
+            if ($null -eq $stderrText) { $stderrText = "" }
+            $stderrText = ("$stderrText").Trim()
+            throw "Azure CLI command failed (exit $exitCode): $Operation. stderr: $stderrText"
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+        if (Test-Path -LiteralPath $stderrPath) {
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -347,9 +369,29 @@ function Get-AzValue {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [string]$Operation = "az query"
     )
-    $value = & $script:AzExe @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI query failed (exit $LASTEXITCODE): $Operation"
+    # Same native-stderr hazard as Invoke-AzCli: capture stdout in $value and
+    # stderr in a temp file while the native call runs under "Continue".
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $value = & $script:AzExe @Arguments 2>$stderrPath
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $stderrText = ""
+            if (Test-Path -LiteralPath $stderrPath) {
+                $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+            }
+            if ($null -eq $stderrText) { $stderrText = "" }
+            $stderrText = ("$stderrText").Trim()
+            throw "Azure CLI query failed (exit $exitCode): $Operation. stderr: $stderrText"
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+        if (Test-Path -LiteralPath $stderrPath) {
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
     }
     return ("$value").Trim()
 }
