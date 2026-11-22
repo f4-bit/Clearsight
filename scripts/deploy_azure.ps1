@@ -895,7 +895,7 @@ try {
     # 9. ML service ----------------------------------------------------------
     $mlSecrets = @("azure-storage-key=$storageKey", "ml-api-token=$mlToken")
     $mlEnv = @(
-        "ML_INFERENCE_BACKEND=onnx",
+        "ML_INFERENCE_BACKEND=pytorch",
         "ML_DEVICE=cpu",
         "ML_HOST=0.0.0.0",
         "ML_PORT=8000",

@@ -367,7 +367,7 @@ def test_deploy_script_declares_required_resources() -> None:
         '"Standard_LRS"',
         '"Standard_B1ms"',
         '"Basic"',
-        "ML_INFERENCE_BACKEND=onnx",
+        "ML_INFERENCE_BACKEND=pytorch",
         "STORAGE_PROVIDER=azure",
         "AZURE_STORAGE_ACCOUNT_URL",
         "AZURE_STORAGE_ACCOUNT_NAME",
@@ -1092,7 +1092,7 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
     assert not any("redis" in item for item in _option_values(worker, "--secrets"))
 
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
-    assert "ML_INFERENCE_BACKEND=onnx" in _option_values(ml_app, "--env-vars")
+    assert "ML_INFERENCE_BACKEND=pytorch" in _option_values(ml_app, "--env-vars")
 
     migrate = _entry_with_name(
         entries, ["containerapp", "job", "create"], "clearsight-run123-migrate"
