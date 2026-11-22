@@ -1,5 +1,6 @@
 "use client";
 
+import { LoaderCircle } from "lucide-react";
 import Link from "next/link";
 import { BilateralCanvas } from "@/components/BilateralCanvas";
 import { SessionGate } from "@/components/Session";
@@ -24,8 +25,10 @@ function StudyWorkspace({ id }: { id: string }) {
   const review = consultation?.analysisState === "REVIEW_REQUIRED" ||
     executions.some(({ result }) => result.delivery.reviewRequired);
   const failed = consultation?.pollingStop === "FAILED";
+  const active = !error && !review && consultation?.pollingStop === "CONTINUE";
   const state = consultation?.completionState === "COMPLETE" ? "Completo"
     : failed ? "Con errores" : review ? "Revisión requerida"
+    : consultation?.analysisState === "IN_PROGRESS" ? "En cola o en análisis"
     : consultation?.reportState === "REPORT_PENDING" ? "Informe pendiente"
     : consultation?.analysisState === "OPEN" ? "Abierto"
     : "En procesamiento";
@@ -49,7 +52,10 @@ function StudyWorkspace({ id }: { id: string }) {
               <span className="font-mono" title={consultation.patientId}>Paciente #{consultation.patientId.slice(0, 8).toUpperCase()}</span>
               <span>{new Date(consultation.createdAt).toLocaleString("es-CO")}</span>
             </div>
-            <span className={failed || review ? "text-amber-300" : ""}>{state}</span>
+            <span role="status" className={`flex items-center gap-2 ${failed || review ? "text-amber-300" : active ? "text-sky-300" : ""}`}>
+              {active && <LoaderCircle size={14} className="motion-safe:animate-spin" aria-hidden="true" />}
+              {state}
+            </span>
           </div>
           <div className="flex flex-1 flex-col lg:min-h-0 lg:flex-row">
             <BilateralCanvas od={executions.find(({ side }) => side === "OD")}

@@ -1,0 +1,391 @@
+<div id="clearsight-capas" lang="es">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+    #clearsight-capas {
+      --surface: #0a151d;
+      --petrol: #142b35;
+      --ink: #eef6f7;
+      --muted: #acbec3;
+      --cyan: #b9e7ee;
+      --cyan-ink: #10282e;
+      --divider: #263e47;
+      --text: 'Space Grotesk', system-ui, sans-serif;
+      --mono: 'Cascadia Mono', Consolas, monospace;
+      color-scheme: dark;
+      color: var(--ink);
+      font: 15px/1.45 var(--text);
+      background: var(--surface);
+      overflow: hidden;
+      isolation: isolate;
+      container-type: inline-size;
+    }
+
+    #clearsight-capas *, #clearsight-capas *::before, #clearsight-capas *::after { box-sizing: border-box; }
+    #clearsight-capas h1, #clearsight-capas h2, #clearsight-capas p, #clearsight-capas figure { margin: 0; }
+    #clearsight-capas button, #clearsight-capas input { font: inherit; }
+    #clearsight-capas button { cursor: pointer; }
+    #clearsight-capas :is(button, input):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+    #clearsight-capas .cs-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem;
+      min-height: 52px;
+      padding: .5rem 1.25rem;
+      border-bottom: 1px solid #1c1c22;
+      background: #0e0e11;
+    }
+    #clearsight-capas .cs-brand {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: .25rem 1rem;
+    }
+    #clearsight-capas .cs-wordmark { color: white; font-size: 16px; font-weight: 700; letter-spacing: -.025em; }
+    #clearsight-capas .cs-page-name { color: #a1a1a9; font-size: 14px; font-weight: 500; }
+    #clearsight-capas .cs-session { position: relative; z-index: 3; }
+    #clearsight-capas .cs-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: .55rem;
+      min-height: 39px;
+      padding: 0 .8rem;
+      border: 1px solid #6b909b;
+      border-radius: 5px;
+      color: var(--ink);
+      background: #101f28;
+      white-space: nowrap;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    #clearsight-capas .cs-button:hover { border-color: var(--cyan); background: #203b46; }
+    #clearsight-capas .cs-session .cs-button {
+      min-height: 34px;
+      padding: .5rem .75rem;
+      border-color: #222228;
+      border-radius: 4px;
+      color: #ededef;
+      background: #111114;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1rem;
+    }
+    #clearsight-capas .cs-session .cs-button:hover { background: #141418; }
+    #clearsight-capas .cs-field {
+      display: block;
+      min-width: 0;
+      width: 100%;
+      min-height: 39px;
+      padding: .55rem .65rem;
+      border: 1px solid #547782;
+      border-radius: 5px;
+      color: var(--ink);
+      background: #0b1a23;
+      font: 13px var(--mono);
+    }
+    #clearsight-capas .cs-field::placeholder { color: #b4c6cc; opacity: 1; }
+    #clearsight-capas .cs-stage {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 47fr) minmax(0, 53fr);
+      align-items: center;
+      min-height: clamp(415px, 43cqi, 655px);
+      gap: max(12px, 2cqi);
+      padding: 28px max(23px, 4.4cqi) 40px;
+      background: radial-gradient(ellipse at 77% 54%, #183c47 0%, #102530 28%, transparent 62%);
+    }
+    #clearsight-capas .cs-lookup { position: relative; z-index: 2; min-width: 0; }
+    #clearsight-capas h1 { max-inline-size: 17ch; font-size: clamp(35px, 5.1cqi, 68px); letter-spacing: -.06em; line-height: 1.04; font-weight: 650; text-wrap: balance; }
+    #clearsight-capas h2 { font-size: clamp(20px, 2.35cqi, 34px); line-height: 1.11; letter-spacing: -.043em; font-weight: 650; }
+    #clearsight-capas .cs-subtitle { margin-top: .55rem; color: var(--muted); font-size: 14px; }
+    #clearsight-capas .cs-lookup form { margin-top: 1.55rem; }
+    #clearsight-capas .cs-label, #clearsight-capas legend { display: block; padding: 0; margin: 0 0 .35rem; color: #e3f0f2; font-size: 12px; font-weight: 500; }
+    #clearsight-capas .cs-command { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+    #clearsight-capas .cs-command .cs-field { border-radius: 5px 0 0 5px; }
+    #clearsight-capas .cs-command .cs-button { border-color: var(--cyan); border-radius: 0 5px 5px 0; background: var(--cyan); color: var(--cyan-ink); }
+    #clearsight-capas .cs-command .cs-button:hover { background: #d4f5fa; }
+    #clearsight-capas .cs-feedback { min-height: 19px; margin-top: .4rem; font-size: 12px; color: var(--muted); }
+    #clearsight-capas .cs-session .cs-feedback { position: absolute; top: 100%; right: .85rem; z-index: 3; white-space: nowrap; }
+
+    #clearsight-capas .cs-example { position: relative; min-width: 0; align-self: stretch; display: flex; flex-direction: column; justify-content: center; }
+    #clearsight-capas .cs-example figcaption { color: var(--muted); font-size: 13px; }
+    #clearsight-capas .cs-layer-controls { display: flex; gap: clamp(.6rem, 1.6cqi, 1.3rem); }
+    #clearsight-capas .cs-layer-controls button {
+      padding: .35rem .1rem .48rem;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: #bfd1d9;
+      font-size: 13px;
+      text-align: start;
+      transition: border-color 170ms ease, color 170ms ease;
+    }
+    #clearsight-capas .cs-layer-controls button:hover { color: var(--ink); }
+    #clearsight-capas .cs-layer-controls button[aria-pressed=true] { border-bottom-color: var(--cyan); color: var(--ink); }
+    #clearsight-capas .cs-scene { position: relative; height: clamp(225px, 30cqi, 470px); min-width: 0; perspective: 950px; }
+    #clearsight-capas .cs-scene::before {
+      position: absolute;
+      z-index: -1;
+      inset: 14% -3% 12% 3%;
+      background: radial-gradient(ellipse, #44768455 0%, #28545f2b 40%, transparent 69%);
+      content: '';
+    }
+    #clearsight-capas .cs-registration {
+      position: absolute;
+      top: 53%;
+      right: 2%;
+      left: 3%;
+      border-top: 1px dashed #6b919b;
+      opacity: .45;
+      pointer-events: none;
+    }
+    #clearsight-capas .cs-plane {
+      --raise: 0px;
+      --slide: 0px;
+      --lift: 0px;
+      position: absolute;
+      top: 12%;
+      left: var(--left);
+      width: 38%;
+      height: 76%;
+      display: grid;
+      place-items: center;
+      border: 1px solid #6c939e9e;
+      border-radius: 5px;
+      background: linear-gradient(155deg, #3f667056, #10232fac 76%);
+      box-shadow: 10px 18px 40px #0311176b, inset 0 1px #c3e8ec21;
+      transform: translate3d(calc(var(--pointer-x, 0px) * var(--depth) + var(--slide)), calc(var(--pointer-y, 0px) * var(--depth) + var(--raise)), var(--lift)) rotateY(-25deg) rotateX(7deg) rotateZ(-3deg);
+      transition: transform 370ms cubic-bezier(.2,.8,.25,1), border-color 260ms ease, filter 270ms ease;
+      filter: brightness(.77);
+    }
+    #clearsight-capas .cs-plane::after { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: linear-gradient(90deg, #a9d6db 0 5%, transparent 5% 95%, #a9d6db 95%); pointer-events: none; content: ''; }
+    #clearsight-capas .cs-plane[data-plane=retina] { --left: 3%; --depth: 1; z-index: 3; background: linear-gradient(155deg, #33535e, #101f27 75%); filter: brightness(.91); }
+    #clearsight-capas .cs-plane[data-plane=segmentation] { --left: 34%; --depth: .72; z-index: 2; }
+    #clearsight-capas .cs-plane[data-plane=data] { --left: 63%; --depth: .42; z-index: 1; }
+    #clearsight-capas .cs-plane.is-active { --raise: -9px; --lift: 30px; border-color: #b9e7eec4; filter: brightness(1.1); }
+    #clearsight-capas .cs-plane[data-plane=data].is-active { --slide: 7px; }
+    #clearsight-capas .cs-fundus { display: block; width: 91%; height: auto; aspect-ratio: 1; opacity: .94; object-fit: cover; border-radius: 50%; filter: saturate(.9); }
+    #clearsight-capas .cs-contours { width: 68%; max-height: 69%; margin-left: 13%; color: #d2f1f4; overflow: visible; }
+    #clearsight-capas .cs-sample-table { display: grid; margin-left: 15%; width: 69%; gap: .65rem; color: #c8e0e5; font: 11px/1 var(--mono); }
+    #clearsight-capas .cs-sample-table span { display: block; padding-bottom: .35rem; border-bottom: 1px solid #80abb080; }
+
+    #clearsight-capas .cs-export {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(180px, 1.13fr) minmax(0, 2.7fr);
+      align-items: center;
+      gap: clamp(15px, 2.7cqi, 29px);
+      padding: clamp(25px, 3.15cqi, 48px) max(23px, 4.4cqi) clamp(17px, 2.15cqi, 30px);
+      background: #132630;
+      border-top: 1px solid var(--divider);
+    }
+    #clearsight-capas .cs-connector {
+      position: absolute;
+      right: 15%;
+      bottom: 0;
+      width: 20%;
+      height: clamp(74px, 7.7cqi, 122px);
+      border: 1px solid #537983;
+      border-top: 0;
+      border-left: 0;
+      border-radius: 0 0 8px 0;
+      transform: translateY(-1px);
+      pointer-events: none;
+      transition: border-color 280ms ease;
+    }
+    #clearsight-capas .cs-connector::after { content: ''; position: absolute; bottom: -4px; left: 0; width: 7px; aspect-ratio: 1; border-radius: 50%; background: #6babb7; transition: background 280ms ease, box-shadow 280ms ease; }
+    #clearsight-capas[data-layer=data] .cs-connector { border-color: #a8dce5; }
+    #clearsight-capas[data-layer=data] .cs-connector::after { background: var(--cyan); box-shadow: 0 0 10px #a9dfea55; }
+    #clearsight-capas .cs-export-copy, #clearsight-capas .cs-export form { position: relative; min-width: 0; }
+    #clearsight-capas .cs-export-copy { padding-right: .8rem; border-right: 1px solid var(--divider); }
+    #clearsight-capas .cs-export .cs-subtitle { line-height: 1.3; }
+    #clearsight-capas .cs-export-fields { display: grid; grid-template-columns: 1fr 1.2fr .85fr auto; gap: clamp(8px, 1.15cqi, 15px); align-items: end; }
+    #clearsight-capas .cs-export-fields > * { min-width: 0; }
+    #clearsight-capas .cs-export :is(.cs-field, .cs-button) { border-radius: 4px; }
+    #clearsight-capas .cs-download { border-color: #486775; background: #142b35; }
+    #clearsight-capas fieldset { min-inline-size: 0; border: 0; padding: 0; margin: 0; }
+    #clearsight-capas .cs-formats { display: flex; width: fit-content; max-width: 100%; border: 1px solid #547782; border-radius: 4px; background: #0b1a23; }
+    #clearsight-capas .cs-formats label { position: relative; cursor: pointer; }
+    #clearsight-capas .cs-formats label + label { border-left: 1px solid #547782; }
+    #clearsight-capas .cs-formats input { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
+    #clearsight-capas .cs-formats span { display: grid; place-items: center; min-height: 37px; min-width: 38px; padding: 0 .4rem; border-radius: 3px; font: 600 12px var(--text); }
+    #clearsight-capas .cs-formats input:checked + span { color: var(--cyan-ink); background: var(--cyan); }
+    #clearsight-capas .cs-formats input:focus-visible + span { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
+    @container (max-width: 830px) {
+      #clearsight-capas .cs-export { grid-template-columns: minmax(156px, .96fr) minmax(0, 2.15fr); }
+      #clearsight-capas .cs-export-fields { grid-template-columns: 1fr 1.15fr .9fr; }
+      #clearsight-capas .cs-export-fields > button { grid-column: 1 / -1; justify-self: end; }
+    }
+    @container (max-width: 660px) {
+      #clearsight-capas .cs-stage { grid-template-columns: minmax(0, 1fr); min-height: auto; padding-top: 26px; padding-bottom: 33px; }
+      #clearsight-capas .cs-example { width: 100%; max-width: 460px; justify-self: center; margin-top: .45rem; }
+      #clearsight-capas .cs-lookup form { margin-top: .95rem; }
+      #clearsight-capas .cs-scene { height: clamp(187px, 49cqi, 265px); }
+      #clearsight-capas .cs-connector { height: 46px; right: 21%; width: 29%; }
+      #clearsight-capas .cs-export { grid-template-columns: minmax(0, 1fr); gap: .8rem; }
+      #clearsight-capas .cs-export-copy { border-right: 0; padding-right: 0; }
+    }
+    @container (max-width: 395px) {
+      #clearsight-capas .cs-header { padding-inline: .75rem; gap: .5rem; }
+      #clearsight-capas .cs-brand { column-gap: .7rem; }
+      #clearsight-capas .cs-export-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+      #clearsight-capas .cs-export-fields > button { grid-column: auto; justify-self: stretch; }
+      #clearsight-capas .cs-command .cs-button { padding-inline: .55rem; }
+      #clearsight-capas .cs-command .cs-field { padding-inline: .4rem; }
+    }
+    @media (pointer: coarse) {
+      #clearsight-capas :is(.cs-button, .cs-field, .cs-layer-controls button) { min-height: 44px; }
+      #clearsight-capas .cs-formats span { min-height: 42px; min-width: 42px; }
+      #clearsight-capas .cs-field { font-size: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #clearsight-capas * { transition: none !important; }
+    }
+  </style>
+
+  <header class="cs-header">
+    <div class="cs-brand">
+      <span class="cs-wordmark">ClearSight</span>
+      <span class="cs-page-name">Investigación</span>
+    </div>
+    <div class="cs-session">
+      <button class="cs-button cs-logout" type="button">Cerrar sesión</button>
+      <p class="cs-feedback" role="status"></p>
+    </div>
+  </header>
+
+  <div class="cs-stage">
+    <section class="cs-lookup" aria-labelledby="cs-capas-title">
+      <h1 id="cs-capas-title">Consultar análisis por ojo</h1>
+      <p class="cs-subtitle">Usa el ID de una ejecución autorizada.</p>
+      <form>
+        <label class="cs-label" for="cs-capas-execution">ID de ejecución</label>
+        <div class="cs-command">
+          <input class="cs-field" id="cs-capas-execution" name="execution" placeholder="Pega el UUID completo" autocomplete="off" spellcheck="false" required>
+          <button class="cs-button" type="submit">Abrir análisis <i data-lucide="arrow-right" aria-hidden="true"></i></button>
+        </div>
+        <p class="cs-feedback" role="status"></p>
+      </form>
+    </section>
+
+    <figure class="cs-example" aria-labelledby="cs-capas-example">
+      <figcaption id="cs-capas-example">Ejemplo de análisis</figcaption>
+      <div class="cs-layer-controls" role="group" aria-label="Capas del análisis de ejemplo">
+        <button type="button" data-layer="retina" aria-pressed="false">Retinografía</button>
+        <button type="button" data-layer="segmentation" aria-pressed="true">Segmentación</button>
+        <button type="button" data-layer="data" aria-pressed="false">Datos</button>
+      </div>
+      <div class="cs-scene" aria-hidden="true">
+        <div class="cs-registration"></div>
+        <div class="cs-plane" data-plane="retina">
+          <img class="cs-fundus" src="data:image/webp;base64,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" alt="" width="480" height="480">
+        </div>
+        <div class="cs-plane is-active" data-plane="segmentation">
+          <svg class="cs-contours" viewBox="0 0 120 150" fill="none" aria-hidden="true">
+            <path d="M60 23 C77 22 89 37 96 56 C103 77 101 96 91 115 C84 130 67 136 54 132 C38 130 24 118 22 101 C17 78 22 58 31 43 C40 29 49 24 60 23Z" stroke="currentColor" stroke-width="1.6" />
+            <path d="M61 48 C70 49 79 56 82 68 C86 81 81 100 74 107 C67 115 55 113 47 105 C40 98 37 89 39 76 C40 64 47 53 55 50Z" stroke="#88deea" stroke-width="2" />
+          </svg>
+        </div>
+        <div class="cs-plane" data-plane="data">
+          <div class="cs-sample-table"><span>CDR</span><span>vCDR</span><span>Clase</span></div>
+        </div>
+      </div>
+    </figure>
+    <div class="cs-connector" aria-hidden="true"></div>
+  </div>
+
+  <section class="cs-export" aria-labelledby="cs-capas-export">
+    <div class="cs-export-copy">
+      <h2 id="cs-capas-export">Exportar referencias validadas</h2>
+      <p class="cs-subtitle">Descarga datos pseudonimizados.</p>
+    </div>
+    <form>
+      <div class="cs-export-fields">
+        <fieldset>
+          <legend>Formato</legend>
+          <div class="cs-formats">
+            <label><input name="format" type="radio" value="CSV" checked><span>CSV</span></label>
+            <label><input name="format" type="radio" value="JSON"><span>JSON</span></label>
+          </div>
+        </fieldset>
+        <div>
+          <label class="cs-label" for="cs-capas-date">Desde (opcional)</label>
+          <input class="cs-field" id="cs-capas-date" name="since" type="date">
+        </div>
+        <div>
+          <label class="cs-label" for="cs-capas-limit">Límite de registros</label>
+          <input class="cs-field" id="cs-capas-limit" name="limit" type="number" min="1" max="5000" placeholder="5000">
+        </div>
+        <button class="cs-button cs-download" type="submit"><i data-lucide="download" aria-hidden="true"></i><span>Descargar CSV</span></button>
+      </div>
+      <p class="cs-feedback" role="status"></p>
+    </form>
+  </section>
+
+  <script>
+    (() => {
+      const root = document.getElementById('clearsight-capas');
+      const layerButtons = root.querySelectorAll('.cs-layer-controls button');
+      const planes = root.querySelectorAll('[data-plane]');
+      const stage = root.querySelector('.cs-stage');
+      const scene = root.querySelector('.cs-scene');
+      const lookup = root.querySelector('.cs-lookup form');
+      const exportForm = root.querySelector('.cs-export form');
+      const downloadLabel = root.querySelector('.cs-download span');
+      const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+      function selectLayer(layer) {
+        root.dataset.layer = layer;
+        layerButtons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.layer === layer)));
+        planes.forEach((plane) => plane.classList.toggle('is-active', plane.dataset.plane === layer));
+      }
+
+      function resetPerspective() {
+        scene.style.removeProperty('--pointer-x');
+        scene.style.removeProperty('--pointer-y');
+      }
+
+      stage.addEventListener('pointermove', (event) => {
+        if (motionPreference.matches || event.pointerType !== 'mouse') return;
+        const bounds = stage.getBoundingClientRect();
+        const horizontal = (event.clientX - bounds.left) / bounds.width - .5;
+        const vertical = (event.clientY - bounds.top) / bounds.height - .5;
+        scene.style.setProperty('--pointer-x', String(horizontal * 19) + 'px');
+        scene.style.setProperty('--pointer-y', String(vertical * 13) + 'px');
+      });
+      stage.addEventListener('pointerleave', resetPerspective);
+      motionPreference.addEventListener('change', resetPerspective);
+
+      layerButtons.forEach((button) => button.addEventListener('click', () => selectLayer(button.dataset.layer)));
+      lookup.addEventListener('focusin', () => selectLayer('retina'));
+      exportForm.addEventListener('focusin', () => selectLayer('data'));
+      lookup.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const execution = String(new FormData(lookup).get('execution')).trim();
+        const valid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(execution);
+        lookup.querySelector('[role=status]').textContent = valid
+          ? 'ID válido. La consulta se realiza en ClearSight.'
+          : 'Introduce un UUID completo para continuar.';
+        if (valid) selectLayer('segmentation');
+      });
+      exportForm.addEventListener('change', () => {
+        const format = new FormData(exportForm).get('format');
+        downloadLabel.textContent = 'Descargar ' + format;
+        exportForm.querySelector('[role=status]').textContent = '';
+      });
+      exportForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const format = new FormData(exportForm).get('format');
+        exportForm.querySelector('[role=status]').textContent = 'Vista previa de exportación en ' + format + '.';
+      });
+      root.querySelector('.cs-logout').addEventListener('click', () => {
+        root.querySelector('.cs-session [role=status]').textContent = 'Estás en una vista previa.';
+      });
+      selectLayer('segmentation');
+    })();
+  </script>
+</div>

@@ -1027,19 +1027,6 @@ try {
     Add-ManifestResource -Type "containerapp" -Name $BackendApp -Id $backendAppId -ResourceTags $tags -Extra @{ image = $imageRefs["backend"]; fqdn = "https://$backendFqdn" }
     Save-Manifest
 
-    # Cookie endpoints fail closed without AUTH_PUBLIC_ORIGIN. The run E2E sends
-    # Origin = backend base URL, so use the real backend FQDN. CORS_ORIGIN is
-    # intentionally left unset for this API-only run; a browser UI would need
-    # CORS_ORIGIN=https://<frontend FQDN>.
-    Invoke-AzCli @(
-        "containerapp", "update",
-        "--name", $BackendApp,
-        "--resource-group", $rgName,
-        "--set-env-vars", "AUTH_PUBLIC_ORIGIN=https://$backendFqdn",
-        "--output", "none"
-    ) -Operation "containerapp update backend public origin"
-    Save-Manifest
-
     # 11. Worker -------------------------------------------------------------
     $workerSecrets = @(
         "database-url=$databaseUrl",
@@ -1083,12 +1070,15 @@ try {
     # 12. Frontend -----------------------------------------------------------
     $frontendEnv = @(
         "NODE_ENV=production",
-        "NEXT_PUBLIC_API_BASE_URL=https://$backendFqdn",
-        "API_BASE_URL=https://$backendFqdn"
+        "API_INTERNAL_URL=https://$backendFqdn"
     )
     if (Test-AzExists @("containerapp", "show", "--name", $FrontendApp, "--resource-group", $rgName)) {
         $frontendAppId = Get-AzValue @("containerapp", "show", "--name", $FrontendApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "frontend app id"
         Assert-RunOwnership "container app" $FrontendApp $frontendAppId
+        Invoke-AzCli @(
+            "containerapp", "update", "--name", $FrontendApp, "--resource-group", $rgName,
+            "--set-env-vars", "API_INTERNAL_URL=https://$backendFqdn", "--output", "none"
+        ) -Operation "containerapp update frontend proxy destination"
     }
     else {
         Invoke-AzCli (@(
@@ -1116,6 +1106,12 @@ try {
     $script:Manifest["endpoints"]["frontend"] = "https://$frontendFqdn"
     Add-ManifestResource -Type "containerapp" -Name $FrontendApp -Id $frontendAppId -ResourceTags $tags -Extra @{ image = $imageRefs["frontend"]; fqdn = "https://$frontendFqdn" }
     Save-Manifest
+
+    # Next forwards the browser's Origin unchanged on credential requests.
+    Invoke-AzCli @(
+        "containerapp", "update", "--name", $BackendApp, "--resource-group", $rgName,
+        "--set-env-vars", "AUTH_PUBLIC_ORIGIN=https://$frontendFqdn", "--output", "none"
+    ) -Operation "containerapp update backend web origin"
 
     Write-Info "Deployment applied. Manifest: $script:ManifestPath"
 }

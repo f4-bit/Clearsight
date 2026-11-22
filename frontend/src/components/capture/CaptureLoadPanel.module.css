@@ -1,0 +1,40 @@
+.viewport {
+  background-color: #080d11;
+  transition: border-color 200ms ease, background-color 200ms ease;
+}
+
+.viewport[data-preview="false"] {
+  background-image: radial-gradient(ellipse at center, #10252d80, transparent 74%);
+}
+
+.viewport[data-dragging="true"] {
+  border-color: #79cddb;
+  background-color: #102732;
+}
+
+.frame {
+  position: absolute;
+  inset: 0;
+  width: min(79%, 22rem);
+  height: min(74%, 22rem);
+  margin: auto;
+  color: #5c9cac6b;
+  pointer-events: none;
+  background:
+    linear-gradient(currentColor, currentColor) top left / 15px 1px,
+    linear-gradient(currentColor, currentColor) top left / 1px 15px,
+    linear-gradient(currentColor, currentColor) top right / 15px 1px,
+    linear-gradient(currentColor, currentColor) top right / 1px 15px,
+    linear-gradient(currentColor, currentColor) bottom left / 15px 1px,
+    linear-gradient(currentColor, currentColor) bottom left / 1px 15px,
+    linear-gradient(currentColor, currentColor) bottom right / 15px 1px,
+    linear-gradient(currentColor, currentColor) bottom right / 1px 15px;
+  background-repeat: no-repeat;
+  transition: color 200ms ease;
+}
+
+.viewport[data-dragging="true"] .frame { color: #8edbe5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .viewport, .frame { transition: none; }
+}

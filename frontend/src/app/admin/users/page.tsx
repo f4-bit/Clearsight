@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import "@fontsource-variable/space-grotesk";
+import { Pencil, Plus, Search, X } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SessionGate } from "@/components/Session";
 import { TopBar } from "@/components/TopBar";
 import { ApiError, api, errorMessage, jsonBody } from "@/lib/api";
 import type { AdminUser, Page, UserRole } from "@/types/api";
+import entry from "@/app/entry.module.css";
+import styles from "./users.module.css";
 
 const roles: ReadonlyArray<{ value: UserRole; label: string }> = [
   { value: "OFTALMOLOGO", label: "Oftalmólogo" },
@@ -38,7 +42,15 @@ function UsersWorkspace() {
     setLoading(true);
     setError("");
     api<Page<AdminUser>>(`/admin/users?${params}`, { signal: controller.signal }).then(
-      (page) => { if (!controller.signal.aborted) setResult(page); },
+      (page) => {
+        if (controller.signal.aborted) return;
+        const lastOffset = Math.max(0, Math.ceil(page.total / PAGE_SIZE) - 1) * PAGE_SIZE;
+        if (filters.offset > lastOffset) {
+          setFilters((current) => current === filters ? { ...current, offset: lastOffset } : current);
+          return;
+        }
+        setResult(page);
+      },
       (failure: unknown) => {
         if (!controller.signal.aborted) {
           setError(errorMessage(failure));
@@ -50,86 +62,108 @@ function UsersWorkspace() {
   }, [filters, reload]);
 
   return (
-    <main className="min-h-screen">
+    <main className={`${entry.entry} ${styles.page}`}>
       <TopBar title="Administración de usuarios" role="ADMIN" />
-      <div className="mx-auto grid w-full max-w-6xl gap-4 p-5">
-        <form className="flex flex-wrap items-end gap-3 rounded-md border border-cockpit-border bg-cockpit-card p-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setFilters((previous) => ({ ...previous, q: query.trim(), offset: 0 }));
-          }}>
-          <label className="grid flex-1 min-w-[11rem] gap-1">
-            <span className="cockpit-label">Nombre o correo</span>
-            <input className="cockpit-input" value={query} maxLength={255} onChange={(event) => setQuery(event.target.value)} />
-          </label>
-          <button className="cockpit-button" type="submit">Buscar</button>
-          <label className="grid gap-1">
-            <span className="cockpit-label">Rol</span>
-            <select className="cockpit-input" value={filters.role}
-              onChange={(event) => setFilters({ ...filters, role: event.target.value, offset: 0 })}>
-              <option value="">Todos</option>
-              {roles.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </label>
-          <label className="grid gap-1">
-            <span className="cockpit-label">Estado</span>
-            <select className="cockpit-input" value={filters.active}
-              onChange={(event) => setFilters({ ...filters, active: event.target.value, offset: 0 })}>
-              <option value="">Todos</option>
-              <option value="true">Activos</option>
-              <option value="false">Desactivados</option>
-            </select>
-          </label>
-          <button type="button" className="cockpit-button cockpit-primary"
-            onClick={() => { setMessage(""); setEditor({ mode: "create" }); }}>Crear usuario</button>
-        </form>
+      <div className={styles.workspace}>
+        <div className={styles.heading}>
+          <h2 id="users-heading">Usuarios y permisos</h2>
+          <button type="button" className={styles.primary} onClick={() => { setMessage(""); setEditor({ mode: "create" }); }}>
+            <Plus size={16} aria-hidden="true" /> Crear usuario
+          </button>
+        </div>
         {message && <p role="status" className="text-xs text-emerald-400">{message}</p>}
         {error && <div className="flex items-center gap-2">
           <p role="alert" className="text-xs text-amber-300">{error}</p>
           <button type="button" className="cockpit-button" onClick={() => setReload((value) => value + 1)}>Reintentar</button>
         </div>}
-        {editor && <UserEditor key={editor.mode === "edit" ? editor.user.id : "create"} editor={editor}
-          onClose={() => setEditor(null)} onSaved={(created) => {
-            setEditor(null);
-            setMessage(created ? "Usuario creado." : "Cuenta actualizada.");
-            setReload((value) => value + 1);
-          }} />}
-        <section className="overflow-x-auto rounded-md border border-cockpit-border bg-cockpit-card">
-          <table className="w-full min-w-[35rem] text-left text-sm">
-            <thead className="border-b border-cockpit-border">
-              <tr>{["Usuario", "Correo", "Rol", "Estado", "Acción"].map((name) => (
-                <th key={name} scope="col" className="cockpit-label p-3">{name}</th>
-              ))}</tr>
+        <section className={styles.directory} aria-labelledby="users-heading">
+          <form className={styles.filters} aria-label="Filtrar cuentas"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setFilters((previous) => ({ ...previous, q: query.trim(), offset: 0 }));
+            }}>
+            <div className={styles.search}>
+              <label className={styles.label} htmlFor="users-query">Nombre o correo</label>
+              <div className={styles.searchField}>
+                <input id="users-query" className={`cockpit-input ${styles.input}`} type="search" value={query} maxLength={255}
+                  onChange={(event) => setQuery(event.target.value)} />
+                <button className={`${styles.secondary} ${styles.searchButton}`} type="submit"><Search size={15} aria-hidden="true" /> Buscar</button>
+              </div>
+            </div>
+            <div className={styles.selects}>
+              <label className={styles.field}>
+                <span className={styles.label}>Rol</span>
+                <select className={`cockpit-input ${styles.input}`} value={filters.role}
+                  onChange={(event) => setFilters({ ...filters, role: event.target.value, offset: 0 })}>
+                  <option value="">Todos</option>
+                  {roles.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              <label className={styles.field}>
+                <span className={styles.label}>Estado</span>
+                <select className={`cockpit-input ${styles.input}`} value={filters.active}
+                  onChange={(event) => setFilters({ ...filters, active: event.target.value, offset: 0 })}>
+                  <option value="">Todos</option>
+                  <option value="true">Activos</option>
+                  <option value="false">Desactivados</option>
+                </select>
+              </label>
+            </div>
+          </form>
+          <table className={styles.table} aria-busy={loading}>
+            <thead>
+              <tr>
+                <th scope="col">Cuenta</th>
+                <th scope="col" className={styles.roleColumn}>Rol</th>
+                <th scope="col" className={styles.stateColumn}>Estado</th>
+                <th scope="col" className={styles.actionColumn}>Acción</th>
+              </tr>
             </thead>
-            <tbody className="divide-y divide-cockpit-border">
-              {result?.items.map((user) => (
-                <tr key={user.id}>
-                  <td className="p-3">{user.fullName}</td>
-                  <td className="p-3 text-cockpit-text-muted">{user.email}</td>
-                  <td className="p-3 text-xs">{roles.find(({ value }) => value === user.role)?.label}</td>
-                  <td className={`p-3 text-xs ${user.isActive ? "text-emerald-400" : "text-cockpit-text-muted"}`}>
-                    {user.isActive ? "Activo" : "Desactivado"}
-                  </td>
-                  <td className="p-3"><button type="button" className="cockpit-button py-1" disabled={loading}
-                    onClick={() => { setMessage(""); setEditor({ mode: "edit", user }); }}>Editar</button></td>
-                </tr>
-              ))}
+            <tbody>
+              {result?.items.map((user) => {
+                const role = roles.find(({ value }) => value === user.role)?.label;
+                return (
+                  <tr key={user.id}>
+                    <td>
+                      <span className={styles.accountName}>{user.fullName}</span>
+                      <span className={styles.accountEmail}>{user.email}</span>
+                      <span className={styles.mobileRole}>{role}</span>
+                    </td>
+                    <td className={styles.roleColumn}>{role}</td>
+                    <td className={styles.stateColumn}>
+                      <span className={styles.state} data-active={user.isActive}>{user.isActive ? "Activo" : "Desactivado"}</span>
+                    </td>
+                    <td className={styles.actionColumn}>
+                      <button type="button" className={`${styles.secondary} ${styles.edit}`} disabled={loading}
+                        aria-label={`Editar ${user.fullName}`} onClick={() => { setMessage(""); setEditor({ mode: "edit", user }); }}>
+                        <Pencil size={14} aria-hidden="true" /> Editar
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-          {(loading || result?.items.length === 0) && <p role="status" className="p-3 text-xs text-cockpit-text-muted">
+          {(loading || result?.items.length === 0) && <p role="status" className={styles.tableStatus}>
             {loading ? "Cargando cuentas…" : "No hay cuentas con estos filtros."}
           </p>}
+          {result && <div className={styles.directoryFooter}>
+            <span className="font-mono">{result.total === 1 ? "1 cuenta" : `${result.total} cuentas`}</span>
+            {result.total > PAGE_SIZE && <nav aria-label="Páginas de cuentas" className={styles.pagination}>
+              <button type="button" className={styles.secondary} disabled={loading || filters.offset === 0}
+                onClick={() => setFilters({ ...filters, offset: Math.max(0, filters.offset - PAGE_SIZE) })}>Anterior</button>
+              <button type="button" className={styles.secondary} disabled={loading || filters.offset + PAGE_SIZE >= result.total}
+                onClick={() => setFilters({ ...filters, offset: filters.offset + PAGE_SIZE })}>Siguiente</button>
+            </nav>}
+          </div>}
         </section>
-        {result && <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="font-mono text-xs text-cockpit-text-muted">{result.total} cuentas</span>
-          <div className="flex gap-2">
-            <button type="button" className="cockpit-button" disabled={loading || filters.offset === 0}
-              onClick={() => setFilters({ ...filters, offset: Math.max(0, filters.offset - PAGE_SIZE) })}>Anterior</button>
-            <button type="button" className="cockpit-button" disabled={loading || filters.offset + PAGE_SIZE >= result.total}
-              onClick={() => setFilters({ ...filters, offset: filters.offset + PAGE_SIZE })}>Siguiente</button>
-          </div>
-        </div>}
       </div>
+      {editor && <UserEditor key={editor.mode === "edit" ? editor.user.id : "create"} editor={editor}
+        onClose={() => setEditor(null)} onSaved={(created) => {
+          setEditor(null);
+          setMessage(created ? "Usuario creado." : "Cuenta actualizada.");
+          setReload((value) => value + 1);
+        }} />}
     </main>
   );
 }
@@ -147,9 +181,26 @@ function UserEditor({ editor, onClose, onSaved }: {
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
   const cleanEmail = email.trim().toLowerCase();
   const cleanName = fullName.trim();
   const changed = !user || cleanName !== user.fullName || cleanEmail !== user.email || role !== user.role || isActive !== user.isActive;
+  const revokesSessions = user && (isActive !== user.isActive || role !== user.role || cleanEmail !== user.email);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialog.showModal();
+    nameRef.current?.focus();
+    return () => { if (dialog.open) dialog.close(); };
+  }, []);
+
+  function cancel() {
+    if (pending) return;
+    dialogRef.current?.close();
+    onClose();
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -174,6 +225,7 @@ function UserEditor({ editor, onClose, onSaved }: {
           method: "POST", ...jsonBody({ fullName: cleanName, email: cleanEmail, password, role }),
         });
       }
+      dialogRef.current?.close();
       onSaved(!user);
     } catch (failure) {
       setError(failure instanceof ApiError && failure.status === 409
@@ -186,37 +238,49 @@ function UserEditor({ editor, onClose, onSaved }: {
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-3 rounded-md border border-cockpit-border bg-cockpit-surface p-4">
-      <h2 className="text-sm font-semibold">{user ? "Editar usuario" : "Crear usuario"}</h2>
-      <fieldset disabled={pending} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="grid gap-1"><span className="cockpit-label">Nombre completo</span>
-          <input className="cockpit-input" required maxLength={255} value={fullName} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <label className="grid gap-1"><span className="cockpit-label">Correo</span>
-          <input className="cockpit-input" type="email" required maxLength={255} value={email} onChange={(event) => setEmail(event.target.value)} />
-        </label>
-        <label className="grid gap-1"><span className="cockpit-label">Rol</span>
-          <select className="cockpit-input" value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
-            {roles.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </label>
-        {user ? <label className="flex items-center gap-2 self-end py-2 text-xs">
-          <input type="checkbox" className="accent-sky-500" checked={isActive} onChange={(event) => setActive(event.target.checked)} /> Activo
-        </label> : <label className="grid gap-1"><span className="cockpit-label">Contraseña inicial</span>
-          <input className="cockpit-input" autoComplete="new-password" type="password" required value={password}
-            onChange={(event) => setPassword(event.target.value)} />
-        </label>}
-      </fieldset>
-      {user && (isActive !== user.isActive || role !== user.role || cleanEmail !== user.email) && (
-        <p className="text-xs text-amber-300">Este cambio revoca las sesiones de la cuenta.</p>
-      )}
-      {error && <p role="alert" className="text-xs text-amber-300">{error}</p>}
-      <div className="flex gap-2">
-        <button type="button" className="cockpit-button" disabled={pending} onClick={onClose}>Cancelar</button>
-        <button className="cockpit-button cockpit-primary" disabled={pending || !changed || !cleanName}>
-          {pending ? "Guardando…" : "Guardar"}
-        </button>
-      </div>
-    </form>
+    <dialog ref={dialogRef} className={styles.drawer} aria-labelledby="user-editor-title"
+      onCancel={(event) => { event.preventDefault(); cancel(); }}>
+      <form onSubmit={submit} className={styles.drawerForm} aria-busy={pending}>
+        <div className={styles.drawerHeading}>
+          <h2 id="user-editor-title">{user ? "Editar usuario" : "Crear usuario"}</h2>
+          <button type="button" className={styles.closeDrawer} aria-label="Cerrar formulario" disabled={pending} onClick={cancel}>
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+        <div className={styles.drawerBody}>
+          <fieldset disabled={pending} className={styles.drawerFields}>
+            <label className={styles.field}><span className={styles.label}>Nombre completo</span>
+              <input ref={nameRef} className={`cockpit-input ${styles.input}`} required maxLength={255} value={fullName}
+                onChange={(event) => setName(event.target.value)} />
+            </label>
+            <label className={styles.field}><span className={styles.label}>Correo</span>
+              <input className={`cockpit-input ${styles.input}`} type="email" required maxLength={255} value={email}
+                onChange={(event) => setEmail(event.target.value)} />
+            </label>
+            <label className={styles.field}><span className={styles.label}>Rol</span>
+              <select className={`cockpit-input ${styles.input}`} value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
+                {roles.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            {user ? <label className={styles.activeField}>
+              <input type="checkbox" checked={isActive} onChange={(event) => setActive(event.target.checked)} /> Activo
+            </label> : <label className={styles.field}><span className={styles.label}>Contraseña inicial</span>
+              <input className={`cockpit-input ${styles.input}`} autoComplete="new-password" type="password" required value={password}
+                onChange={(event) => setPassword(event.target.value)} />
+            </label>}
+          </fieldset>
+        </div>
+        <div className={styles.drawerFooter}>
+          {revokesSessions && <p className={styles.notice} role="status">Este cambio revoca las sesiones de la cuenta.</p>}
+          {error && <p role="alert" className={styles.notice}>{error}</p>}
+          <div className={styles.drawerActions}>
+            <button type="button" className={styles.secondary} disabled={pending} onClick={cancel}>Cancelar</button>
+            <button type="submit" className={styles.primary} disabled={pending || !changed || !cleanName}>
+              {pending ? "Guardando…" : "Guardar"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </dialog>
   );
 }

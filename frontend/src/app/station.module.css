@@ -1,0 +1,262 @@
+.page {
+  position: relative;
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  isolation: isolate;
+  overflow: clip;
+  background: #0a1115;
+}
+
+.illustration {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 79% 36%, #2d5861 0%, #162f38 32%, transparent 72%),
+    #0a1115;
+}
+
+.grid,
+.illustration::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.grid {
+  mask-image: radial-gradient(ellipse at 78% 48%, #000 22%, transparent 79%);
+}
+
+.illustration::after {
+  background:
+    linear-gradient(90deg, #0a1115 3%, #0a1115e6 28%, #0a111530 61%, transparent 84%),
+    linear-gradient(0deg, #0a1115, transparent 31%, transparent 85%, #0a111575);
+}
+
+.retina,
+.reticle {
+  position: absolute;
+  top: 50%;
+  left: 77%;
+  width: clamp(36rem, 64vw, 91rem);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+}
+
+.retina {
+  background: url("/retina-editorial.webp") center / contain no-repeat;
+  filter: saturate(0) brightness(1.55) contrast(1.14);
+  mask-image: radial-gradient(ellipse, #000 27%, #000d 47%, transparent 70%);
+  mix-blend-mode: screen;
+  opacity: .66;
+}
+
+.reticle {
+  width: clamp(20rem, 43vw, 62rem);
+  border: 1px solid #b7ebef40;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2.75rem #b7ebef0a, 0 0 0 5.5rem #b7ebef07;
+}
+
+.reticle::before {
+  position: absolute;
+  inset: -9%;
+  border: 1px dashed #b7ebef35;
+  border-radius: 50%;
+  content: "";
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: clamp(1.3rem, 3vw, 3rem) var(--page-gutter);
+}
+
+.session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem 1.25rem;
+  min-width: 0;
+  color: var(--entry-muted);
+  font-size: .8125rem;
+}
+
+.session > span { overflow-wrap: anywhere; }
+
+.workspace {
+  display: grid;
+  flex: 1;
+  align-content: center;
+  gap: clamp(1.35rem, 3.45vh, 2.75rem);
+  padding: 1rem var(--page-gutter) clamp(2rem, 8vh, 6rem);
+}
+
+.intro h1 {
+  max-width: 12ch;
+  font-size: clamp(3.5rem, 7vw, 8rem);
+  font-weight: 450;
+  letter-spacing: -.075em;
+  line-height: .96;
+  text-wrap: balance;
+}
+
+.intro p {
+  margin-top: 1.2rem;
+  color: var(--entry-muted);
+  font-size: clamp(.9rem, 1.3vw, 1.125rem);
+}
+
+.capture {
+  display: grid;
+  width: min(100%, 35rem);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: clamp(.75rem, 2vw, 1.5rem);
+  padding-block: 1.35rem;
+  border-block: 1px solid #80a7b25e;
+  border-radius: 2px;
+}
+
+.scanIcon,
+.arrow {
+  display: grid;
+  width: 3rem;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.scanIcon {
+  border: 1px solid #a4d1da57;
+  background: #10252c80;
+  color: var(--entry-accent);
+}
+
+.captureContent h2 {
+  font-size: clamp(1.5rem, 2.4vw, 2.5rem);
+  font-weight: 500;
+  letter-spacing: -.05em;
+  line-height: 1.1;
+}
+
+.captureContent p {
+  margin-top: .4rem;
+  color: var(--entry-muted);
+  font-size: .875rem;
+}
+
+.captureAction {
+  display: inline-flex;
+  align-items: center;
+  gap: .75rem;
+  color: var(--entry-accent);
+  font-size: .875rem;
+  font-weight: 600;
+}
+
+.arrow {
+  background: var(--entry-accent);
+  color: var(--entry-accent-ink);
+}
+
+.capture:hover,
+.capture:focus-visible { border-color: #9fd4da; }
+
+.capture:hover .arrow,
+.capture:focus-visible .arrow { background: var(--entry-accent-hover); }
+
+.capture:focus-visible {
+  outline: 2px solid var(--entry-accent);
+  outline-offset: 5px;
+}
+
+.lookup {
+  display: grid;
+  gap: 1rem;
+  width: min(100%, 35rem);
+}
+
+.lookup input,
+.lookup button { min-height: 2.75rem; }
+
+.gridEffect {
+  position: absolute;
+  inset: 0;
+  background: #9ed7e014;
+  mask-image:
+    linear-gradient(90deg, #000 1px, transparent 1px),
+    linear-gradient(#000 1px, transparent 1px);
+  mask-size: var(--grid-cell-size) var(--grid-cell-size);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .gridEffect::before,
+  .gridEffect::after {
+    position: absolute;
+    /* The shared mask keeps the glow on the existing edges of this cell and its neighbors. */
+    width: calc(3 * var(--grid-cell-size) + 1px);
+    height: calc(3 * var(--grid-cell-size) + 1px);
+    background: radial-gradient(
+      circle farthest-corner,
+      #9ed7e03a,
+      #9ed7e032 26%,
+      #9ed7e024 45%,
+      #9ed7e010 70%,
+      transparent 93%
+    );
+    opacity: 0;
+    transition: opacity 520ms ease-in-out;
+    animation: grid-breath 6.5s ease-in-out infinite paused;
+    content: "";
+  }
+
+  .gridEffect::before {
+    left: calc(var(--grid-x-a, 0px) - var(--grid-cell-size));
+    top: calc(var(--grid-y-a, 0px) - var(--grid-cell-size));
+  }
+
+  .gridEffect::after {
+    left: calc(var(--grid-x-b, 0px) - var(--grid-cell-size));
+    top: calc(var(--grid-y-b, 0px) - var(--grid-cell-size));
+  }
+
+  .gridEffect[data-grid-hover]::before,
+  .gridEffect[data-grid-hover]::after { animation-play-state: running; }
+
+  .gridEffect[data-grid-hover="a"]::before,
+  .gridEffect[data-grid-hover="b"]::after { opacity: 1; }
+
+  .arrow { transition: transform 240ms ease, background-color 240ms ease; }
+  .capture:hover .arrow { transform: translateX(.22rem); }
+}
+
+@keyframes grid-breath {
+  0%, 100% { filter: opacity(.42); }
+  50% { filter: opacity(1); }
+}
+
+@media (max-width: 720px) {
+  .workspace { align-content: start; padding-top: clamp(2.5rem, 18vh, 9rem); }
+  .intro h1 { max-width: 9ch; font-size: clamp(3rem, 11vw, 5rem); }
+  .intro p { margin-top: .75rem; }
+  .retina, .reticle { top: 26%; left: 80%; }
+  .retina { width: clamp(26rem, 94vw, 44rem); }
+  .illustration::after { background: linear-gradient(0deg, #0a1115 29%, #0a1115c0 53%, transparent 95%); }
+  .capture { grid-template-columns: minmax(0, 1fr) auto; }
+  .scanIcon { display: none; }
+  .actionLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .arrow { width: 2.25rem; }
+}

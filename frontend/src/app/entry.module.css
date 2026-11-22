@@ -1,0 +1,19 @@
+.entry {
+  --page-gutter: clamp(1.35rem, 2.6vw, 3.5rem);
+  --entry-text: #eef6f7;
+  --entry-muted: #acbec3;
+  --entry-accent: #b9e7ee;
+  --entry-accent-hover: #d4f5fa;
+  --entry-accent-ink: #10282e;
+  color: var(--entry-text);
+}
+
+.wordmark {
+  width: fit-content;
+  font-size: clamp(1.6rem, 3vw, 2.6rem);
+  font-weight: 400;
+  letter-spacing: -.072em;
+  line-height: 1;
+}
+
+.wordmark b { font-weight: 650; }

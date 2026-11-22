@@ -1143,8 +1143,11 @@ def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path
     assert len(auth_values) == 1, env_values
 
     auth_origin = auth_values[0].split("=", 1)[1]
-    assert auth_origin.startswith(f"https://{backend_name}.")
-    assert auth_origin.endswith(".azurecontainerapps.io")
+    endpoints = json.loads(_manifest_path(tmp_path).read_text(encoding="utf-8"))["endpoints"]
+    assert auth_origin == endpoints["frontend"]
+    assert auth_origin != endpoints["backend"]
+    frontend = _entry_with_name(entries, ["containerapp", "create"], f"{RESOURCE_GROUP}-frontend")
+    assert f"API_INTERNAL_URL={endpoints['backend']}" in _option_values(frontend, "--env-vars")
     assert "secretref:" not in auth_origin
 
     secrets = _option_values(update, "--secrets")

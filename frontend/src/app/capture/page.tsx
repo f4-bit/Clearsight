@@ -1,19 +1,19 @@
 "use client";
 
 import Link from "next/link";
+import { ArrowRight, Check, Circle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { SessionGate } from "@/components/Session";
 import { CaptureClinicalForm } from "@/components/capture/CaptureClinicalForm";
 import { CaptureLoadPanel } from "@/components/capture/CaptureLoadPanel";
 import { CaptureProcessingPanel } from "@/components/capture/CaptureProcessingPanel";
-import { CaptureStudyPanel } from "@/components/capture/CaptureStudyPanel";
 import { CaptureTopBar } from "@/components/capture/CaptureTopBar";
 import { api, errorMessage } from "@/lib/api";
 import { submitStudy, type Submission, type SubmissionEvent } from "@/lib/studies";
 import { useStudy } from "@/lib/useStudy";
 import type { Patient } from "@/types/api";
 import {
-  CAPTURE_EYE_ORDER, createEmptyClinicalValues, clinicalFeaturesFromValues,
+  CAPTURE_EYE_ORDER, CLINICAL_FIELDS, createEmptyClinicalValues, clinicalFeaturesFromValues, parseClinicalValue,
   type CaptureEyeSlot, type CaptureEyeSlots,
 } from "@/types/capture";
 import type { EyeSide } from "@/types/clinical";
@@ -41,8 +41,21 @@ function CaptureWorkspace() {
   const study = useStudy(consultationId);
   const attempt = submission.current;
   const selectedEyes = CAPTURE_EYE_ORDER.filter((side) => eyeSlots[side].status === "ready");
+  const validCount = CLINICAL_FIELDS.filter(({ key }) => parseClinicalValue(key, clinical[key]) !== null).length;
+  const invalidEye = CAPTURE_EYE_ORDER.some((side) => eyeSlots[side].status === "invalid");
+  const validatingEye = CAPTURE_EYE_ORDER.some((side) => eyeSlots[side].status === "validating");
   const canSubmit = Boolean(features && patientId && selectedEyes.length &&
     CAPTURE_EYE_ORDER.every((side) => ["ready", "empty"].includes(eyeSlots[side].status)));
+  const eyeStatus = invalidEye ? "Revisa o quita la imagen inválida"
+    : validatingEye ? "Validando retinografía…"
+    : selectedEyes.length === 2 ? "2 retinografías validadas"
+    : selectedEyes.length === 1 ? "1 retinografía validada · segundo ojo opcional"
+    : "Falta una retinografía";
+  const checklist = [
+    { label: patientId === "new" ? "Paciente por crear" : patientId ? "Paciente seleccionado" : "Paciente pendiente", ready: Boolean(patientId) },
+    { label: eyeStatus, ready: selectedEyes.length > 0 && !invalidEye && !validatingEye },
+    { label: `${validCount}/${CLINICAL_FIELDS.length} variables válidas`, ready: Boolean(features) },
+  ];
 
   useEffect(() => () => {
     for (const slot of Object.values(slots.current)) {
@@ -103,48 +116,47 @@ function CaptureWorkspace() {
     }
   }
 
+  if (attempt) {
+    const retry = study.error ? { label: "Consultar estado", action: study.retry }
+      : error && !consultationId && !attempt.creationUnconfirmed ? { label: "Reintentar envío", action: send }
+      : undefined;
+    return (
+      <main className="flex min-h-dvh flex-col">
+        <CaptureTopBar tracking studyId={attempt.consultation?.id} />
+        <CaptureProcessingPanel event={event} eyeSlots={eyeSlots} snapshot={study.snapshot}
+          clinical={attempt.clinical} caseId={attempt.consultation?.id} submitted={consultationId !== null}
+          pending={pending} error={error || study.error} onReset={reset} retry={retry} />
+      </main>
+    );
+  }
+
   return (
-    <main className="flex min-h-screen flex-col lg:h-screen">
-      <CaptureTopBar studyId={attempt?.consultation?.id} />
-      <div className="flex flex-1 flex-col lg:min-h-0 lg:flex-row lg:overflow-auto">
-        {attempt ? (
-          <>
-            <CaptureProcessingPanel event={event} eyeSlots={eyeSlots}
-              snapshot={study.snapshot} submitted={consultationId !== null} />
-            <CaptureStudyPanel clinical={attempt.clinical} />
-          </>
-        ) : (
-          <>
-            <section className="flex flex-1 min-w-0 flex-col gap-5 p-5">
-              <PatientPicker value={patientId} onChange={setPatientId}
-                externalCode={externalCode} onCodeChange={setExternalCode} />
-              <CaptureLoadPanel eyeSlots={eyeSlots} onChange={changeSlot} />
-            </section>
-            <CaptureClinicalForm values={clinical}
-              onChange={(field, value) => setClinical((previous) => ({ ...previous, [field]: value }))} />
-          </>
-        )}
+    <main className="flex min-h-dvh flex-col">
+      <CaptureTopBar />
+      <div className="grid flex-1 lg:grid-cols-[minmax(0,1fr)_clamp(26rem,39vw,38rem)]">
+        <section className="flex min-w-0 flex-col gap-4 p-4 xl:p-5">
+          <PatientPicker value={patientId} onChange={setPatientId}
+            externalCode={externalCode} onCodeChange={setExternalCode} />
+          <CaptureLoadPanel eyeSlots={eyeSlots} onChange={changeSlot} />
+        </section>
+        <CaptureClinicalForm values={clinical} validCount={validCount}
+          onChange={(field, value) => setClinical((previous) => ({ ...previous, [field]: value }))} />
       </div>
-      <footer className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-t border-cockpit-border bg-cockpit-surface px-5 py-2">
-        <span className="text-xs text-cockpit-text-muted">
-          {error || study.error
-            ? <span role="alert" className="text-amber-300">{error || study.error}</span>
-            : !attempt ? `${selectedEyes.length} de 2 ojos validados · Completa las 11 variables para enviar`
-            : consultationId ? "Consulta registrada" : "Guardando estudio…"}
-        </span>
+      <footer className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-t border-cockpit-border bg-cockpit-surface px-4 py-2 xl:px-5">
+        <div role="status" aria-label="Preparación del estudio">
+          <ul className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-cockpit-text-muted">
+            {checklist.map(({ label, ready }) => (
+              <li key={label} className="inline-flex items-center gap-1.5">
+                {ready ? <Check size={13} aria-hidden="true" className="shrink-0 text-emerald-300" /> :
+                  <Circle size={10} aria-hidden="true" className="mx-px shrink-0" />}
+                {label}
+              </li>
+            ))}
+          </ul>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
-          {!attempt && <><Link href="/" className="cockpit-button">Volver</Link>
-            <button onClick={send} disabled={!canSubmit} className="cockpit-button cockpit-primary">Enviar estudio</button></>}
-          {attempt && !pending && (
-            <>
-              <button onClick={reset} className="cockpit-button">Nueva captura</button>
-              {error && !consultationId && !attempt.creationUnconfirmed && (
-                <button onClick={send} className="cockpit-button cockpit-primary">Reintentar envío</button>
-              )}
-              {study.error && <button onClick={study.retry} className="cockpit-button">Consultar estado</button>}
-              {attempt.consultation && <Link href={`/studies/${attempt.consultation.id}`} className="cockpit-button cockpit-primary">Abrir caso clínico</Link>}
-            </>
-          )}
+          <Link href="/" className="cockpit-button">Volver</Link>
+          <button onClick={send} disabled={!canSubmit} className="cockpit-button cockpit-primary">Enviar estudio <ArrowRight size={14} aria-hidden="true" /></button>
         </div>
       </footer>
     </main>
@@ -175,7 +187,7 @@ function PatientPicker({ value, onChange, externalCode, onCodeChange }: {
   }, [page, retry]);
 
   return (
-    <section className="flex flex-wrap items-end gap-3 rounded-md border border-cockpit-border bg-cockpit-card p-3.5">
+    <section className="flex flex-wrap items-end gap-3 border-b border-cockpit-border pb-4">
       <label className="grid flex-1 min-w-[12rem] gap-1.5">
         <span className="cockpit-label">Paciente</span>
         <select value={value} onChange={(change) => onChange(change.target.value)} className="cockpit-input">

@@ -14,7 +14,26 @@ La interfaz se abre en `http://localhost:3000` con Docker Compose. El proxy de N
 
 Configura `AUTH_PUBLIC_ORIGIN` con el origen exacto que abre el navegador. Para MinIO, configura `MINIO_BROWSER_ORIGIN` con su origen accesible desde ese navegador. Compose usa `http://localhost:9000` por defecto. Usa HTTPS para un origen de producción.
 
+Para trabajar con un backend de pruebas alojado en Azure, consulta la [guía de conexión del proxy HTTPS](docs/proxy-azure.md).
+
 Con el backend y el servicio ML listos, crea la primera cuenta ADMIN con `npm run admin:bootstrap` en el backend y usa **Usuarios** para crear la cuenta OFTALMOLOGO. Las instrucciones de migración, configuración y bootstrap están en [backend/README.md](backend/README.md).
+
+### Prueba de humo del frontend
+
+Desde la raíz del repositorio, ejecuta el bloque en PowerShell con Node.js 22 o posterior. Si tienes el servidor de desarrollo de Next.js abierto, detenlo antes de compilar la prueba.
+
+```powershell
+Set-Location frontend
+npm.cmd ci
+npx.cmd playwright install chromium
+npm.cmd run test:smoke
+```
+
+La instalación de Chromium se necesita por cada versión de Playwright. En Linux, si faltan bibliotecas del sistema, usa `npx playwright install --with-deps chromium`. La prueba compila Next.js y comprueba sesión, captura unilateral, reintento sin duplicados, evidencia, PDF y dictamen mediante una API de prueba local y una imagen generada. Funciona con puertos asignados automáticamente y sin credenciales de Azure.
+
+Para revisar el recorrido a tu ritmo, ejecuta `npm.cmd run test:smoke -- --visual`. Chromium se abre maximizado y espera en cada pantalla. Pulsa Enter en PowerShell para recorrer inicio de sesión, estación clínica, captura, análisis, caso, variables, informe y dictamen. Después podrás revisar investigación, la consulta de ejecución y la administración de usuarios. Si cierras sesión durante la revisión del caso, la demo vuelve a abrirlo cuando pulses Enter. La última pantalla queda abierta hasta que pulses Enter o cierres Chromium.
+
+El recorrido usa cuentas y resultados de demostración. Las retinografías y la evidencia del visor están marcadas como imágenes de demostración. Los formularios de administración se pueden inspeccionar con cuentas de ejemplo de solo lectura.
 
 # ML
 The CNN segmentation model is here: [CNN model](https://huggingface.co/F4-bit/Clearsight-CD-Segmentation-CNN-Base-model)

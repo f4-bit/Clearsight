@@ -15,6 +15,7 @@ const INITIAL_VIEW: Transform = { scale: 1, x: 0, y: 0 };
 export function BilateralCanvas({ od, os }: { od?: EyeExecution; os?: EyeExecution }) {
   const [linked, setLinked] = useState(true);
   const [views, setViews] = useState({ OD: INITIAL_VIEW, OS: INITIAL_VIEW });
+  const bilateral = Boolean(od && os);
 
   function adjust(side: EyeSide, transform: Transform) {
     setViews((previous) => linked ? { OD: transform, OS: transform } : { ...previous, [side]: transform });
@@ -30,29 +31,35 @@ export function BilateralCanvas({ od, os }: { od?: EyeExecution; os?: EyeExecuti
         </defs>
       </svg>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="cockpit-label">Visor de segmentación</h2>
-        <button type="button" aria-pressed={linked} onClick={() => {
+        <h2 className="text-sm font-semibold text-cockpit-text">Visor de segmentación</h2>
+        {bilateral && <button type="button" aria-pressed={linked} onClick={() => {
           if (!linked) setViews((previous) => ({ OD: previous.OD, OS: previous.OD }));
           setLinked(!linked);
         }} className={`cockpit-button ${linked ? "text-sky-300" : ""}`}>
           {linked ? <Link2 size={14} aria-hidden="true" /> : <Unlink2 size={14} aria-hidden="true" />}
           Vincular zoom y desplazamiento
-        </button>
+        </button>}
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
-        <RetinalViewport key={od?.result.id ?? "OD"} side="OD" eye={od} transform={views.OD} adjust={(view) => adjust("OD", view)} />
-        <RetinalViewport key={os?.result.id ?? "OS"} side="OS" eye={os} transform={views.OS} adjust={(view) => adjust("OS", view)} />
+      <div className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${bilateral ? "sm:grid-cols-2" : ""}`}>
+        {od && <RetinalViewport key={od.result.id} eye={od} transform={views.OD} adjust={(view) => adjust("OD", view)} />}
+        {os && <RetinalViewport key={os.result.id} eye={os} transform={views.OS} adjust={(view) => adjust("OS", view)} />}
+        {!od && !os && (
+          <div role="status" className="grid min-h-[20rem] place-content-center justify-items-center gap-3 rounded-lg border border-cockpit-border bg-cockpit-card p-4 text-center text-sm text-cockpit-text-muted">
+            <ImageOff size={22} aria-hidden="true" />
+            Este estudio aún no tiene ejecuciones.
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function RetinalViewport({ side, eye, transform, adjust }: {
-  side: EyeSide;
-  eye?: EyeExecution;
+function RetinalViewport({ eye, transform, adjust }: {
+  eye: EyeExecution;
   transform: Transform;
   adjust: (view: Transform) => void;
 }) {
+  const { side, result } = eye;
   const [type, setType] = useState<EvidenceType>("overlay");
   const [filter, setFilter] = useState<FilterMode>("rgb");
   const [source, setSource] = useState<{ key: string; url: string } | null>(null);
@@ -60,14 +67,14 @@ function RetinalViewport({ side, eye, transform, adjust }: {
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
   const drag = useRef<{ clientX: number; clientY: number; x: number; y: number } | null>(null);
-  const id = eye?.result.id;
-  const status = eye?.result.delivery.evidenceStatus;
-  const resultStatus = eye?.result.delivery.resultStatus;
+  const id = result.id;
+  const status = result.delivery.evidenceStatus;
+  const resultStatus = result.delivery.resultStatus;
   const sourceKey = `${id}-${type}-${attempt}-${status}`;
   const url = source?.key === sourceKey ? source.url : null;
 
   useEffect(() => {
-    if (!id || resultStatus === "PENDING") return;
+    if (resultStatus === "PENDING") return;
     const controller = new AbortController();
     setLoading(true);
     setLoadError("");
@@ -95,40 +102,39 @@ function RetinalViewport({ side, eye, transform, adjust }: {
     });
   }
 
-  const diagnostic = eye?.result.status === "COMPLETED" ? eye.result.predictedClass : null;
+  const diagnostic = result.status === "COMPLETED" && !result.delivery.reviewRequired ? result.predictedClass : null;
   const label = diagnostic != null ? CLASS_LABELS[diagnostic] : null;
   const filterValue = filter === "red_free" ? "url(#cs-aneritro)"
     : filter === "contrast" ? "contrast(1.35) brightness(1.08)" : "none";
-  const placeholder = !eye ? "Ojo sin ejecución"
-    : loading ? "Cargando evidencia…"
+  const placeholder = loading ? "Cargando evidencia…"
     : status === "PENDING" ? "Esperando evidencia…" : "Evidencia no disponible";
 
   return (
-    <section className="flex min-h-[20rem] min-w-0 flex-col rounded-md border border-cockpit-border bg-cockpit-card p-3">
+    <section aria-label={CAPTURE_EYE_LABELS[side]} className="flex min-h-[20rem] min-w-0 flex-col overflow-hidden rounded-lg border border-cockpit-border bg-cockpit-card p-3">
       <div className="mb-2 flex min-h-6 flex-wrap items-center justify-between gap-2">
         <h3 className="cockpit-label">{CAPTURE_EYE_LABELS[side]}</h3>
         {label && diagnostic != null && (
           <span className={`rounded border px-2 py-1 text-[10px] ${CLASS_COLORS[diagnostic]}`}>{label}</span>
         )}
-        {eye?.result.delivery.reviewRequired && (
+        {result.delivery.reviewRequired && (
           <span className="rounded border border-amber-800/60 bg-amber-500/20 px-2 py-1 text-[10px] text-amber-300">Revisión</span>
         )}
       </div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <button type="button" className="cockpit-button py-1" onClick={() => setType("overlay")}
-          aria-pressed={type === "overlay"} disabled={!eye}>Contornos</button>
+          aria-pressed={type === "overlay"}>Contornos</button>
         <button type="button" className="cockpit-button py-1" onClick={() => setType("mask")}
-          aria-pressed={type === "mask"} disabled={!eye}>Máscara</button>
+          aria-pressed={type === "mask"}>Máscara</button>
         {type === "overlay" && (
           <select className="cockpit-input py-1 text-xs" aria-label={`Filtro ${side}`} value={filter}
-            onChange={(event) => setFilter(event.target.value as FilterMode)} disabled={!eye}>
+            onChange={(event) => setFilter(event.target.value as FilterMode)}>
             <option value="rgb">RGB</option>
             <option value="red_free">Aneritro</option>
             <option value="contrast">Realce de contraste</option>
           </select>
         )}
       </div>
-      <div className={`relative grid min-h-[13rem] flex-1 place-items-center overflow-hidden rounded border border-cockpit-border bg-[#08080A] ${url ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
+      <div className={`relative grid min-h-[13rem] flex-1 place-items-center overflow-hidden rounded border border-cockpit-border bg-[#08080a] ${url ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
         onPointerDown={(event) => {
           if (!url || transform.scale === 1 || event.button !== 0) return;
           drag.current = { clientX: event.clientX, clientY: event.clientY, x: transform.x, y: transform.y };
@@ -158,7 +164,7 @@ function RetinalViewport({ side, eye, transform, adjust }: {
       </div>
       <footer className="mt-2 flex items-center justify-between gap-2">
         <span className="text-[10px] text-cockpit-text-muted">
-          {eye?.result.delivery.reviewRequired ? "Revisión requerida"
+          {result.delivery.reviewRequired ? "Revisión requerida"
             : type === "overlay" ? "Recorte del disco óptico" : "Segmentación de disco y copa"}
         </span>
         <div className="flex items-center gap-1.5">

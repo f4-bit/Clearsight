@@ -1,6 +1,6 @@
 "use client";
 
-import { ImagePlus } from "lucide-react";
+import { ArrowDownToLine, Check, ImagePlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { EyeSide } from "@/types/clinical";
 import {
@@ -12,6 +12,7 @@ import {
   type CaptureEyeSlot,
   type CaptureEyeSlots,
 } from "@/types/capture";
+import styles from "./CaptureLoadPanel.module.css";
 
 interface CaptureLoadPanelProps {
   eyeSlots: CaptureEyeSlots;
@@ -44,7 +45,9 @@ export function CaptureEyeDropzone({
 }) {
   const input = useRef<HTMLInputElement>(null);
   const selection = useRef(0);
+  const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
+  const dropActive = dragging && !disabled;
   useEffect(() => () => { selection.current += 1; }, []);
 
   async function choose(file: File) {
@@ -78,18 +81,34 @@ export function CaptureEyeDropzone({
   }
 
   return (
-    <section onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
+    <section aria-label={CAPTURE_EYE_LABELS[side]}
+      onDragEnter={(event) => {
+        if (disabled || !event.dataTransfer.types.includes("Files")) return;
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        if (event.dataTransfer.types.includes("Files")) event.dataTransfer.dropEffect = disabled ? "none" : "copy";
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
       onDrop={(event) => {
         event.preventDefault();
+        dragDepth.current = 0;
         setDragging(false);
         const file = event.dataTransfer.files[0];
         if (file) void choose(file);
       }}
-      className={`flex min-w-0 flex-col rounded-md border bg-cockpit-card p-3.5 ${compact ? "min-h-[11rem]" : "min-h-[17rem]"} ${dragging ? "border-sky-500" : "border-cockpit-border"}`}>
+      className={`flex min-w-0 flex-col rounded-lg border bg-cockpit-card p-3 ${compact ? "min-h-[11rem]" : "min-h-[15rem]"} ${dropActive ? "border-sky-800" : "border-cockpit-border"}`}>
       <header className="mb-2.5 flex items-center justify-between gap-2">
-        <h2 className="cockpit-label">{CAPTURE_EYE_LABELS[side]}</h2>
-        {slot.status === "ready" && <span className="text-[10px] text-emerald-400">VALIDADA</span>}
+        <h3 className="flex items-center gap-2.5 text-xs font-medium text-cockpit-text">
+          <span className="rounded border border-sky-900/75 bg-sky-950/35 px-1.5 py-0.5 font-mono text-[11px] text-sky-200">{side}</span>
+          {side === "OD" ? "Ojo derecho" : "Ojo izquierdo"}
+        </h3>
+        {slot.status === "ready" && <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300"><Check size={13} aria-hidden="true" /> Validada</span>}
       </header>
       <input ref={input} className="sr-only" tabIndex={-1} type="file"
         aria-label={`Archivo ${side}`} accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={disabled}
@@ -98,20 +117,24 @@ export function CaptureEyeDropzone({
           event.target.value = "";
           if (file) void choose(file);
         }} />
-      <div className="relative grid flex-1 place-items-center overflow-hidden rounded border border-cockpit-border bg-[#08080A]">
+      <div className={`${styles.viewport} relative grid min-h-[10rem] flex-1 place-items-center overflow-hidden rounded-md border border-cockpit-border`}
+        data-dragging={dropActive} data-preview={slot.status === "ready"}>
+        {(slot.status !== "ready" || dropActive) && <span aria-hidden="true" className={`${styles.frame} z-10`} />}
         {slot.status === "ready" ? (
           <img className="absolute inset-0 h-full w-full object-contain p-2" src={slot.asset.previewUrl} alt={`Retinografía ${side}`} />
         ) : (
           <div className="grid justify-items-center gap-3 px-3 py-6 text-center">
-            <ImagePlus className="h-6 w-6 text-cockpit-text-muted" aria-hidden="true" />
+            <span className="grid size-10 place-items-center rounded-lg border border-sky-900/60 bg-sky-950/35 text-sky-200" aria-hidden="true">
+              {dropActive ? <ArrowDownToLine size={20} /> : <ImagePlus size={20} />}
+            </span>
             {slot.status === "invalid" ? (
               <p role="alert" className="text-xs text-rose-300">{slot.message}</p>
             ) : (
               <p className="text-xs text-cockpit-text-muted" role="status">
-                {slot.status === "validating" ? "Validando imagen…" : "Arrastra aquí la retinografía"}
+                {slot.status === "validating" ? "Validando imagen…" : dropActive ? "Suelta la retinografía aquí" : "Arrastra aquí la retinografía"}
               </p>
             )}
-            <button type="button" className="cockpit-button" disabled={disabled} onClick={() => input.current?.click()}>Elegir archivo</button>
+            <button type="button" className="cockpit-button cockpit-primary" disabled={disabled} onClick={() => input.current?.click()}>Elegir archivo</button>
           </div>
         )}
       </div>
@@ -138,10 +161,10 @@ export function CaptureEyeDropzone({
 
 export function CaptureLoadPanel({ eyeSlots, onChange }: CaptureLoadPanelProps) {
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+    <section className="flex min-w-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="cockpit-label">Carga de retinografías</h2>
-        <p className="text-xs text-cockpit-text-muted">Uno o ambos ojos · JPEG/PNG · 512 px por lado · hasta 20 MB</p>
+        <h2 className="text-sm font-semibold">Carga de retinografías</h2>
+        <p className="text-xs text-cockpit-text-muted">Uno o ambos ojos · JPEG o PNG · mínimo 512 px por lado · hasta 20 MB</p>
       </div>
       <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
         {CAPTURE_EYE_ORDER.map((side) => (

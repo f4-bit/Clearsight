@@ -68,6 +68,7 @@
 .EXAMPLE
     pwsh ./scripts/e2e_azure_pipeline.ps1 `
         -BackendBaseUrl https://clearsight-run123-backend.example.azurecontainerapps.io `
+        -AuthOrigin https://clearsight-run123-frontend.example.azurecontainerapps.io `
         -AdminEmail admin@example.test `
         -AdminPassword (Read-Host -AsSecureString) `
         -DoctorEmail doctor@example.test `

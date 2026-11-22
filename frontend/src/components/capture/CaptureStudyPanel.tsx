@@ -1,18 +1,40 @@
-import { CLINICAL_FIELDS, formatClinicalValue } from "@/types/capture";
+"use client";
+
+import { ClipboardList, X } from "lucide-react";
+import { useRef } from "react";
+import { ClinicalValues } from "@/components/ClinicalValues";
+import { CLINICAL_FIELDS } from "@/types/capture";
 import type { ClinicalFeatures } from "@/types/clinical";
+import styles from "./CaptureProcessingPanel.module.css";
 
 export function CaptureStudyPanel({ clinical }: { clinical: ClinicalFeatures }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+
   return (
-    <aside className="w-full shrink-0 border-t border-cockpit-border bg-cockpit-surface p-5 lg:w-[400px] lg:border-l lg:border-t-0 xl:w-[440px]">
-      <h2 className="cockpit-label mb-3">Datos enviados a inferencia</h2>
-      <dl className="rounded-md border border-cockpit-border bg-cockpit-card px-3.5 divide-y divide-cockpit-border">
-        {CLINICAL_FIELDS.map(({ key, label, unit }) => (
-          <div key={key} className="flex min-h-9 items-center justify-between gap-3 py-2 text-xs">
-            <dt className="text-cockpit-text-muted">{label}</dt>
-            <dd className="text-right font-mono">{formatClinicalValue(key, clinical[key], unit)}</dd>
+    <>
+      <button type="button" className={styles.variablesButton}
+        aria-haspopup="dialog" onClick={() => dialog.current?.showModal()}>
+        <ClipboardList size={17} aria-hidden="true" /> Variables clínicas registradas
+      </button>
+      <dialog ref={dialog} className={styles.variablesDialog} aria-labelledby="study-variables-title"
+        onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
+        <div className={styles.dialogBody}>
+          <header className={styles.dialogHeader}>
+            <div>
+              <h2 id="study-variables-title">Variables clínicas registradas</h2>
+              <p className="font-mono">{CLINICAL_FIELDS.length} variables</p>
+            </div>
+            <form method="dialog">
+              <button type="submit" className={styles.dialogClose} aria-label="Cerrar variables clínicas" autoFocus>
+                <X size={18} aria-hidden="true" />
+              </button>
+            </form>
+          </header>
+          <div className={styles.dialogValues}>
+            <ClinicalValues values={clinical} />
           </div>
-        ))}
-      </dl>
-    </aside>
+        </div>
+      </dialog>
+    </>
   );
 }

@@ -23,23 +23,31 @@ export type CaptureEyeSlot =
 export type CaptureEyeSlots = Record<EyeSide, CaptureEyeSlot>;
 export type CaptureClinicalValues = Record<keyof ClinicalFeatures, string>;
 
-export const CLINICAL_FIELDS: ReadonlyArray<{
+type ClinicalField = {
   key: keyof ClinicalFeatures;
   label: string;
   unit?: string;
-}> = [
-  { key: "Age", label: "Edad", unit: "años" },
-  { key: "Gender", label: "Sexo" },
-  { key: "dioptre_1", label: "Esfera refractiva", unit: "D" },
-  { key: "dioptre_2", label: "Cilindro refractivo", unit: "D" },
-  { key: "astigmatism", label: "Eje astigmático", unit: "°" },
-  { key: "Phakic/Pseudophakic", label: "Cristalino (código del modelo)" },
-  { key: "Pneumatic", label: "Tonómetro neumático", unit: "mmHg" },
-  { key: "Perkins", label: "Tonómetro Perkins", unit: "mmHg" },
-  { key: "Pachymetry", label: "Paquimetría", unit: "µm" },
-  { key: "Axial_Length", label: "Longitud axial", unit: "mm" },
-  { key: "VF_DM", label: "Desviación media del campo visual", unit: "dB" },
+};
+
+export const CLINICAL_FIELD_GROUPS: ReadonlyArray<{ label: string; fields: readonly ClinicalField[] }> = [
+  { label: "Perfil y refracción", fields: [
+    { key: "Age", label: "Edad", unit: "años" },
+    { key: "Gender", label: "Sexo" },
+    { key: "dioptre_1", label: "Esfera refractiva", unit: "D" },
+    { key: "dioptre_2", label: "Cilindro refractivo", unit: "D" },
+    { key: "astigmatism", label: "Eje astigmático", unit: "°" },
+    { key: "Phakic/Pseudophakic", label: "Cristalino (código del modelo)" },
+  ] },
+  { label: "Mediciones oculares", fields: [
+    { key: "Pneumatic", label: "Tonómetro neumático", unit: "mmHg" },
+    { key: "Perkins", label: "Tonómetro Perkins", unit: "mmHg" },
+    { key: "Pachymetry", label: "Paquimetría", unit: "µm" },
+    { key: "Axial_Length", label: "Longitud axial", unit: "mm" },
+    { key: "VF_DM", label: "Desviación media del campo visual", unit: "dB" },
+  ] },
 ];
+
+export const CLINICAL_FIELDS = CLINICAL_FIELD_GROUPS.flatMap(({ fields }) => fields);
 
 export function createEmptyClinicalValues(): CaptureClinicalValues {
   return Object.fromEntries(CLINICAL_FIELDS.map(({ key }) => [key, ""])) as CaptureClinicalValues;
@@ -68,5 +76,7 @@ export function formatClinicalValue(key: keyof ClinicalFeatures, value: unknown,
 }
 
 export function formatFileSize(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }

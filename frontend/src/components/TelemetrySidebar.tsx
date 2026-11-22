@@ -1,64 +1,90 @@
 "use client";
 
+import { Check } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { ClinicalValues } from "@/components/ClinicalValues";
 import { InferenceReport, InferenceSummary } from "@/components/InferenceDetails";
 import { Reanalysis } from "@/components/Reanalysis";
 import { api, errorMessage, jsonBody } from "@/lib/api";
 import type { Consultation, EyeExecution } from "@/types/api";
-import { CAPTURE_EYE_ORDER, CLINICAL_FIELDS, formatClinicalValue } from "@/types/capture";
+import { CAPTURE_EYE_ORDER } from "@/types/capture";
 import { CLASS_LABELS, DIAGNOSTIC_CLASSES, type DiagnosticClass, type EyeSide, type FeedbackRead } from "@/types/clinical";
+
+const SECTIONS = [
+  { id: "result", label: "Resultados" },
+  { id: "variables", label: "Variables clínicas" },
+  { id: "report", label: "Informe" },
+  { id: "feedback", label: "Dictamen" },
+] as const;
 
 export function TelemetrySidebar({ consultation, executions }: {
   consultation: Consultation;
   executions: EyeExecution[];
 }) {
   const [selectedSide, setSelectedSide] = useState<EyeSide>("OD");
+  const [section, setSection] = useState<(typeof SECTIONS)[number]["id"]>("result");
   const [savedFeedback, setSavedFeedback] = useState<Record<string, FeedbackRead>>({});
   const eye = executions.find(({ side }) => side === selectedSide) ?? executions[0];
   return (
-    <aside className="flex w-full shrink-0 flex-col gap-4 overflow-auto border-t border-cockpit-border bg-cockpit-surface p-4 lg:w-[365px] lg:border-l lg:border-t-0 xl:w-[410px]">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="cockpit-label">Resultados por ojo</h2>
-        <div className="flex gap-1.5">
-          {CAPTURE_EYE_ORDER.map((side) => (
-            <button key={side} type="button"
-              className={`cockpit-button py-1 ${side === eye?.side ? "cockpit-primary" : ""}`}
-              disabled={!executions.some((item) => item.side === side)}
-              aria-pressed={side === eye?.side}
-              onClick={() => setSelectedSide(side)}>{side}</button>
-          ))}
+    <aside aria-label="Panel del caso" className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-t border-cockpit-border bg-cockpit-surface lg:w-[clamp(23rem,27.5vw,29rem)] lg:border-l lg:border-t-0">
+      <div className="grid shrink-0 gap-2.5 px-4 py-3">
+        <h2 className="text-base font-semibold text-cockpit-text">Revisión del caso</h2>
+        <div role="group" aria-label="Ojo de la revisión" className="grid grid-cols-2 gap-2">
+          {CAPTURE_EYE_ORDER.map((side) => {
+            const available = executions.some((item) => item.side === side);
+            const selected = side === eye?.side;
+            return (
+              <button key={side} type="button"
+                className="cockpit-button min-h-12 min-w-0 justify-start gap-2 rounded-md px-2 py-1.5 text-left enabled:hover:border-sky-700 aria-pressed:border-sky-500/70 aria-pressed:bg-sky-950/60 disabled:cursor-not-allowed disabled:bg-cockpit-bg disabled:text-cockpit-text-muted disabled:opacity-100"
+                disabled={!available}
+                aria-pressed={selected}
+                onClick={() => setSelectedSide(side)}>
+                <span className="rounded border border-current px-1 py-0.5 font-mono text-[10px]">{side}</span>
+                <span className="min-w-0 leading-tight">
+                  <span className="block">{side === "OD" ? "Ojo derecho" : "Ojo izquierdo"}</span>
+                  {!available && <span className="mt-0.5 block text-[10px] text-cockpit-text-muted">Sin ejecución</span>}
+                </span>
+                {selected && <Check size={14} className="ml-auto shrink-0 text-sky-300" aria-hidden="true" />}
+              </button>
+            );
+          })}
         </div>
       </div>
-      {eye ? (
-        <>
-          <InferenceSummary result={eye.result} />
-          <InferenceReport key={`report-${eye.result.id}`} id={eye.result.id} delivery={eye.result.delivery} />
-          {eye.result.status === "COMPLETED" && eye.result.predictedClass !== null && (
+      <div role="group" aria-label="Secciones del caso" className="grid shrink-0 grid-cols-[1fr_1.55fr_1fr_1fr] gap-1 border-y border-cockpit-border bg-cockpit-bg px-3">
+        {SECTIONS.map(({ id, label }) => (
+          <button key={id} type="button" aria-controls={`case-${id}`} aria-pressed={section === id}
+            onClick={() => setSection(id)}
+            className="min-h-10 border-b-2 border-transparent px-1 text-xs font-medium text-cockpit-text-muted transition-colors hover:bg-cockpit-card hover:text-cockpit-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 aria-pressed:border-sky-500 aria-pressed:text-sky-200">
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 p-4 lg:overflow-y-auto">
+        <div id="case-result" hidden={section !== "result"}>
+          {eye ? <InferenceSummary result={eye.result} /> :
+            <p className="text-sm text-cockpit-text-muted">Esta consulta aún no tiene ejecuciones requeridas.</p>}
+          {executions.filter(({ result }) => result.delivery.reviewRequired).map((review) => (
+            <div className="mt-3" key={review.result.id} hidden={eye?.result.id !== review.result.id}>
+              <Reanalysis consultation={consultation} eye={review} />
+            </div>
+          ))}
+        </div>
+        <div id="case-variables" hidden={section !== "variables"}>
+          <h3 className="mb-3 text-sm font-semibold">Variables clínicas registradas</h3>
+          <ClinicalValues values={consultation.clinicalData} compact />
+        </div>
+        <div id="case-report" hidden={section !== "report"}>
+          {eye ? <InferenceReport key={eye.result.id} id={eye.result.id} delivery={eye.result.delivery} /> :
+            <p className="text-sm text-cockpit-text-muted">El informe estará disponible tras el análisis.</p>}
+        </div>
+        <div id="case-feedback" hidden={section !== "feedback"}>
+          {eye?.result.status === "COMPLETED" && eye.result.predictedClass !== null ? (
             <FeedbackForm key={eye.result.id} consultationId={consultation.id} inferenceId={eye.result.id}
               saved={savedFeedback[eye.result.id]}
               onSaved={(record) => setSavedFeedback((previous) => ({ ...previous, [eye.result.id]: record }))} />
-          )}
-        </>
-      ) : <p className="text-xs text-cockpit-text-muted">Esta consulta aún no tiene ejecuciones requeridas.</p>}
-      {executions.filter(({ result }) => result.delivery.reviewRequired).map((review) => (
-        <div key={review.result.id} hidden={eye?.result.id !== review.result.id}>
-          <Reanalysis consultation={consultation} eye={review} />
+          ) : <p className="text-sm text-cockpit-text-muted">El dictamen se habilita cuando el ojo seleccionado tiene un resultado.</p>}
         </div>
-      ))}
-      <details className="rounded-md border border-cockpit-border bg-cockpit-card p-3.5">
-        <summary className="cockpit-label cursor-pointer">Variables clínicas registradas</summary>
-        <dl className="mt-2 divide-y divide-cockpit-border">
-          {CLINICAL_FIELDS.map(({ key, label, unit }) => (
-            <div key={key} className="flex items-center justify-between gap-2 py-1.5 text-xs">
-              <dt className="text-cockpit-text-muted">{label}</dt>
-              <dd className="font-mono">
-                {formatClinicalValue(key, consultation.clinicalData[key] ??
-                  (key === "Phakic/Pseudophakic" ? consultation.clinicalData.Phakic_Pseudophakic : undefined), unit)}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </details>
+      </div>
     </aside>
   );
 }

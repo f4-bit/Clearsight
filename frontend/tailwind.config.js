@@ -19,8 +19,8 @@ module.exports = {
           border: "#1C1C22",
           "border-subtle": "#222228",
           text: "#EDEDEF",
-          "text-muted": "#8E8E93",
-          "text-dim": "#52525B",
+          "text-muted": "#A1A1A9",
+          "text-dim": "#71717A",
         },
         clinical: {
           gold: "#BFA054",
