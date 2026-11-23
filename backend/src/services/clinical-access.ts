@@ -253,7 +253,7 @@ export function createClinicalAccessService(
     return {
       inference,
       grant,
-      redactGradcamPath: !grant.readArtifacts,
+      redactGradcamPath: !grant.readArtifacts && !await findActiveGrant(subject, inferenceId, "readArtifacts"),
     };
   }
 

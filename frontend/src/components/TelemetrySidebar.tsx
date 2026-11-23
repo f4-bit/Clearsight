@@ -1,6 +1,7 @@
 "use client";
 
 import { Check } from "lucide-react";
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { ClinicalValues } from "@/components/ClinicalValues";
 import { InferenceReport, InferenceSummary } from "@/components/InferenceDetails";
@@ -17,11 +18,12 @@ const SECTIONS = [
   { id: "feedback", label: "Dictamen" },
 ] as const;
 
-export function TelemetrySidebar({ consultation, executions }: {
+export function TelemetrySidebar({ consultation, executions, selectedId }: {
   consultation: Consultation;
   executions: EyeExecution[];
+  selectedId?: string;
 }) {
-  const [selectedSide, setSelectedSide] = useState<EyeSide>("OD");
+  const [selectedSide, setSelectedSide] = useState<EyeSide>(() => executions.find(({ result }) => result.id === selectedId)?.side ?? "OD");
   const [section, setSection] = useState<(typeof SECTIONS)[number]["id"]>("result");
   const [savedFeedback, setSavedFeedback] = useState<Record<string, FeedbackRead>>({});
   const eye = executions.find(({ side }) => side === selectedSide) ?? executions[0];
@@ -61,6 +63,13 @@ export function TelemetrySidebar({ consultation, executions }: {
       </div>
       <div className="min-h-0 p-4 lg:overflow-y-auto">
         <div id="case-result" hidden={section !== "result"}>
+          {Boolean(consultation.reanalyses?.length) && <nav aria-label="Reanálisis del caso" className="mb-3 grid gap-2 text-xs">
+            <Link className="text-sky-300" href={`/studies/${consultation.id}`}>Estudio original</Link>
+            {consultation.reanalyses?.map((item) => <Link key={item.id} aria-current={item.id === selectedId ? "page" : undefined}
+              className="text-sky-300" href={`/studies/${consultation.id}?execution=${item.id}`}>
+              Reanálisis {consultation.images.find((image) => image.id === item.imageId)?.eyeSide} · {new Date(item.createdAt).toLocaleString("es-CO")}
+            </Link>)}
+          </nav>}
           {eye ? <InferenceSummary result={eye.result} /> :
             <p className="text-sm text-cockpit-text-muted">Esta consulta aún no tiene ejecuciones requeridas.</p>}
           {executions.filter(({ result }) => result.delivery.reviewRequired).map((review) => (
@@ -78,9 +87,9 @@ export function TelemetrySidebar({ consultation, executions }: {
             <p className="text-sm text-cockpit-text-muted">El informe estará disponible tras el análisis.</p>}
         </div>
         <div id="case-feedback" hidden={section !== "feedback"}>
-          {eye?.result.status === "COMPLETED" && eye.result.predictedClass !== null ? (
+          {eye?.result.status === "COMPLETED" && !eye.result.delivery.reviewRequired && eye.result.predictedClass !== null ? (
             <FeedbackForm key={eye.result.id} consultationId={consultation.id} inferenceId={eye.result.id}
-              saved={savedFeedback[eye.result.id]}
+              saved={savedFeedback[eye.result.id] ?? consultation.feedback?.find((item) => item.inference_id === eye.result.id)}
               onSaved={(record) => setSavedFeedback((previous) => ({ ...previous, [eye.result.id]: record }))} />
           ) : <p className="text-sm text-cockpit-text-muted">El dictamen se habilita cuando el ojo seleccionado tiene un resultado.</p>}
         </div>

@@ -140,7 +140,13 @@ services:
       context: .
       dockerfile: docker/backend.Dockerfile
     restart: unless-stopped
-    environment: *backend-environment
+    environment:
+      <<: *backend-environment
+      RESET_SMTP_HOST: ${RESET_SMTP_HOST:-}
+      RESET_SMTP_FROM: ${RESET_SMTP_FROM:-}
+      RESET_SMTP_PORT: ${RESET_SMTP_PORT:-587}
+      RESET_SMTP_USER: ${RESET_SMTP_USER:-}
+      RESET_SMTP_PASSWORD: ${RESET_SMTP_PASSWORD:-}
     ports:
       - "8080:8000"
     depends_on:

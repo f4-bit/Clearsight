@@ -1,7 +1,8 @@
 "use client";
 
-import { Scan, ScanLine } from "lucide-react";
+import { Activity, Scan, ScanLine } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { GradCam } from "@/components/GradCam";
 import { errorMessage } from "@/lib/api";
 import { evidenceUrl } from "@/lib/studies";
 import type { ArtifactStatus, EvidenceType } from "@/types/api";
@@ -17,8 +18,8 @@ type Evidence =
   | { state: "ready"; url: string }
   | { state: "error"; message: string };
 
-export function EvidenceViewer({ id, status }: { id: string; status?: ArtifactStatus }) {
-  const [selection, setSelection] = useState<EvidenceType>("overlay");
+export function EvidenceViewer({ id, status, gradcam }: { id: string; status?: ArtifactStatus; gradcam: boolean }) {
+  const [selection, setSelection] = useState<EvidenceType | "gradcam">("overlay");
   const [images, setImages] = useState<Partial<Record<EvidenceType, Evidence>>>({});
   const requests = useRef<Partial<Record<EvidenceType, AbortController>>>({});
 
@@ -65,7 +66,8 @@ export function EvidenceViewer({ id, status }: { id: string; status?: ArtifactSt
     });
   }
 
-  const active = images[selection];
+  const showingMap = gradcam && selection === "gradcam";
+  const active = selection === "gradcam" ? undefined : images[selection];
   const error = active?.state === "error" ? active.message : null;
 
   return (
@@ -86,6 +88,10 @@ export function EvidenceViewer({ id, status }: { id: string; status?: ArtifactSt
             </button>
           );
         })}
+        {gradcam && <button className={styles.mode} type="button" aria-pressed={showingMap} onClick={() => setSelection("gradcam")}>
+          <span className={styles.thumbnail} aria-hidden="true"><Activity size={19} /></span>
+          Grad-CAM
+        </button>}
       </div>
       <figure className={styles.viewer} aria-busy={active?.state === "loading"}>
         {modes.map(({ type, label }) => {
@@ -98,7 +104,8 @@ export function EvidenceViewer({ id, status }: { id: string; status?: ArtifactSt
               hidden={selection !== type} onError={() => failedImage(type, image.url)} />
           );
         })}
-        {active?.state !== "ready" && (
+        {showingMap && <GradCam key={id} id={id} />}
+        {!showingMap && active?.state !== "ready" && (
           <p className={`${styles.empty} ${styles.evidenceMessage}`} role={error ? "alert" : "status"}>
             <ScanLine size={22} aria-hidden="true" />
             {error || (active?.state === "loading" ? "Cargando evidencia…" : "Selecciona contornos o máscara para ver la evidencia.")}

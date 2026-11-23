@@ -182,7 +182,7 @@ def create_app(initialize_runtime: bool = True) -> FastAPI:
 
     # Keep compatibility with existing clients that send valid JSON without a
     # Content-Type header, while still rejecting multipart bodies as 422.
-    inference_router = APIRouter(strict_content_type=False)
+    inference_router = APIRouter()
 
     @inference_router.post(
         "/v1/inferences",

@@ -78,7 +78,7 @@ export function Reanalysis({ consultation, eye }: {
             Faltan variables clínicas en esta consulta. Inicia una captura para registrarlas.
           </p>
         ) : executionId ? (
-          <Link href={`/executions/${executionId}`} className="cockpit-button cockpit-primary justify-self-start">
+          <Link href={`/studies/${consultation.id}?execution=${executionId}`} className="cockpit-button cockpit-primary justify-self-start">
             Abrir nueva ejecución
           </Link>
         ) : (

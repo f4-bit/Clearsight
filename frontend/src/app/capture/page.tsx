@@ -198,6 +198,7 @@ function PatientPicker({ value, onChange, externalCode, onCodeChange }: {
           </option>)}
         </select>
       </label>
+      {patients.some((patient) => patient.id === value) && <Link href={`/patients/${value}`} target="_blank" rel="noreferrer" className="cockpit-button">Ver ficha del paciente</Link>}
       {value === "new" && <label className="grid flex-1 min-w-[12rem] gap-1.5">
         <span className="cockpit-label">Código pseudónimo (opcional)</span>
         <input className="cockpit-input" maxLength={64} value={externalCode}

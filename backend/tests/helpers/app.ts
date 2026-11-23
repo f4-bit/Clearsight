@@ -34,11 +34,12 @@ export async function buildTestApp(
     storage?: ArtifactStoragePort;
     artifactReadRepository?: ArtifactReadRepository;
     logger?: boolean;
+    publicOrigin?: string;
     logDestination?: Writable;
   } = {},
 ): Promise<FastifyInstance> {
   const app = await buildApp({
-    env: TEST_ENV,
+    env: { ...TEST_ENV, AUTH_PUBLIC_ORIGIN: options.publicOrigin ?? TEST_AUTH_ORIGIN },
     prisma,
     now: options.now,
     // Default fake: existing ACL/RBAC tests must never reach a real ML service.

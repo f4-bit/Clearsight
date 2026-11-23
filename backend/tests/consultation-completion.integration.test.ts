@@ -823,6 +823,7 @@ describe("consultation completion and freeze (real PostgreSQL)", () => {
       "createdAt",
       "delivery",
       "gradcamPath",
+      "hasClahe",
       "id",
       "imageId",
       "modelVersion",

@@ -135,6 +135,7 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
             cdr: nullableCdr,
             cdrVertical: nullableCdr,
             gradcamPath: z.string().nullable(),
+            hasClahe: z.boolean(),
             modelVersion: z.string().nullable(),
             createdAt: z.date().or(z.iso.datetime()),
             status: z.string(),
@@ -185,6 +186,7 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
             }).pollingStop
           : computeConsultationStates(completion.input).pollingStop;
       const status = inference.status ?? "QUEUED";
+      const suppressPrediction = delivery.reviewRequired || delivery.failed || inference.quality?.review_required === true;
       const publishMeasures =
         status === "COMPLETED" && inference.quality?.review_required !== true;
       const retryAfter = computeRetryAfterSeconds(status, pollingStop);
@@ -195,12 +197,13 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
       return reply.send({
         id: inference.id,
         imageId: inference.imageId,
-        predictedClass: inference.predictedClass,
-        confidence: inference.confidence,
-        probabilities: inference.probabilities as Record<string, unknown>,
+        predictedClass: suppressPrediction ? null : inference.predictedClass,
+        confidence: suppressPrediction ? null : inference.confidence,
+        probabilities: suppressPrediction ? {} : inference.probabilities as Record<string, unknown>,
         cdr: publishMeasures ? cdrForRead(inference.cdr) : null,
         cdrVertical: publishMeasures ? cdrForRead(inference.cdrVertical) : null,
-        gradcamPath: redactGradcamPath ? null : inference.gradcamPath,
+        gradcamPath: redactGradcamPath || suppressPrediction ? null : inference.gradcamPath,
+        hasClahe: !redactGradcamPath && Boolean(artifactRef(inference.artifacts, "clahe")),
         modelVersion: inference.modelVersion,
         createdAt: inference.createdAt,
         status,
@@ -210,6 +213,31 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
       });
     }
   );
+
+  function artifactRef(artifacts: unknown, key: string): string | undefined {
+    const record = z.record(z.string(), z.unknown()).safeParse(artifacts);
+    const value = record.success ? record.data[key] : undefined;
+    return typeof value === "string" && value ? value : undefined;
+  }
+
+  function signOverlay(reference: string) {
+    const location = resolveLocation(reference, "gradcam");
+    return storage.getDownloadUrl(location.bucketOrContainer, location.key, 3600);
+  }
+
+  typedApp.get("/:id/clahe", {
+    preHandler: [authenticate],
+    schema: {
+      tags: ["Inferences"],
+      params: z.object({ id: z.string().uuid() }),
+      response: { 200: z.object({ url: z.string().url(), expiresIn: z.number() }), 404: errorResponseSchema },
+    },
+  }, async (request) => {
+    const { inference } = await access.getInferenceForRead(subjectFromRequest(request), request.params.id, "readArtifacts");
+    const ref = artifactRef(inference.artifacts, "clahe");
+    if (!ref) throw notFound("CLAHE visualization");
+    return { url: await signOverlay(ref), expiresIn: 3600 };
+  });
 
   // GET /inferences/:id/gradcam - Presigned URL for Grad-CAM overlay
   typedApp.get(
@@ -223,6 +251,7 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         response: {
           200: z.object({
             url: z.string().url(),
+            baseUrl: z.string().url().optional(),
             expiresIn: z.number(),
           }),
           404: errorResponseSchema,
@@ -239,19 +268,19 @@ export const inferenceRoutes: FastifyPluginAsync<InferenceRoutesOptions> = async
         "readArtifacts",
       );
 
-      if (!inference.gradcamPath) {
+      if (!inference.gradcamPath || inference.status === "REVIEW_REQUIRED" || inference.status === "FAILED" ||
+          inference.quality?.review_required === true) {
         throw notFound("Grad-CAM visualization");
       }
 
-      const location = resolveLocation(inference.gradcamPath, "gradcam");
-      const url = await storage.getDownloadUrl(
-        location.bucketOrContainer,
-        location.key,
-        3600,
-      );
+      const base = artifactRef(inference.artifacts, "gradcam_base");
+      const [url, baseUrl] = await Promise.all([
+        signOverlay(inference.gradcamPath), base ? signOverlay(base) : undefined,
+      ]);
 
       return reply.send({
         url,
+        baseUrl,
         expiresIn: 3600,
       });
     }

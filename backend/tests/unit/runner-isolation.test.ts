@@ -9,6 +9,7 @@ import { assertNoExternalDatabaseUrl, assertOwnershipRunId } from "../helpers/ow
 
 const UNIT_INCLUDE = ["tests/schemas.test.ts", "tests/sanitizer.test.ts", "tests/unit/**/*.test.ts"];
 const INTEGRATION_INCLUDE = [
+  "tests/smtp-delivery.integration.test.ts",
   "tests/repositories.test.ts",
   "tests/rbac.test.ts",
   "tests/migrations.test.ts",

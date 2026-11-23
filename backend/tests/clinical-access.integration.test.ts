@@ -493,6 +493,37 @@ describe("clinical ownership and grants", () => {
     );
   });
 
+  it("keeps study history within the patient and doctor scopes", async () => {
+    const study = await makeConsultationWithImage(doctorA.id);
+    await prisma.consultation.create({ data: { patientId: study.patient.id, doctorId: doctorB.id } });
+    const url = `/patients/${study.patient.id}/consultations`;
+    const owner = await app.inject({ method: "GET", url, headers: headersA });
+    expect(owner.statusCode).toBe(200);
+    expect(owner.json()).toEqual([{ id: study.consultation.id, createdAt: expect.any(String) }]);
+    expect((await app.inject({ method: "GET", url: url + "?offset=1", headers: headersA })).json()).toEqual([]);
+    expect((await app.inject({ method: "GET", url, headers: headersB })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url, headers: headersResearcher })).statusCode).toBe(403);
+  });
+
+  it("signs paired classifier images for active artifact grants and suppresses reviewed maps", async () => {
+    const study = await makeConsultationWithImage(doctorA.id);
+    const url = `/inferences/${study.inference.id}`;
+    const get = (suffix: string) => app.inject({ method: "GET", url: url + suffix, headers: headersResearcher });
+    await prisma.inference.update({ where: { id: study.inference.id }, data: {
+      status: "COMPLETED", gradcamPath: "map.png", artifacts: { gradcam_base: "base.png", clahe: "clahe.png" },
+    } });
+    await grant(researcher, study, { readResult: true });
+    expect((await get("/clahe")).statusCode).toBe(404);
+    expect((await get("")).json().hasClahe).toBe(false);
+    await grant(researcher, study, { readArtifacts: true });
+    expect((await get("")).json()).toMatchObject({ hasClahe: true, gradcamPath: "map.png" });
+    expect((await get("/gradcam")).json()).toMatchObject({ baseUrl: expect.any(String), url: expect.any(String) });
+    expect(StorageService.getDownloadUrl).toHaveBeenCalledWith("gradcam-overlays", "base.png", 3600);
+    expect((await get("/clahe")).statusCode).toBe(200);
+    await prisma.inference.update({ where: { id: study.inference.id }, data: { status: "REVIEW_REQUIRED" } });
+    expect((await get("/gradcam")).statusCode).toBe(404);
+  });
+
   it("parses a provider URI before gradcam signing and rejects corrupt refs safely", async () => {
     const study = await makeConsultationWithImage(doctorA.id);
     const get = (headers: { authorization: string }) =>

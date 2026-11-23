@@ -127,6 +127,7 @@ function Workspace({ user }: { user: SessionUser }) {
             </span>
           </Link>
           {lookup}
+          <Link href="/patients" className="text-sm text-sky-300">Pacientes e historial de estudios</Link>
         </div>
       </main>
     );

@@ -2,13 +2,14 @@
 
 import { ImageOff, Link2, Minus, Plus, RotateCcw, Unlink2 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent } from "react";
-import { errorMessage } from "@/lib/api";
+import { GradCam } from "@/components/GradCam";
+import { api, errorMessage } from "@/lib/api";
 import { evidenceUrl } from "@/lib/studies";
 import type { EvidenceType, EyeExecution } from "@/types/api";
 import { CAPTURE_EYE_LABELS } from "@/types/capture";
 import { CLASS_COLORS, CLASS_LABELS, type EyeSide } from "@/types/clinical";
 
-type FilterMode = "rgb" | "red_free" | "contrast";
+type FilterMode = "rgb" | "red_free" | "contrast" | "clahe";
 interface Transform { scale: number; x: number; y: number }
 const INITIAL_VIEW: Transform = { scale: 1, x: 0, y: 0 };
 
@@ -60,7 +61,7 @@ function RetinalViewport({ eye, transform, adjust }: {
   adjust: (view: Transform) => void;
 }) {
   const { side, result } = eye;
-  const [type, setType] = useState<EvidenceType>("overlay");
+  const [type, setType] = useState<EvidenceType | "gradcam">("overlay");
   const [filter, setFilter] = useState<FilterMode>("rgb");
   const [source, setSource] = useState<{ key: string; url: string } | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -70,15 +71,18 @@ function RetinalViewport({ eye, transform, adjust }: {
   const id = result.id;
   const status = result.delivery.evidenceStatus;
   const resultStatus = result.delivery.resultStatus;
-  const sourceKey = `${id}-${type}-${attempt}-${status}`;
+  const clahe = type === "overlay" && filter === "clahe";
+  const sourceKey = `${id}-${type}-${clahe}-${attempt}-${status}`;
   const url = source?.key === sourceKey ? source.url : null;
 
   useEffect(() => {
-    if (resultStatus === "PENDING") return;
+    if (resultStatus === "PENDING" || type === "gradcam") return;
     const controller = new AbortController();
     setLoading(true);
     setLoadError("");
-    evidenceUrl(id, type, controller.signal).then(
+    const signed = clahe ? api<{ url: string }>(`/inferences/${id}/clahe`, { signal: controller.signal }).then((item) => item.url)
+      : evidenceUrl(id, type, controller.signal);
+    signed.then(
       (signed) => {
         if (controller.signal.aborted) return;
         setSource(signed ? { key: sourceKey, url: signed } : null);
@@ -86,7 +90,7 @@ function RetinalViewport({ eye, transform, adjust }: {
       (error: unknown) => { if (!controller.signal.aborted) setLoadError(errorMessage(error)); },
     ).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [id, resultStatus, type, sourceKey]);
+  }, [id, resultStatus, type, sourceKey, clahe]);
 
   function zoom(delta: number) {
     const scale = Math.max(1, Math.min(6, transform.scale + delta));
@@ -125,12 +129,15 @@ function RetinalViewport({ eye, transform, adjust }: {
           aria-pressed={type === "overlay"}>Contornos</button>
         <button type="button" className="cockpit-button py-1" onClick={() => setType("mask")}
           aria-pressed={type === "mask"}>Máscara</button>
+        {diagnostic != null && result.gradcamPath && <button type="button" className="cockpit-button py-1"
+          onClick={() => setType("gradcam")} aria-pressed={type === "gradcam"}>Grad-CAM</button>}
         {type === "overlay" && (
           <select className="cockpit-input py-1 text-xs" aria-label={`Filtro ${side}`} value={filter}
             onChange={(event) => setFilter(event.target.value as FilterMode)}>
             <option value="rgb">RGB</option>
             <option value="red_free">Aneritro</option>
             <option value="contrast">Realce de contraste</option>
+            {result.hasClahe && <option value="clahe">CLAHE</option>}
           </select>
         )}
       </div>
@@ -144,7 +151,7 @@ function RetinalViewport({ eye, transform, adjust }: {
         onPointerCancel={() => { drag.current = null; }}
         onLostPointerCapture={() => { drag.current = null; }}
         onPointerMove={move}>
-        {url && !loadError ? (
+        {type === "gradcam" && diagnostic != null ? <GradCam id={id} /> : url && !loadError ? (
           <img src={url} referrerPolicy="no-referrer" draggable={false}
             alt={type === "overlay" ? `Recorte con contornos de disco y copa ${side}` : `Máscara de segmentación ${side}`}
             className="absolute inset-0 h-full w-full select-none object-contain p-2"
@@ -165,9 +172,9 @@ function RetinalViewport({ eye, transform, adjust }: {
       <footer className="mt-2 flex items-center justify-between gap-2">
         <span className="text-[10px] text-cockpit-text-muted">
           {result.delivery.reviewRequired ? "Revisión requerida"
-            : type === "overlay" ? "Recorte del disco óptico" : "Segmentación de disco y copa"}
+            : type === "gradcam" ? "Activación del clasificador" : type === "overlay" ? "Recorte del disco óptico" : "Segmentación de disco y copa"}
         </span>
-        <div className="flex items-center gap-1.5">
+        {type !== "gradcam" && <div className="flex items-center gap-1.5">
           <button type="button" className="cockpit-button p-1.5" aria-label={`Reducir zoom ${side}`}
             disabled={!url || transform.scale === 1} onClick={() => zoom(-0.25)}><Minus size={13} /></button>
           <span className="min-w-10 text-center font-mono text-[10px] text-cockpit-text-muted">{Math.round(transform.scale * 100)}%</span>
@@ -175,7 +182,7 @@ function RetinalViewport({ eye, transform, adjust }: {
             disabled={!url || transform.scale === 6} onClick={() => zoom(0.25)}><Plus size={13} /></button>
           <button type="button" className="cockpit-button p-1.5" aria-label={`Restablecer vista ${side}`}
             disabled={!url} onClick={() => adjust(INITIAL_VIEW)}><RotateCcw size={13} /></button>
-        </div>
+        </div>}
       </footer>
     </section>
   );

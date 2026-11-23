@@ -4,7 +4,7 @@
  * The default port is DISABLED and never sends anything. The memory sink is an
  * explicit test-only implementation that retains recipient + raw token locally
  * for assertions; it is never exposed by an HTTP endpoint and is not a global
- * singleton. No provider, SMTP client or mail dependency is introduced here.
+ * singleton. An explicitly configured SMTP relay handles real delivery.
  */
 
 export interface PasswordResetDeliveryMessage {
@@ -13,7 +13,7 @@ export interface PasswordResetDeliveryMessage {
   readonly expiresAt: Date;
 }
 
-export type PasswordResetDeliveryMode = "DISABLED" | "MEMORY";
+export type PasswordResetDeliveryMode = "DISABLED" | "MEMORY" | "SMTP";
 
 export interface PasswordResetDelivery {
   readonly mode: PasswordResetDeliveryMode;

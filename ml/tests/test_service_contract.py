@@ -5,15 +5,19 @@ import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 from uuid import uuid4
 
 import httpx
+import cv2
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 import ml.inference.pipeline as pipeline_module
 import ml.service.main as service_main
 from ml.config import Settings, get_settings
+from ml.inference.classification import ClassifierPrediction
 from ml.inference.pipeline import InferencePipeline
 from ml.inference.url_policy import SignedImageUrlError
 from ml.service.main import Runtime, create_app
@@ -120,6 +124,53 @@ def _install_mock_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> No
         return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(pipeline_module.httpx, "Client", factory)
+
+
+@pytest.mark.parametrize("scenario", ["complete", "review", "legacy", "store_failure"])
+def test_pipeline_publishes_only_available_evidence(monkeypatch, scenario):
+    seg = Mock()
+    classifier = Mock()
+    store = Mock()
+    uploaded = {}
+
+    def upload(bucket, key, data, content_type):
+        name = Path(key).stem
+        if scenario == "store_failure" and name == "gradcam":
+            raise RuntimeError("temporary store failure")
+        uploaded[name] = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+        return f"s3://test-evidence/{key}"
+
+    store.upload_bytes.side_effect = upload
+    mask = np.zeros((512, 512, 3), dtype=np.float32)
+    if scenario != "review":
+        cv2.circle(mask, (256, 256), 90, (0, 1, 0), -1)
+        cv2.circle(mask, (256, 256), 40, (0, 0, 1), -1)
+    seg.predict.return_value = mask
+    classes = dict(zip(MANIFEST["class_names"], [0.2, 0.7, 0.1]))
+    cams = np.zeros((3, 4, 4), dtype=np.float32)
+    cams[1, 2:, :2] = 1
+    classifier.predict.return_value = {
+        name: ClassifierPrediction(classes, "Non_Glaucoma", 0.7, None if scenario == "legacy" else cams)
+        for name in MANIFEST["ensemble"]
+    }
+    pipe = InferencePipeline(_settings(), seg, classifier, store, MANIFEST)
+    image = np.random.default_rng(71).integers(0, 256, (640, 640, 3), dtype=np.uint8)
+    monkeypatch.setattr(pipe, "_download_image", lambda url: cv2.imencode(".png", image)[1].tobytes())
+    result = pipe.run(InferenceRequest.model_validate(_body()))
+    assert {"mask", "overlay", "clahe"} <= result["artifacts"].keys()
+    assert uploaded["clahe"].shape == uploaded["overlay"].shape
+    if scenario == "review":
+        classifier.predict.assert_not_called()
+        assert result["label"] is None and result["status"] == "REVIEW_REQUIRED"
+    else:
+        assert result["label"] == "Non_Glaucoma" and result["status"] == "COMPLETED"
+    if scenario == "complete":
+        classifier_input = classifier.predict.call_args.args[0]
+        rgb = np.rint(classifier_input[:3].transpose(1, 2, 0) * 255).astype(np.uint8)
+        np.testing.assert_array_equal(uploaded["gradcam_base"], rgb[:, :, ::-1])
+        assert uploaded["gradcam"].shape == uploaded["gradcam_base"].shape
+    else:
+        assert not {"gradcam", "gradcam_base"}.intersection(result["artifacts"])
 
 
 def test_valid_signed_url_returns_202_and_enqueues_once(monkeypatch: pytest.MonkeyPatch) -> None:

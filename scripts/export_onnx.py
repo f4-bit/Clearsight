@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from ml.inference.spatial_classifier import SpatialClassifier
 from ml.models.architecture import create_model, model_state_dict
 
 DEFAULT_OPSET = 17
@@ -22,10 +23,14 @@ def _load_checkpoint(checkpoint_path: Path, model_type: str, in_channels: int) -
 
 def _convert_to_fp16(onnx_path: Path) -> Path:
     import onnx
-    from onnxconverter_common import float16
+    from onnxruntime.transformers.float16 import convert_float_to_float16
+    from onnxruntime.transformers.onnx_model import OnnxModel
 
     model = onnx.load(str(onnx_path))
-    model_fp16 = float16.convert_float_to_float16(model, keep_io_types=True)
+    # Logits are both a public output and the input to the attribution head.
+    # Keep internal consumers on the FP16 side of the output cast.
+    model_fp16 = convert_float_to_float16(model, keep_io_types=True)
+    OnnxModel(model_fp16).topological_sort()
     onnx.checker.check_model(model_fp16)
     onnx.save(model_fp16, str(onnx_path))
     return onnx_path
@@ -42,24 +47,26 @@ def export_to_onnx(
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model = _load_checkpoint(checkpoint_path, model_type, in_channels)
+    spatial = model_type in ("efficientnet_b3", "resnet50")
+    outputs = ["logits", "class_activation_maps"] if spatial else ["logits"]
 
     image = torch.randn(1, in_channels, image_size, image_size)
     cdr = torch.zeros(1, 1, dtype=torch.float32)
     clinical = torch.zeros(1, 11, dtype=torch.float32)
 
     torch.onnx.export(
-        model,
+        SpatialClassifier(model).eval() if spatial else model,
         (image, cdr, clinical),
         str(output_path),
         input_names=["image", "cdr", "clinical"],
-        output_names=["logits"],
+        output_names=outputs,
         opset_version=opset,
         dynamo=False,
         dynamic_axes={
             "image": {0: "batch"},
             "cdr": {0: "batch"},
             "clinical": {0: "batch"},
-            "logits": {0: "batch"},
+            **{name: {0: "batch"} for name in outputs},
         },
         do_constant_folding=True,
     )

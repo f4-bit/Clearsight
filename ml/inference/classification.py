@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from ml.config import Settings
+from ml.inference.spatial_classifier import SpatialClassifier
 
 CLASS_NAMES = ("Glaucoma", "Non_Glaucoma", "Suspicious_Glaucoma")
 
@@ -82,6 +83,7 @@ class ClassifierPrediction:
     probabilities: dict[str, float]
     predicted_class: str
     confidence: float
+    activation_maps: np.ndarray | None = None
 
 
 class ClassificationEngine(Protocol):
@@ -151,9 +153,12 @@ class ClassificationRunner:
         predictions: dict[str, ClassifierPrediction] = {}
         with torch.inference_mode():
             for model_type, model in self.models.items():
-                probabilities = torch.softmax(
-                    model(image_tensor, cdr_tensor, clinical_tensor), dim=1
-                )[0]
+                if model_type in ("resnet50", "efficientnet_b3"):
+                    logits, maps = SpatialClassifier(model)(image_tensor, cdr_tensor, clinical_tensor)
+                else:
+                    logits = model(image_tensor, cdr_tensor, clinical_tensor)
+                    maps = None
+                probabilities = torch.softmax(logits, dim=1)[0]
                 values = probabilities.detach().cpu().numpy()
                 class_index = int(np.argmax(values))
                 predictions[model_type] = ClassifierPrediction(
@@ -163,5 +168,6 @@ class ClassificationRunner:
                     },
                     predicted_class=self.class_names[class_index],
                     confidence=float(values[class_index]),
+                    activation_maps=maps[0].cpu().numpy() if maps is not None else None,
                 )
         return predictions

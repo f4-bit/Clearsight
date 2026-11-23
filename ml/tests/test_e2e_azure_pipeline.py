@@ -132,6 +132,11 @@ class PipelineStub:
             self.ids["consultation"] = str(uuid.uuid4())
             self.json(handler, 201, {"id": self.ids["consultation"]})
             return
+        if path.startswith("/consultations/") and path.endswith("/required-executions") and method == "POST":
+            self.require_doctor(handler)
+            assert json.loads(body)["executionIds"] == [self.ids["inference"]]
+            self.json(handler, 200, {"id": self.ids["consultation"]})
+            return
         if path.startswith("/consultations/") and path.endswith("/images") and method == "POST":
             self.require_doctor(handler)
             self.ids["image"] = str(uuid.uuid4())
@@ -620,15 +625,12 @@ def _run_script(
     doctor_password: str = DOCTOR_PASSWORD,
     image_path: Path | None = None,
     timeout_seconds: int = 15,
+    existing_doctor: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     parts = [
         f"& {_ps_quote(SCRIPT)}",
         "-BackendBaseUrl",
         _ps_quote(base_url),
-        "-AdminEmail",
-        _ps_quote(ADMIN_EMAIL),
-        "-AdminPassword",
-        f"(ConvertTo-SecureString {_ps_quote(admin_password)} -AsPlainText -Force)",
         "-DoctorEmail",
         _ps_quote(DOCTOR_EMAIL),
         "-DoctorPassword",
@@ -642,6 +644,14 @@ def _run_script(
         "-RequestTimeoutSeconds",
         "15",
     ]
+    if existing_doctor:
+        parts.append("-ExistingDoctor")
+    else:
+        parts.extend([
+            "-AdminEmail", _ps_quote(ADMIN_EMAIL),
+            "-AdminPassword",
+            f"(ConvertTo-SecureString {_ps_quote(admin_password)} -AsPlainText -Force)",
+        ])
     if image_path is not None:
         parts.extend(["-ImagePath", _ps_quote(image_path)])
     return _run_command(" ".join(parts))
@@ -946,6 +956,20 @@ def test_full_flow_against_http_stub(tmp_path: Path) -> None:
         assert "sig=" not in summary_text
         assert "Bearer " not in summary_text
         assert "Bearer " not in output
+
+
+@requires_powershell
+def test_existing_doctor_does_not_provision_an_account_or_write_feedback(tmp_path: Path) -> None:
+    with PipelineStub() as stub:
+        result = _run_script(stub.base_url, tmp_path, existing_doctor=True)
+        assert result.returncode == 0, _combined(result)
+        paths = [request["path"] for request in stub.requests]
+        assert paths.count("/auth/login") == 1
+        assert "/admin/users" not in paths
+        assert "/feedback" not in paths
+        assert "/export/gold-standard" not in paths
+        assert paths.count(f"/consultations/{stub.ids['consultation']}/required-executions") == 1
+        assert _summary(tmp_path)["checks"]["deliveryComplete"] is True
 
 
 @requires_powershell

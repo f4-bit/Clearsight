@@ -106,6 +106,27 @@ export const patientRoutes: FastifyPluginAsync<ClinicalRoutesOptions> = async (a
     }
   );
 
+  typedApp.get("/:id/consultations", {
+    preHandler: [authenticate, requireRole("OFTALMOLOGO")],
+    schema: {
+      params: z.object({ id: z.string().uuid() }),
+      querystring: z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(20),
+        offset: z.coerce.number().int().min(0).default(0),
+      }),
+      response: { 200: z.array(z.object({ id: z.string().uuid(), createdAt: z.date() })) },
+    },
+  }, async (request) => {
+    const subject = subjectFromRequest(request);
+    await access.getOwnedPatient(subject, request.params.id);
+    return prisma.consultation.findMany({
+      where: { patientId: request.params.id, doctorId: subject.id, patient: { ownerDoctorId: subject.id } },
+      select: { id: true, createdAt: true },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      take: request.query.limit, skip: request.query.offset,
+    });
+  });
+
   // GET /patients/:id
   typedApp.get(
     "/:id",

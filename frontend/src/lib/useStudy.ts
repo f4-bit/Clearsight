@@ -6,7 +6,7 @@ import { getStudy, studyNeedsPolling, type StudySnapshot } from "@/lib/studies";
 
 const POLLING_DEADLINE_MS = 4 * 60 * 1000;
 
-export function useStudy(id: string | null) {
+export function useStudy(id: string | null, selectedId?: string) {
   const [snapshot, setSnapshot] = useState<StudySnapshot | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -29,7 +29,7 @@ export function useStudy(id: string | null) {
 
     async function poll() {
       try {
-        const next = await getStudy(consultationId, controller.signal);
+        const next = await getStudy(consultationId, controller.signal, selectedId);
         if (controller.signal.aborted) return;
         failures = 0;
         setSnapshot(next);
@@ -54,7 +54,7 @@ export function useStudy(id: string | null) {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [id, attempt]);
+  }, [id, selectedId, attempt]);
 
   function retry() {
     setError("");

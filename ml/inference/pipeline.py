@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+import cv2
 import httpx
 import numpy as np
 
 from ml.config import Settings
 from ml.inference.cdr import calculate_area_cdr, calculate_vertical_cdr
-from ml.inference.classification import ClassificationEngine
+from ml.inference.classification import ClassificationEngine, ClassifierPrediction
 from ml.inference.ensemble import combine_predictions
 from ml.inference.localization import (
     SEGMENTATION_CLAHE_CLIP_LIMIT,
@@ -116,6 +118,51 @@ class InferencePipeline:
             "overlay": overlay_path or overlay_key,
         }
 
+    def _gradcam_artifacts(
+        self,
+        inference_id: UUID,
+        classifier_input: np.ndarray,
+        predictions: dict[str, ClassifierPrediction],
+        class_index: int,
+    ) -> dict[str, str]:
+        size = (classifier_input.shape[2], classifier_input.shape[1])
+        maps = []
+        for name, prediction in predictions.items():
+            activation = getattr(prediction, "activation_maps", None)
+            if (activation is None or activation.ndim != 3 or class_index >= activation.shape[0]
+                    or min(activation.shape[1:]) < 1):
+                return {}  # Older or incompatible graphs may only provide usable logits.
+            signed = activation[class_index].astype(np.float32)
+            maps.append(self.manifest["ensemble"][name] * cv2.resize(signed, size))
+        heat = np.maximum(np.sum(maps, axis=0), 0)
+        if not np.isfinite(heat).all() or heat.max() <= heat.min():
+            return {}
+        heat = (heat - heat.min()) / (heat.max() - heat.min())
+        colors = cv2.applyColorMap(np.uint8(heat * 255), cv2.COLORMAP_JET)
+        rgb = np.uint8(np.rint(classifier_input[:3].transpose(1, 2, 0) * 255))
+        base = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        refs = {}
+        for key, pixels in (("gradcam_base", base), ("gradcam", colors)):
+            ok, data = cv2.imencode(".png", pixels)
+            if not ok:
+                return {}
+            ref = self._optional_overlay(inference_id, key, data.tobytes())
+            if not ref:
+                return {}
+            refs[key] = ref
+        return refs
+
+    def _optional_overlay(self, inference_id: UUID, key: str, data: bytes) -> str | None:
+        try:
+            return self.artifact_store.upload_bytes(
+                self.settings.overlay_bucket, f"{inference_id}/{key}.png", data, "image/png",
+            )
+        except Exception:
+            # Provider SDKs raise different errors. Ancillary downloads must not
+            # invalidate a classification or replace its segmentation evidence.
+            logging.getLogger(__name__).warning("Optional overlay unavailable: %s", key)
+            return None
+
     def _model_versions(self) -> dict[str, str]:
         artifacts = self.manifest["artifacts"]
         return {
@@ -181,6 +228,13 @@ class InferencePipeline:
             segmentation.mask,
             create_overlay(crop, segmentation.mask),
         )
+        # Display the actual luminance-enhanced input used by segmentation.
+        enhanced = cv2.cvtColor(segmentation_input.astype(np.uint8), cv2.COLOR_RGB2BGR)
+        clahe = self._optional_overlay(
+            request.inference_id, "clahe", create_overlay(enhanced, segmentation.mask),
+        )
+        if clahe:
+            artifacts["clahe"] = clahe
         cdr = calculate_area_cdr(segmentation.mask)
         cdr_vertical = calculate_vertical_cdr(segmentation.mask)
         base_result: dict[str, Any] = {
@@ -224,6 +278,9 @@ class InferencePipeline:
             self.manifest["ensemble"],
             class_names,
         )
+        artifacts.update(self._gradcam_artifacts(
+            request.inference_id, classifier_input, model_predictions, class_names.index(label),
+        ))
         base_result.update(
             {
                 "label": label,

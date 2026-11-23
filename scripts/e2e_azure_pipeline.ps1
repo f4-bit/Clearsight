@@ -37,10 +37,15 @@
     Administrator password (SecureString, >=12 Unicode code points).
 
 .PARAMETER DoctorEmail
-    Email of the test ophthalmologist created by the administrator.
+    Email of the test ophthalmologist. Supply an existing test account with
+    -ExistingDoctor or a new address for administrator provisioning.
 
 .PARAMETER DoctorPassword
     Doctor password (SecureString, >=12 Unicode code points).
+
+.PARAMETER ExistingDoctor
+    Uses an existing test ophthalmologist and skips administrator provisioning,
+    clinical feedback, and export. The synthetic study is kept for inspection.
 
 .PARAMETER OutDir
     Temporary output directory for `summary.json`. Defaults to a unique temp
@@ -82,6 +87,7 @@ param(
     [securestring]$AdminPassword,
     [string]$DoctorEmail = "",
     [securestring]$DoctorPassword,
+    [switch]$ExistingDoctor,
     [string]$OutDir = "",
     [string]$ImagePath = "",
     [string]$AuthOrigin = "",
@@ -294,6 +300,7 @@ function Invoke-Api {
         Uri             = $uri
         UseBasicParsing = $true
         TimeoutSec      = $script:RequestTimeoutSeconds
+        MaximumRedirection = 0
         ErrorAction     = "Stop"
     }
     if ($Headers.Count -gt 0) { $params.Headers = $Headers }
@@ -369,7 +376,9 @@ function Invoke-Login {
         password = $Password
     } | ConvertTo-Json -Compress
     $response = Invoke-Api -Method "POST" -Path "/auth/login" -Headers @{ Origin = $script:AuthOrigin } -JsonBody $payload
-    Assert-HttpStatus $response @(200) $StepName
+    if ($response.Status -ne 200) {
+        Fail-Step $StepName ("login rejected (HTTP {0}); check the test account and the deployed AUTH_PUBLIC_ORIGIN" -f $response.Status) $script:ExitAuth
+    }
     $body = ConvertFrom-ApiJson $response $StepName
     $token = [string]$body.accessToken
     if ([string]::IsNullOrWhiteSpace($token)) {
@@ -776,14 +785,16 @@ try {
         Fail-Step "config" "RequestTimeoutSeconds must be positive" $script:ExitInput
     }
 
-    $adminEmailValue = Assert-Email $AdminEmail "AdminEmail"
     $doctorEmailValue = Assert-Email $DoctorEmail "DoctorEmail"
-    $adminPasswordValue = ConvertTo-PlainText $AdminPassword
     $doctorPasswordValue = ConvertTo-PlainText $DoctorPassword
-    Assert-Password $adminPasswordValue "AdminPassword"
     Assert-Password $doctorPasswordValue "DoctorPassword"
-    Register-Secret $adminPasswordValue | Out-Null
     Register-Secret $doctorPasswordValue | Out-Null
+    if (-not $ExistingDoctor) {
+        $adminEmailValue = Assert-Email $AdminEmail "AdminEmail"
+        $adminPasswordValue = ConvertTo-PlainText $AdminPassword
+        Assert-Password $adminPasswordValue "AdminPassword"
+        Register-Secret $adminPasswordValue | Out-Null
+    }
 
     # Fail fast on an invalid image before creating any clinical resource.
     $script:ImageBytes = Get-ImageBytes
@@ -815,27 +826,32 @@ try {
     Add-Step "negative-auth" "PASSED" "unauthenticated inference read returned 401"
     $script:Checks["negativeAuth401"] = $true
 
-    $script:CurrentStep = "login-admin"
-    $adminSession = Invoke-Login $adminEmailValue $adminPasswordValue "login-admin"
-    Add-Step "login-admin" "PASSED" "administrator session established"
-    $script:Checks["adminLogin"] = $true
+    if (-not $ExistingDoctor) {
+        $script:CurrentStep = "login-admin"
+        $adminSession = Invoke-Login $adminEmailValue $adminPasswordValue "login-admin"
+        Add-Step "login-admin" "PASSED" "administrator session established"
+        $script:Checks["adminLogin"] = $true
 
-    $script:CurrentStep = "create-doctor"
-    $doctorPayload = [ordered]@{
-        email    = $doctorEmailValue
-        password = $doctorPasswordValue
-        fullName = "E2E Azure Ophthalmologist"
-        role     = "OFTALMOLOGO"
-    } | ConvertTo-Json -Compress
-    $createdDoctor = Invoke-Api -Method "POST" -Path "/admin/users" -Headers (New-AuthHeaders $adminSession.Token) -JsonBody $doctorPayload
-    Assert-HttpStatus $createdDoctor @(201) "create-doctor"
-    $doctorBody = ConvertFrom-ApiJson $createdDoctor "create-doctor"
-    $script:Ids["doctorUserId"] = [string]$doctorBody.id
-    Add-Step "create-doctor" "PASSED" "ophthalmologist provisioned by the administrator"
-    $script:Checks["doctorCreated"] = $true
+        $script:CurrentStep = "create-doctor"
+        $doctorPayload = [ordered]@{
+            email    = $doctorEmailValue
+            password = $doctorPasswordValue
+            fullName = "E2E Azure Ophthalmologist"
+            role     = "OFTALMOLOGO"
+        } | ConvertTo-Json -Compress
+        $createdDoctor = Invoke-Api -Method "POST" -Path "/admin/users" -Headers (New-AuthHeaders $adminSession.Token) -JsonBody $doctorPayload
+        Assert-HttpStatus $createdDoctor @(201) "create-doctor"
+        $doctorBody = ConvertFrom-ApiJson $createdDoctor "create-doctor"
+        $script:Ids["doctorUserId"] = [string]$doctorBody.id
+        Add-Step "create-doctor" "PASSED" "ophthalmologist provisioned by the administrator"
+        $script:Checks["doctorCreated"] = $true
+    }
 
     $script:CurrentStep = "login-doctor"
     $doctorSession = Invoke-Login $doctorEmailValue $doctorPasswordValue "login-doctor"
+    if ($ExistingDoctor -and $doctorSession.User.role -ne "OFTALMOLOGO") {
+        Fail-Step "login-doctor" "the test account must have the OFTALMOLOGO role" $script:ExitAuth
+    }
     Add-Step "login-doctor" "PASSED" "ophthalmologist session established"
     $script:Checks["doctorLogin"] = $true
 
@@ -916,6 +932,14 @@ try {
     $script:InferenceDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
     Add-Step "create-inference" "PASSED" "inference queued with Idempotency-Key"
 
+    if ($ExistingDoctor) {
+        $script:CurrentStep = "freeze-study"
+        $required = @{ executionIds = @($inferenceId) } | ConvertTo-Json -Compress
+        $freeze = Invoke-Api -Method "POST" -Path "/consultations/$consultationId/required-executions" -Headers (New-AuthHeaders $doctorSession.Token) -JsonBody $required
+        Assert-HttpStatus $freeze @(200) "freeze-study"
+        Add-Step "freeze-study" "PASSED" "execution attached to the study"
+    }
+
     $script:CurrentStep = "poll-inference"
     $inference = Wait-InferenceTerminal -InferenceId $inferenceId -Token $doctorSession.Token
     $terminalStatus = [string]$inference.status
@@ -970,47 +994,49 @@ try {
     $script:Checks["pdfMagic"] = "%PDF-"
     Add-Step "downloads" "PASSED" "mask/overlay PNG and PDF content validated"
 
-    $script:CurrentStep = "feedback"
-    $validatedClass = 0
-    if ($null -ne $inference.predictedClass) {
-        $parsedPredicted = 0
-        if ([int]::TryParse([string]$inference.predictedClass, [ref]$parsedPredicted) -and $parsedPredicted -ge 0 -and $parsedPredicted -le 2) {
-            $validatedClass = $parsedPredicted
+    if (-not $ExistingDoctor) {
+        $script:CurrentStep = "feedback"
+        $validatedClass = 0
+        if ($null -ne $inference.predictedClass) {
+            $parsedPredicted = 0
+            if ([int]::TryParse([string]$inference.predictedClass, [ref]$parsedPredicted) -and $parsedPredicted -ge 0 -and $parsedPredicted -le 2) {
+                $validatedClass = $parsedPredicted
+            }
         }
-    }
-    $feedbackPayload = [ordered]@{
-        consultation_id  = $consultationId
-        inference_id     = $inferenceId
-        validated_class  = $validatedClass
-        is_gold_standard = $true
-        doctor_notes     = "Azure E2E validated"
-    } | ConvertTo-Json -Compress
-    $feedbackResponse = Invoke-Api -Method "POST" -Path "/feedback" -Headers (New-AuthHeaders $doctorSession.Token) -JsonBody $feedbackPayload
-    Assert-HttpStatus $feedbackResponse @(200) "feedback"
-    $feedbackBody = ConvertFrom-ApiJson $feedbackResponse "feedback"
-    $storedValidated = [int]$feedbackBody.validated_class
-    if ($storedValidated -ne $validatedClass) {
-        Fail-Step "feedback" "feedback response did not preserve validated_class" $script:ExitVerify
-    }
-    $script:Checks["feedbackValidatedClass"] = $storedValidated
-    $script:Checks["feedbackGoldStandard"] = [bool]$feedbackBody.is_gold_standard
-    Add-Step "feedback" "PASSED" "clinical feedback stored"
+        $feedbackPayload = [ordered]@{
+            consultation_id  = $consultationId
+            inference_id     = $inferenceId
+            validated_class  = $validatedClass
+            is_gold_standard = $true
+            doctor_notes     = "Azure E2E validated"
+        } | ConvertTo-Json -Compress
+        $feedbackResponse = Invoke-Api -Method "POST" -Path "/feedback" -Headers (New-AuthHeaders $doctorSession.Token) -JsonBody $feedbackPayload
+        Assert-HttpStatus $feedbackResponse @(200) "feedback"
+        $feedbackBody = ConvertFrom-ApiJson $feedbackResponse "feedback"
+        $storedValidated = [int]$feedbackBody.validated_class
+        if ($storedValidated -ne $validatedClass) {
+            Fail-Step "feedback" "feedback response did not preserve validated_class" $script:ExitVerify
+        }
+        $script:Checks["feedbackValidatedClass"] = $storedValidated
+        $script:Checks["feedbackGoldStandard"] = [bool]$feedbackBody.is_gold_standard
+        Add-Step "feedback" "PASSED" "clinical feedback stored"
 
-    $script:CurrentStep = "export"
-    $exportResponse = Invoke-Api -Method "GET" -Path "/export/gold-standard" -Headers (New-AuthHeaders $adminSession.Token)
-    if ($exportResponse.Status -eq 200) {
-        $exportBody = ConvertFrom-ApiJson $exportResponse "export"
-        $script:Checks["exportStatus"] = "AVAILABLE"
-        $script:Checks["exportCount"] = [int]$exportBody.count
-        Add-Step "export" "PASSED" ("gold-standard export returned {0} row(s)" -f $exportBody.count)
-    }
-    elseif ($exportResponse.Status -eq 401 -or $exportResponse.Status -eq 403) {
-        $script:Checks["exportStatus"] = "SKIPPED_NO_GRANT"
-        Add-Step "export" "SKIPPED" ("admin export not authorized (HTTP {0})" -f $exportResponse.Status)
-    }
-    else {
-        $script:Checks["exportStatus"] = "SKIPPED_UNAVAILABLE"
-        Add-Step "export" "SKIPPED" ("admin export unavailable (HTTP {0})" -f $exportResponse.Status)
+        $script:CurrentStep = "export"
+        $exportResponse = Invoke-Api -Method "GET" -Path "/export/gold-standard" -Headers (New-AuthHeaders $adminSession.Token)
+        if ($exportResponse.Status -eq 200) {
+            $exportBody = ConvertFrom-ApiJson $exportResponse "export"
+            $script:Checks["exportStatus"] = "AVAILABLE"
+            $script:Checks["exportCount"] = [int]$exportBody.count
+            Add-Step "export" "PASSED" ("gold-standard export returned {0} row(s)" -f $exportBody.count)
+        }
+        elseif ($exportResponse.Status -eq 401 -or $exportResponse.Status -eq 403) {
+            $script:Checks["exportStatus"] = "SKIPPED_NO_GRANT"
+            Add-Step "export" "SKIPPED" ("admin export not authorized (HTTP {0})" -f $exportResponse.Status)
+        }
+        else {
+            $script:Checks["exportStatus"] = "SKIPPED_UNAVAILABLE"
+            Add-Step "export" "SKIPPED" ("admin export unavailable (HTTP {0})" -f $exportResponse.Status)
+        }
     }
 
     $script:CurrentStep = "delivery-recheck"

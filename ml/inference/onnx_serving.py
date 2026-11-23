@@ -145,7 +145,8 @@ class OnnxClassificationRunner:
         for model_type, session in self.sessions.items():
             feed = self._feed(model_type, image, cdr, clinical)
             outputs = session.run(None, feed)
-            logits = np.asarray(outputs[0])
+            by_name = dict(zip((item.name for item in session.get_outputs()), outputs))
+            logits = np.asarray(by_name.get("logits", outputs[0]))
             if logits.ndim == 1:
                 logits = logits[np.newaxis, ...]
             probabilities = _softmax(logits.astype(np.float64))[0]
@@ -158,5 +159,7 @@ class OnnxClassificationRunner:
                 },
                 predicted_class=self.class_names[class_index],
                 confidence=float(values[class_index]),
+                activation_maps=(by_name["class_activation_maps"][0]
+                                 if "class_activation_maps" in by_name else None),
             )
         return predictions

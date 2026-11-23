@@ -134,9 +134,13 @@ export async function getInference(id: string, signal?: AbortSignal) {
   };
 }
 
-export async function getStudy(id: string, signal: AbortSignal): Promise<StudySnapshot> {
+export async function getStudy(id: string, signal: AbortSignal, selectedId?: string): Promise<StudySnapshot> {
   const consultation = await api<Consultation>(`/consultations/${id}`, { signal });
-  const results = await Promise.all(consultation.requiredExecutionIds.map((id) => getInference(id, signal)));
+  const selected = consultation.reanalyses?.find((item) => item.id === selectedId);
+  if (selectedId && !selected) throw new ApiError(404);
+  const ids = [...consultation.requiredExecutionIds];
+  if (selected && !ids.includes(selected.id)) ids.push(selected.id);
+  const results = await Promise.all(ids.map((executionId) => getInference(executionId, signal)));
   const sides = new Map(consultation.images.map((image) => [image.id, image.eyeSide]));
   const executions = results.map(({ result }) => {
     const side = sides.get(result.imageId);
@@ -146,7 +150,8 @@ export async function getStudy(id: string, signal: AbortSignal): Promise<StudySn
   const intervals = results.flatMap(({ retryAfter }) => retryAfter === null ? [] : [retryAfter]);
   return {
     consultation,
-    executions,
+    executions: selected ? executions.filter(({ side, result }) =>
+      side !== sides.get(selected.imageId) || result.id === selected.id) : executions,
     retryAfter: Math.min(10, Math.max(2, ...intervals)),
   };
 }

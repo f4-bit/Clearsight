@@ -13,6 +13,7 @@ export default defineConfig({
   root,
   test: {
     include: [
+      "tests/smtp-delivery.integration.test.ts",
       "tests/repositories.test.ts",
       "tests/rbac.test.ts",
       "tests/migrations.test.ts",

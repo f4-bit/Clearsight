@@ -63,7 +63,8 @@ function ExecutionWorkspace({ id, role }: { id: string; role: UserRole }) {
         <h2 id="execution-evidence-title">Evidencia de segmentación</h2>
       </div>
       <div className={styles.workspace}>
-        <EvidenceViewer id={id} status={result?.delivery.evidenceStatus} />
+        <EvidenceViewer id={id} status={result?.delivery.evidenceStatus}
+          gradcam={result ? result.status === "COMPLETED" && !result.delivery.reviewRequired && Boolean(result.gradcamPath) : Boolean(error)} />
         <aside aria-label="Resultados de la ejecución" className={styles.results}>
           {result && <InferenceSummary result={result} layout="viewer" />}
           {error ? <div className="grid justify-items-start gap-2">

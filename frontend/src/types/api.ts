@@ -1,4 +1,4 @@
-import type { DiagnosticClass, EyeSide, JobStatus } from "@/types/clinical";
+import type { DiagnosticClass, EyeSide, FeedbackRead, JobStatus } from "@/types/clinical";
 
 export const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
@@ -26,6 +26,10 @@ export interface Page<T> {
 export interface Patient {
   id: string;
   externalCode?: string | null;
+  age?: number | null;
+  gender?: string | null;
+  clinicalHistoryFlags?: Record<string, unknown>;
+  clinicalData?: Record<string, unknown> | null;
 }
 
 export interface ConsultationImage {
@@ -44,6 +48,8 @@ export type AnalysisState =
   | "OPEN" | "IN_PROGRESS" | "REVIEW_REQUIRED" | "FAILED" | "PARTIAL" | "COMPLETED";
 
 export interface Consultation extends CreatedConsultation {
+  feedback?: FeedbackRead[];
+  reanalyses?: { id: string; imageId: string; reanalysisOfId: string; createdAt: string }[];
   clinicalData: Record<string, unknown>;
   images: ConsultationImage[];
   requiredExecutionIds: string[];
@@ -64,6 +70,8 @@ export interface Inference {
   probabilities: Record<string, unknown>;
   cdr?: number | null;
   cdrVertical?: number | null;
+  gradcamPath?: string | null;
+  hasClahe?: boolean;
   modelVersion: string | null;
   createdAt: string;
   status: JobStatus;

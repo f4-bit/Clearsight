@@ -29,11 +29,11 @@ npx.cmd playwright install chromium
 npm.cmd run test:smoke
 ```
 
-La instalación de Chromium se necesita por cada versión de Playwright. En Linux, si faltan bibliotecas del sistema, usa `npx playwright install --with-deps chromium`. La prueba compila Next.js y comprueba sesión, captura unilateral, reintento sin duplicados, evidencia, PDF y dictamen mediante una API de prueba local y una imagen generada. Funciona con puertos asignados automáticamente y sin credenciales de Azure.
+La instalación de Chromium se necesita por cada versión de Playwright. En Linux, si faltan bibliotecas del sistema, usa `npx playwright install --with-deps chromium`. La prueba compila Next.js y comprueba sesión y recuperación de acceso, captura unilateral y bilateral, reintento sin duplicados, reanálisis por calidad, historial, evidencia, PDF y dictamen mediante una API de prueba local y una imagen generada. Funciona con puertos asignados automáticamente y sin credenciales de Azure.
 
 Para revisar el recorrido a tu ritmo, ejecuta `npm.cmd run test:smoke -- --visual`. Chromium se abre maximizado y espera en cada pantalla. Pulsa Enter en PowerShell para recorrer inicio de sesión, estación clínica, captura, análisis, caso, variables, informe y dictamen. Después podrás revisar investigación, la consulta de ejecución y la administración de usuarios. Si cierras sesión durante la revisión del caso, la demo vuelve a abrirlo cuando pulses Enter. La última pantalla queda abierta hasta que pulses Enter o cierres Chromium.
 
-El recorrido usa cuentas y resultados de demostración. Las retinografías y la evidencia del visor están marcadas como imágenes de demostración. Los formularios de administración se pueden inspeccionar con cuentas de ejemplo de solo lectura.
+El recorrido usa cuentas y resultados de demostración. Las retinografías y la evidencia del visor están marcadas como imágenes de demostración. En administración se pueden crear y editar cuentas locales de ejemplo. El recorrido automático también comprueba los permisos independientes de imágenes, resultados, PDF y exportación. Para verificar un estudio persistido en el backend, consulta la [guía del proxy y la prueba conectada](docs/proxy-azure.md).
 
 # ML
 The CNN segmentation model is here: [CNN model](https://huggingface.co/F4-bit/Clearsight-CD-Segmentation-CNN-Base-model)

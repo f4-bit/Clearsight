@@ -27,7 +27,7 @@ function makeReport() {
   return Buffer.from(document + "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n");
 }
 
-function createClinicalFixture() {
+function createClinicalFixture({ bilateral = false } = {}) {
   const user = { id: randomUUID(), email: "smoke@example.invalid", role: "OFTALMOLOGO" };
   const researcher = { id: randomUUID(), email: "research@example.invalid", role: "INVESTIGADOR" };
   const admin = { id: randomUUID(), email: "admin@example.invalid", role: "ADMIN" };
@@ -36,6 +36,15 @@ function createClinicalFixture() {
   const consultationId = randomUUID();
   const inferenceId = randomUUID();
   const imageId = randomUUID();
+  const rightId = randomUUID();
+  const rightImage = { id: randomUUID(), eyeSide: "OD" };
+  const replacement = { id: randomUUID(), eyeSide: "OD" };
+  const childId = randomUUID();
+  const uploaded = [];
+  const reanalyses = [];
+  const passwords = new Map();
+  let recoveryCode;
+  let readGrants = { result: true, artifacts: true, pdf: true };
   const createdAt = new Date().toISOString();
   const accounts = [user, researcher, admin].map((account, index) => ({
     ...account, fullName: ["Oftalmología de prueba", "Investigación de prueba", "Administración de prueba"][index],
@@ -52,6 +61,9 @@ function createClinicalFixture() {
   let frozen = false;
   let holdAnalysis = false;
   let images, webOrigin, apiOrigin;
+  const exportUsers = new Set([researcher.id]);
+  const patients = [{ id: patientId, externalCode: "SMOKE" }];
+  let studyPatientId = patientId;
 
   function issueSession(response, includeUser) {
     token = randomUUID();
@@ -85,9 +97,20 @@ function createClinicalFixture() {
       assert.equal(request.headers.origin, webOrigin);
       const credentials = json();
       const account = accounts.find((item) => item.email === credentials.email && item.isActive);
-      if (!account || credentials.password !== password) return reply(response, 401);
+      if (!account || credentials.password !== (passwords.get(account.id) ?? password)) return reply(response, 401);
       sessionUser = account;
       return issueSession(response, true);
+    }
+    if (route === "POST /auth/password/forgot") {
+      if (json().email === user.email) recoveryCode = randomUUID();
+      return reply(response, 202, { accepted: true });
+    }
+    if (route === "POST /auth/password/reset") {
+      const { token: code, newPassword } = json();
+      if (!recoveryCode || code !== recoveryCode) return reply(response, 401);
+      passwords.set(user.id, newPassword);
+      recoveryCode = undefined;
+      return reply(response, 204);
     }
     if (route === "POST /auth/refresh") {
       assert.equal(request.headers.origin, webOrigin);
@@ -118,37 +141,67 @@ function createClinicalFixture() {
           (!role || account.role === role) && (!active || String(account.isActive) === active));
         return reply(response, 200, { items: matching.slice(offset, offset + limit), limit, offset, total: matching.length });
       }
-      return reply(response, 405, { detail: "La revisión visual usa cuentas de ejemplo de solo lectura." });
+      if (route === "POST /admin/users") {
+        const { email, fullName, role } = json();
+        if (accounts.some((item) => item.email === email)) return reply(response, 409);
+        const account = { id: randomUUID(), email, fullName, role, isActive: true, createdAt, updatedAt: createdAt };
+        accounts.push(account);
+        return reply(response, 201, account);
+      }
+      const account = accounts.find((item) => url.pathname === "/admin/users/" + item.id);
+      if (!account) return reply(response, 404);
+      if (request.method === "PATCH") Object.assign(account, json());
+      return reply(response, 200, account);
     }
     if (route === "GET /export/gold-standard") {
-      if (sessionUser.role === "OFTALMOLOGO") return reply(response, 403);
+      if (!["INVESTIGADOR", "ADMIN"].includes(sessionUser.role) || !exportUsers.has(sessionUser.id)) return reply(response, 403);
       const since = url.searchParams.get("since");
-      const matches = !since || Date.parse(since) < Date.parse(createdAt);
+      const matches = feedback?.is_gold_standard && feedback.validated_class !== null &&
+        (!since || Date.parse(since) < Date.parse(feedback.updated_at));
       if (url.searchParams.get("format") === "json") {
-        const items = matches ? [{ inference_id: inferenceId, validated_class: 1 }] : [];
+        const items = matches ? [{ inference_id: inferenceId, validated_class: feedback.validated_class }] : [];
         return reply(response, 200, { count: items.length, has_more: false, generated_at: createdAt, items });
       }
       response.writeHead(200, { "Content-Type": "text/csv" });
-      return response.end(`inference_id,validated_class\n${matches ? `${inferenceId},1\n` : ""}`);
+      return response.end(`inference_id,validated_class\n${matches ? `${inferenceId},${feedback.validated_class}\n` : ""}`);
     }
-    if (route === "GET /patients") return reply(response, 200, [{ id: patientId, externalCode: "SMOKE" }]);
+    if ((url.pathname.startsWith("/patients") || url.pathname.startsWith("/consultations") || url.pathname === "/feedback") &&
+        sessionUser.role !== "OFTALMOLOGO") return reply(response, 403);
+    if (route === "GET /patients") return reply(response, 200, patients);
+    if (route === "POST /patients") {
+      const patient = { id: randomUUID(), externalCode: json().externalCode };
+      patients.push(patient);
+      return reply(response, 201, patient);
+    }
+    const patient = patients.find((item) => item.id === url.pathname.split("/")[2]);
+    if (patient && route === "GET /patients/" + patient.id) return reply(response, 200, patient);
+    if (patient && route === "GET /patients/" + patient.id + "/consultations")
+      return reply(response, 200, consultations && studyPatientId === patient.id ? [{ id: consultationId, createdAt }] : []);
     if (route === "POST /consultations") {
       consultations++;
-      assert.equal(json().patientId, patientId);
+      studyPatientId = json().patientId;
+      assert.ok(patients.some((item) => item.id === studyPatientId));
       clinical = json().clinicalData;
       assert.equal(Object.keys(clinical).length, 11);
       assert.equal(clinical["Phakic/Pseudophakic"], 1);
       assert.equal(clinical.dioptre_1, -2.5);
-      return reply(response, 201, { id: consultationId, patientId, createdAt });
+      return reply(response, 201, { id: consultationId, patientId: studyPatientId, createdAt });
     }
 
     const consultation = "/consultations/" + consultationId;
     if (route === "POST " + consultation + "/images") {
       uploads++;
       assert.match(request.headers["content-type"], /^multipart\/form-data; boundary=/);
-      assert.match(bytes.toString("latin1"), /name="eyeSide"\r\n\r\nOS\r\n/);
+      const side = bytes.toString("latin1").match(/name="eyeSide"\r\n\r\n(OD|OS)\r\n/)?.[1];
+      assert.ok(side === "OS" || (bilateral && side === "OD"));
+      if (side === "OD") {
+        const asset = uploaded.includes(rightImage) ? replacement : rightImage;
+        uploaded.push(asset);
+        return reply(response, 201, asset);
+      }
       assert.ok(bytes.includes(images.raw));
       image = { id: imageId, eyeSide: "OS" };
+      uploaded.push(image);
       return reply(response, 201, image);
     }
     if (route === "POST /inferences") {
@@ -156,9 +209,22 @@ function createClinicalFixture() {
       const key = request.headers["idempotency-key"];
       const payload = json();
       assert.match(key, /^[A-Za-z0-9._:-]{1,128}$/);
+      if (bilateral && payload.eyeSide === "OD") {
+        assert.deepEqual(payload.clinicalFeatures, clinical);
+        if (payload.reanalysisOf) {
+          assert.equal(payload.reanalysisOf, rightId);
+          assert.equal(payload.imageId, replacement.id);
+          assert.ok(uploaded.includes(replacement));
+          reanalyses.push({ id: childId, imageId: replacement.id, reanalysisOfId: rightId, createdAt });
+          return reply(response, 202, { inferenceId: childId, status: "QUEUED" });
+        }
+        assert.equal(payload.imageId, rightImage.id);
+        return reply(response, 202, { inferenceId: rightId, status: "QUEUED" });
+      }
       assert.equal(payload.imageId, imageId);
       assert.equal(payload.eyeSide, "OS");
       assert.deepEqual(payload.clinicalFeatures, clinical);
+      if (bilateral) return reply(response, 202, { inferenceId, status: "QUEUED" });
       if (!intent) {
         intent = { key, payload };
         return reply(response, 503);
@@ -167,37 +233,52 @@ function createClinicalFixture() {
       return reply(response, 202, { inferenceId, status: "QUEUED" });
     }
     if (route === "POST " + consultation + "/required-executions") {
-      assert.deepEqual(json().executionIds, [inferenceId]);
+      assert.deepEqual(json().executionIds, bilateral ? [rightId, inferenceId] : [inferenceId]);
       frozen = true;
       return reply(response, 200, { id: consultationId });
     }
     if (route === "GET " + consultation) {
       return reply(response, 200, {
-        id: consultationId, patientId, createdAt, clinicalData: clinical, images: [image],
-        requiredExecutionIds: frozen ? [inferenceId] : [],
-        analysisState: reads >= 2 ? "COMPLETED" : "IN_PROGRESS",
+        id: consultationId, patientId: studyPatientId, createdAt, clinicalData: clinical, images: uploaded,
+        feedback: feedback ? [feedback] : [], reanalyses,
+        requiredExecutionIds: frozen ? (bilateral ? [rightId, inferenceId] : [inferenceId]) : [],
+        analysisState: bilateral ? "REVIEW_REQUIRED" : reads >= 2 ? "COMPLETED" : "IN_PROGRESS",
         reportState: reads >= 3 ? "AVAILABLE" : "REPORT_PENDING",
-        completionState: reads >= 3 ? "COMPLETE" : "INCOMPLETE",
-        pollingStop: reads >= 3 ? "COMPLETE" : "CONTINUE",
+        completionState: !bilateral && reads >= 3 ? "COMPLETE" : "INCOMPLETE",
+        pollingStop: bilateral ? "ACTION_REQUIRED" : reads >= 3 ? "COMPLETE" : "CONTINUE",
       });
     }
 
-    const inference = "/inferences/" + inferenceId;
+    const requestedId = url.pathname.split("/")[2];
+    const isRight = bilateral && requestedId === rightId;
+    const isChild = bilateral && requestedId === childId && reanalyses.length > 0;
+    const inference = "/inferences/" + (isRight || isChild ? requestedId : inferenceId);
+    if (sessionUser.role !== "OFTALMOLOGO" && url.pathname.startsWith(inference)) {
+      const grant = url.pathname === inference ? "result" : url.pathname.includes("/reports") ? "pdf" : "artifacts";
+      if (!readGrants[grant]) return reply(response, 404);
+    }
+    if (route === "GET " + inference + "/clahe") return reply(response, 200, { url: apiOrigin + "/overlay.png", expiresIn: 60 });
+    if (route === "GET " + inference + "/gradcam") {
+      if (isRight) return reply(response, 404);
+      return reply(response, 200, { url: apiOrigin + "/mask.png", baseUrl: apiOrigin + "/overlay.png", expiresIn: 60 });
+    }
     if (route === "GET " + inference) {
       if (!holdAnalysis || reads === 0) reads++;
-      const queued = reads === 1;
-      const published = reads >= 3;
+      const queued = !bilateral && reads === 1;
+      const published = bilateral || reads >= 3;
       const resultStatus = queued ? "PENDING" : "AVAILABLE";
       return reply(response, 200, {
-        id: inferenceId, imageId, createdAt, predictedClass: queued ? null : 1,
-        confidence: queued ? null : 0.92,
-        probabilities: queued ? {} : { Glaucoma: 0.03, Non_Glaucoma: 0.92, Suspicious_Glaucoma: 0.05 },
+        id: requestedId, imageId: isRight ? rightImage.id : isChild ? replacement.id : imageId, createdAt,
+        gradcamPath: queued || isRight || !readGrants.artifacts ? null : "fixture-map", hasClahe: readGrants.artifacts,
+        predictedClass: queued || isRight ? null : 1,
+        confidence: queued || isRight ? null : 0.92,
+        probabilities: queued || isRight ? {} : { Glaucoma: 0.03, Non_Glaucoma: 0.92, Suspicious_Glaucoma: 0.05 },
         cdr: queued ? null : 0.42, cdrVertical: queued ? null : 0.38,
-        modelVersion: "fixture-model", status: queued ? "QUEUED" : "COMPLETED",
+        modelVersion: "fixture-model", status: isRight ? "REVIEW_REQUIRED" : queued ? "QUEUED" : "COMPLETED",
         pollingStop: published ? "COMPLETE" : "CONTINUE",
         delivery: {
           resultStatus, evidenceStatus: resultStatus, pdfStatus: published ? "AVAILABLE" : "PENDING",
-          complete: published, reviewRequired: false, failed: false, deliveryTerminal: published,
+          complete: published && !isRight, reviewRequired: isRight, failed: false, deliveryTerminal: published,
         },
       }, published ? {} : { "Retry-After": "2" });
     }
@@ -222,21 +303,28 @@ function createClinicalFixture() {
       return reply(response, 200, { status: "AVAILABLE", url: apiOrigin + "/fixture.pdf", expiresInSeconds: 60 });
     }
     if (route === "POST /feedback") {
-      feedback = json();
+      feedback = { ...json(), id: feedback?.id ?? randomUUID(), created_at: createdAt, updated_at: new Date().toISOString() };
       assert.equal(feedback.consultation_id, consultationId);
       assert.equal(feedback.inference_id, inferenceId);
       assert.ok([null, 0, 1, 2].includes(feedback.validated_class));
       assert.equal(typeof feedback.is_gold_standard, "boolean");
-      return reply(response, 200, { id: randomUUID(), created_at: createdAt, ...feedback });
+      return reply(response, 200, feedback);
     }
     assert.fail("Unexpected test request: " + route);
   }
 
   return {
     user, researcher, admin, password, patientId, consultationId, inferenceId, pdf, errors,
+    childId,
+    getRecoveryCode() { return recoveryCode; },
+    grantReads(value) { readGrants = value; },
     setOrigins(web, api) { webOrigin = web; apiOrigin = api; },
     setImages(value) { images = value; },
     holdAnalysis(value) { holdAnalysis = value; },
+    grantExport(value, account = researcher) {
+      if (value) exportUsers.add(account.id);
+      else exportUsers.delete(account.id);
+    },
     async handle(request, response) {
       try {
         await handle(request, response);

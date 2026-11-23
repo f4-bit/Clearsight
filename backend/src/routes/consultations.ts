@@ -27,6 +27,8 @@ import {
   requiredExecutionsResponseSchema,
 } from "../schemas/consultation.js";
 import { imageReadSchema } from "../schemas/image.js";
+import { FeedbackRead } from "../schemas/feedback.js";
+import { toFeedbackRead } from "./feedback.js";
 import type { ClinicalAccessService } from "../services/clinical-access.js";
 import { subjectFromRequest } from "../services/clinical-access.js";
 import { computeConsultationStates } from "../services/consultation-completion.js";
@@ -346,6 +348,10 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
             clinicalData: z.record(z.string(), z.unknown()),
             createdAt: z.date().or(z.iso.datetime()),
             images: z.array(imageReadSchema),
+            feedback: z.array(FeedbackRead),
+            reanalyses: z.array(z.object({
+              id: z.uuid(), imageId: z.uuid(), reanalysisOfId: z.uuid().nullable(), createdAt: z.date(),
+            })),
             requiredExecutionIds: z.array(z.string().uuid()),
             requiredSetVersion: z.string().nullable(),
             analysisState: AnalysisState,
@@ -371,6 +377,16 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
         throw notFound("Consultation");
       }
       const states = computeConsultationStates(completion.input);
+      const [feedback, reanalyses] = await Promise.all([
+        prisma.clinicalFeedback.findMany({
+          where: { consultationId: consultation.id, doctorId: subject.id },
+        }),
+        prisma.inference.findMany({
+          where: { reanalysisOfId: { not: null }, image: { consultationId: consultation.id, consultation: { doctorId: subject.id } } },
+          select: { id: true, imageId: true, reanalysisOfId: true, createdAt: true },
+          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        }),
+      ]);
 
       return reply.send({
         id: consultation.id,
@@ -383,6 +399,8 @@ export const consultationRoutes: FastifyPluginAsync<ConsultationRoutesOptions> =
           toImageRead,
         ),
         requiredExecutionIds: [...completion.requiredExecutionIds],
+        feedback: feedback.map(toFeedbackRead),
+        reanalyses,
         requiredSetVersion: completion.requiredSetVersion,
         analysisState: states.analysisState,
         reportState: states.reportState,

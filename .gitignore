@@ -5,9 +5,12 @@ __pycache__/
 node_modules/
 frontend/certificates/
 .next/
+frontend/tsconfig.tsbuildinfo
+.codegraph/
 .env
 dist/
 .env.azure
+frontend/.env.local
 *.onnx
 mlruns/
 .DS_Store
@@ -19,6 +22,7 @@ openspec/
 *.h5
 *.safetensors
 ml/models/cache/
+models_cache/
 docker/ml-service.env
 
 # GGA and Agent instructions

@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Eye, EyeOff, Pause, Play } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
@@ -113,6 +114,7 @@ export default function LoginPage() {
               <ArrowRight size={16} aria-hidden="true" />
             </button>
           </form>
+          <Link className="mt-4 inline-block text-sm text-sky-300" href="/login/recuperar">Olvidé mi contraseña</Link>
         </section>
       </div>
     </main>

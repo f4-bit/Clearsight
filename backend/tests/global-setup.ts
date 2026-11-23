@@ -72,7 +72,15 @@ export default async function setup(project: TestProject) {
 
   try {
     const { PostgreSqlContainer } = await import("@testcontainers/postgresql");
-    const startedContainer = await new PostgreSqlContainer("postgres:16-alpine")
+    // Older Docker Desktop engines assign a Windows-accessible ephemeral port
+    // when explicitly bound to loopback. Remote Docker hosts keep their default.
+    class LoopbackPostgres extends PostgreSqlContainer {
+      protected async beforeContainerCreated() {
+        this.hostConfig.PortBindings = { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }] };
+      }
+    }
+    const Container = process.env.CLEARSIGHT_TEST_LOOPBACK === "1" ? LoopbackPostgres : PostgreSqlContainer;
+    const startedContainer = await new Container("postgres:16-alpine")
       .withDatabase(databaseName)
       .withLabels({
         [TEST_OWNERSHIP_LABEL]: runId,

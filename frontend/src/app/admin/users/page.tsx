@@ -32,6 +32,21 @@ function UsersWorkspace() {
   const [message, setMessage] = useState("");
   const [reload, setReload] = useState(0);
   const [editor, setEditor] = useState<UserEditorState | null>(null);
+  const detailRequest = useRef<AbortController | null>(null);
+
+  async function editAccount(id: string) {
+    detailRequest.current?.abort();
+    const controller = new AbortController();
+    detailRequest.current = controller;
+    setMessage("");
+    setError("");
+    try {
+      const user = await api<AdminUser>(`/admin/users/${id}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setEditor({ mode: "edit", user });
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(errorMessage(failure));
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -58,7 +73,7 @@ function UsersWorkspace() {
         }
       },
     ).finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
+    return () => { controller.abort(); detailRequest.current?.abort(); };
   }, [filters, reload]);
 
   return (
@@ -67,7 +82,7 @@ function UsersWorkspace() {
       <div className={styles.workspace}>
         <div className={styles.heading}>
           <h2 id="users-heading">Usuarios y permisos</h2>
-          <button type="button" className={styles.primary} onClick={() => { setMessage(""); setEditor({ mode: "create" }); }}>
+          <button type="button" className={styles.primary} onClick={() => { detailRequest.current?.abort(); setMessage(""); setEditor({ mode: "create" }); }}>
             <Plus size={16} aria-hidden="true" /> Crear usuario
           </button>
         </div>
@@ -135,7 +150,7 @@ function UsersWorkspace() {
                     </td>
                     <td className={styles.actionColumn}>
                       <button type="button" className={`${styles.secondary} ${styles.edit}`} disabled={loading}
-                        aria-label={`Editar ${user.fullName}`} onClick={() => { setMessage(""); setEditor({ mode: "edit", user }); }}>
+                        aria-label={`Editar ${user.fullName}`} onClick={() => void editAccount(user.id)}>
                         <Pencil size={14} aria-hidden="true" /> Editar
                       </button>
                     </td>

@@ -47,6 +47,7 @@ import {
   type PasswordResetService,
 } from "./services/password-reset.js";
 import type { PasswordResetDelivery } from "./services/password-reset-delivery.js";
+import { smtpPasswordResetDelivery } from "./services/password-reset-smtp.js";
 import type { PasswordRecoveryQuotaGuard } from "./services/password-recovery-quota.js";
 import {
   createAuthSessionService,
@@ -90,7 +91,7 @@ export interface AppDeps {
   adminUsersService?: AdminUsersService;
   /** Trusted test seam for password recovery; defaults from the injected prisma. */
   passwordResetService?: PasswordResetService;
-  /** Explicit port; the production default is DISABLED and never sends mail. */
+  /** Explicit delivery port for isolated app instances. */
   passwordResetDelivery?: PasswordResetDelivery;
   /** Trusted test seam; defaults to the R1 durable recovery quota guard. */
   passwordRecoveryQuotaGuard?: PasswordRecoveryQuotaGuard;
@@ -203,15 +204,14 @@ export async function buildApp(deps?: AppDeps): Promise<FastifyInstance> {
   });
   app.decorate("authWebSessionService", authWebSessionService);
 
-  // Password recovery uses the same injected client/schema/clock. The delivery
-  // port is DISABLED unless a caller explicitly injects the test memory sink.
+  // Only the normal server bootstrap picks up the configured mail relay.
   const passwordResetService =
     deps?.passwordResetService ??
     createPasswordResetService(prisma, {
       jwtSecret: cfg.JWT_SECRET,
       databaseSchema,
       now: deps?.now,
-      delivery: deps?.passwordResetDelivery,
+      delivery: deps ? deps.passwordResetDelivery : smtpPasswordResetDelivery(process.env),
       quotaGuard: deps?.passwordRecoveryQuotaGuard,
       onOperationalFailure: (code) => {
         app.log.error(

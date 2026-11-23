@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import sharp from "sharp";
@@ -629,6 +630,18 @@ describe("clinical E2E (7.2)", () => {
     });
     expect(storedInference.consultationId).toBe(consultationId);
     expect(storedInference.modelVersion).toBe(FAKE_MANIFEST_VERSION);
+    if (process.env.CLEARSIGHT_BROWSER_E2E === "1") {
+      const { verifyLocalStudy } = createRequire(import.meta.url)("../../frontend/tests/connected-study.cjs");
+      let browserApi: FastifyInstance | undefined;
+      try {
+        await verifyLocalStudy(async (publicOrigin: string) => {
+          browserApi = await buildTestApp(prisma, { publicOrigin, storage: urlStorage });
+          return browserApi.listen({ host: "127.0.0.1", port: 0 });
+        }, { email: DOCTOR_EMAIL, password: PASSWORD, patientId, consultationId, expectedClass: 2 });
+      } finally {
+        await browserApi?.close();
+      }
+    }
     expect(doctorId).toBe(
       (
         await prisma.consultation.findUniqueOrThrow({

@@ -115,6 +115,14 @@ export async function login(email: string, password: string): Promise<SessionUse
   return session.user;
 }
 
+export async function forgotPassword(email: string) {
+  await request("/auth/password/forgot", { method: "POST", ...jsonBody({ email }) });
+}
+
+export async function resetPassword(token: string, newPassword: string) {
+  await request("/auth/password/reset", { method: "POST", ...jsonBody({ token, newPassword }) });
+}
+
 export async function restoreSession(): Promise<SessionUser> {
   if (!accessToken) await refreshAccess();
   return api<SessionUser>("/auth/me");

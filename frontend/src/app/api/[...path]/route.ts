@@ -6,11 +6,11 @@ export const dynamic = "force-dynamic";
 const id = "[0-9a-f-]{36}";
 const permitted = {
   GET: new RegExp(
-    `^/(auth/me|patients|consultations/${id}|inferences/${id}(?:/artifacts(?:/(?:mask|overlay)/url)?|/reports(?:/[0-9]+/url)?)?|admin/users(?:/${id})?|export/gold-standard)$`,
+    `^/(auth/me|patients(?:/${id}(?:/consultations)?)?|consultations/${id}|inferences/${id}(?:/gradcam|/clahe|/artifacts(?:/(?:mask|overlay)/url)?|/reports(?:/[0-9]+/url)?)?|admin/users(?:/${id})?|export/gold-standard)$`,
     "i",
   ),
   POST: new RegExp(
-    `^/(auth/(?:login|refresh|logout)|admin/users|patients|consultations(?:/${id}/(?:images|required-executions))?|inferences|feedback)$`,
+    `^/(auth/(?:login|refresh|logout|password/(?:forgot|reset))|admin/users|patients|consultations(?:/${id}/(?:images|required-executions))?|inferences|feedback)$`,
     "i",
   ),
   PATCH: new RegExp(`^/admin/users/${id}$`, "i"),
