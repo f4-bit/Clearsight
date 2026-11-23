@@ -21,6 +21,11 @@ class SegmentationRunner:
         self.model = tf.keras.models.load_model(str(model_path), compile=False)
 
     def predict(self, image: np.ndarray) -> np.ndarray:
-        batch = np.expand_dims(image, axis=0)
+        array = np.asarray(image, dtype=np.float32)
+        # The FPN was trained on [0, 1] inputs (see ML.md); feeding [0, 255] made
+        # it label background/cup and never the optic disc.
+        if array.size and float(array.max()) > 1.5:
+            array = array / 255.0
+        batch = np.expand_dims(array, axis=0)
         output = self.model.predict(batch, verbose=0)
         return np.asarray(output)
