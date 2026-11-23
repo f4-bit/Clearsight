@@ -123,35 +123,36 @@ class InferencePipeline:
         self,
         inference_id: UUID,
         classifier_input: np.ndarray,
-        predictions: dict[str, ClassifierPrediction],
+        cdr: float,
+        clinical: dict[str, float],
         class_index: int,
     ) -> dict[str, str]:
+        explain = getattr(self.classification, "explain", None)
+        if explain is None:
+            return {}
+        try:
+            cams = explain(classifier_input, float(cdr), clinical, class_index)
+        except Exception:
+            logging.getLogger(__name__).warning("Grad-CAM unavailable")
+            return {}
         size = (classifier_input.shape[2], classifier_input.shape[1])
         maps = []
-        for name, prediction in predictions.items():
-            activation = getattr(prediction, "activation_maps", None)
-            if (activation is None or activation.ndim != 3 or class_index >= activation.shape[0]
-                    or min(activation.shape[1:]) < 1):
-                return {}  # Older or incompatible graphs may only provide usable logits.
-            signed = activation[class_index].astype(np.float32)
-            maps.append(self.manifest["ensemble"][name] * cv2.resize(signed, size))
+        for name, cam in cams.items():
+            weight = self.manifest["ensemble"].get(name)
+            if weight is None or cam is None or cam.size == 0:
+                continue
+            maps.append(weight * cv2.resize(np.asarray(cam, dtype=np.float32), size))
+        if not maps:
+            return {}
         heat = np.maximum(np.sum(maps, axis=0), 0)
+        rgb = np.uint8(np.rint(classifier_input[:3].transpose(1, 2, 0) * 255))
+        # Do not highlight the black background the classifier crop may include.
+        foreground = np.float32(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) > 15)
+        heat = heat * foreground
         if not np.isfinite(heat).all() or heat.max() <= heat.min():
             return {}
         heat = (heat - heat.min()) / (heat.max() - heat.min())
-        height, width = heat.shape
-        peak_y, peak_x = np.unravel_index(int(np.argmax(heat)), heat.shape)
-        on_border = (
-            peak_x <= 0.08 * width or peak_x >= 0.92 * width
-            or peak_y <= 0.08 * height or peak_y >= 0.92 * height
-        )
-        concentrated = float((heat >= 0.5).mean()) < 0.01
-        if on_border and concentrated:
-            # Peripheral single-cell attention is an unreliable map; omit it
-            # so the UI hides Grad-CAM instead of showing a misleading blob.
-            return {}
         colors = cv2.applyColorMap(np.uint8(heat * 255), cv2.COLORMAP_JET)
-        rgb = np.uint8(np.rint(classifier_input[:3].transpose(1, 2, 0) * 255))
         base = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         refs = {}
         for key, pixels in (("gradcam_base", base), ("gradcam", colors)):
@@ -293,7 +294,7 @@ class InferencePipeline:
             class_names,
         )
         artifacts.update(self._gradcam_artifacts(
-            request.inference_id, classifier_input, model_predictions, class_names.index(label),
+            request.inference_id, classifier_input, float(cdr), clinical, class_names.index(label),
         ))
         base_result.update(
             {

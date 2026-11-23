@@ -171,3 +171,18 @@ class ClassificationRunner:
                     activation_maps=maps[0].cpu().numpy() if maps is not None else None,
                 )
         return predictions
+
+    def explain(self, image, cdr, clinical_features, class_index):
+        """Real Grad-CAM via gradient hooks on the last conv layer (gradcam.py)."""
+        from ml.inference.gradcam import TARGET_LAYERS, generate_gradcam
+        image_tensor = torch.from_numpy(image).unsqueeze(0).to(self.device)
+        cdr_tensor = torch.tensor([[float(cdr)]], dtype=torch.float32, device=self.device)
+        clinical_tensor = self._clinical_vector(clinical_features)
+        cams = {}
+        for model_type, model in self.models.items():
+            target = TARGET_LAYERS.get(model_type) or TARGET_LAYERS.get("resnet")
+            cams[model_type] = generate_gradcam(
+                model, image_tensor, cdr_tensor, clinical_tensor, class_index,
+                target_layer=target,
+            )
+        return cams
