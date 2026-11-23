@@ -51,3 +51,14 @@ def test_quality_flags_border_disc_and_degenerate_cdr():
     assert quality["disc_touches_border"] is True
     assert quality["cdr_degenerate"] is True
     assert quality["review_required"] is True
+
+def test_quality_flags_cup_outside_disc():
+    disc = np.array([[[100, 100]], [[200, 100]], [[200, 200]], [[100, 200]]], dtype=np.int32)
+    cup = np.array([[[300, 300]], [[350, 300]], [[350, 350]], [[300, 350]]], dtype=np.int32)
+    mask = np.zeros((512, 512), dtype=np.uint8)
+    cv2.drawContours(mask, [disc], -1, 1, thickness=cv2.FILLED)
+    cv2.drawContours(mask, [cup], -1, 2, thickness=cv2.FILLED)
+    output = SegmentationOutput(mask=mask, disc_contour=disc, cup_contour=cup, probabilities=np.zeros((512, 512, 3)))
+    quality = segmentation_quality(output, image_shape=(512, 512))
+    assert quality["cup_inside_disc"] is False
+    assert quality["review_required"] is True

@@ -111,6 +111,15 @@ def segmentation_quality(
     cup_area = 0.0
     if output.cup_contour is not None:
         cup_area = float(cv2.contourArea(output.cup_contour))
+    cup_inside_disc = True
+    if output.disc_contour is not None and output.cup_contour is not None:
+        disc_region = np.zeros(output.mask.shape, dtype=np.uint8)
+        cv2.drawContours(disc_region, [output.disc_contour], -1, 1, thickness=cv2.FILLED)
+        cup_region = np.zeros(output.mask.shape, dtype=np.uint8)
+        cv2.drawContours(cup_region, [output.cup_contour], -1, 1, thickness=cv2.FILLED)
+        cup_total = int(cup_region.sum())
+        if cup_total > 0:
+            cup_inside_disc = (int((cup_region & disc_region).sum()) / cup_total) >= 0.90
     disc_touches_border = False
     if output.disc_contour is not None and image_shape is not None:
         height, width = image_shape
@@ -130,6 +139,7 @@ def segmentation_quality(
         "cdr_is_finite": cdr is not None,
         "cdr_in_range": cdr is None or 0.0 <= cdr <= 1.0,
         "cup_area_not_larger_than_disc": cup_area <= disc_area or disc_area == 0,
+        "cup_inside_disc": cup_inside_disc,
         "disc_touches_border": disc_touches_border,
         "cdr_degenerate": cdr_degenerate,
     }
@@ -139,6 +149,7 @@ def segmentation_quality(
         or not quality["cdr_is_finite"]
         or not quality["cdr_in_range"]
         or not quality["cup_area_not_larger_than_disc"]
+        or not cup_inside_disc
         or disc_touches_border
         or cdr_degenerate
     )
