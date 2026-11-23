@@ -26,6 +26,7 @@ from ml.inference.postprocessing import (
     clean_segmentation,
     create_overlay,
     encode_mask,
+    segmentation_foreground,
     segmentation_quality,
 )
 from ml.inference.segmentation import SegmentationRunner
@@ -217,12 +218,14 @@ class InferencePipeline:
             clahe_tile_grid=clahe_tile_grid,
         )
         probabilities = self.segmentation.predict(segmentation_input)
+        valid_region = segmentation_foreground(crop)
         segmentation = clean_segmentation(
             probabilities,
             self.manifest["segmentation"]["disc_threshold"],
             self.manifest["segmentation"]["cup_threshold"],
+            valid_region=valid_region,
         )
-        quality = segmentation_quality(segmentation)
+        quality = segmentation_quality(segmentation, segmentation.mask.shape)
         artifacts = self._artifacts(
             request.inference_id,
             segmentation.mask,
