@@ -20,5 +20,8 @@ RUN set -o pipefail && npx prisma generate 2>&1 | tr -d '\200-\377'
 COPY backend ./
 RUN npm run build
 
+COPY docker/backend-entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+
 EXPOSE 8000
-CMD ["npm", "start"]
+CMD ["./entrypoint.sh"]

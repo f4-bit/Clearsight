@@ -332,7 +332,6 @@ TAGGED_CREATES = [
     ["acr", "create"],
     ["postgres", "flexible-server", "create"],
     ["containerapp", "env", "create"],
-    ["containerapp", "job", "create"],
     ["containerapp", "create"],
 ]
 
@@ -367,7 +366,7 @@ def test_deploy_script_declares_required_resources() -> None:
         '"Standard_LRS"',
         '"Standard_B1ms"',
         '"Basic"',
-        "ML_INFERENCE_BACKEND=onnx",
+        "ML_INFERENCE_BACKEND=pytorch",
         "STORAGE_PROVIDER=azure",
         "AZURE_STORAGE_ACCOUNT_URL",
         "AZURE_STORAGE_ACCOUNT_NAME",
@@ -378,23 +377,29 @@ def test_deploy_script_declares_required_resources() -> None:
         "MINIO_BUCKET_OVERLAY",
         "MINIO_BUCKET_PDF",
         "ML_SERVICE_URL",
-        "REDIS_URL",
         "raw-retinas",
         "gradcam-overlays",
         "segmentation-masks",
         "segmentation-overlays",
         "clinical-reports",
-        "models",
         "prisma:deploy",
         "admin:bootstrap",
+        "BOOTSTRAP_ADMIN_EMAIL",
+        "BOOTSTRAP_ADMIN_FULL_NAME",
+        "bootstrap-admin-password",
         '"containerapp", "create"',
-        '"containerapp", "job", "create"',
         "manifest.json",
         "--tags",
     ]:
         assert token in content, f"Expected token '{token}' in deploy_azure.ps1"
 
-    for forbidden in [".env.azure", "docker/init.sql", "psycopg2", "prisma:seed"]:
+    for forbidden in [
+        ".env.azure",
+        "docker/init.sql",
+        "psycopg2",
+        "prisma:seed",
+        '"containerapp", "job", "create"',
+    ]:
         assert forbidden not in content, f"Unexpected token '{forbidden}' in deploy_azure.ps1"
 
 
@@ -443,7 +448,6 @@ def test_deploy_plan_mode_does_not_mutate(tmp_path: Path) -> None:
     assert manifest["tags"]["project"] == "clearsight"
     assert set(manifest["images"]) == {
         "backend",
-        "migrate",
         "worker",
         "frontend",
         "ml-service",
@@ -453,7 +457,7 @@ def test_deploy_plan_mode_does_not_mutate(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -471,15 +475,17 @@ def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> No
             assert tags["owner"] == "dev"
 
     builds = [entry for entry in entries if _args_start(entry, ["acr", "build"])]
-    assert len(builds) == 5
+    assert len(builds) == 4
     built_images = {entry["args"][entry["args"].index("--image") + 1] for entry in builds}
     assert built_images == {
         "clearsight-backend:deadbeefcafe",
-        "clearsight-migrate:deadbeefcafe",
         "clearsight-worker:deadbeefcafe",
         "clearsight-frontend:deadbeefcafe",
         "clearsight-ml-service:deadbeefcafe",
     }
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
 
     manifest = json.loads(_manifest_path(tmp_path).read_text(encoding="utf-8"))
     assert manifest["mode"] == "apply"
@@ -492,7 +498,6 @@ def test_deploy_apply_tags_every_create_and_records_images(tmp_path: Path) -> No
         "acr",
         "postgres",
         "containerapp.env",
-        "containerapp.job",
         "containerapp",
     }
     assert expected_types <= types
@@ -508,7 +513,7 @@ def test_deploy_manifest_and_output_do_not_contain_secrets(tmp_path: Path) -> No
         "canary_redis_key": "CANARY_REDIS_KEY_0123456789",
     }
     env = _stub_environment(tmp_path, canaries)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -529,7 +534,7 @@ def test_deploy_gate_blocks_context_mismatch(tmp_path: Path) -> None:
     env = _stub_environment(
         tmp_path, {"subscription_id": "99999999-9999-9999-9999-999999999999"}
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE" in result.stdout + result.stderr
@@ -542,7 +547,7 @@ def test_deploy_gate_blocks_unregistered_provider(tmp_path: Path) -> None:
     env = _stub_environment(
         tmp_path, {"providers": {"Microsoft.App": "NotRegistered"}}
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE" in result.stdout + result.stderr
@@ -553,7 +558,7 @@ def test_deploy_gate_blocks_unregistered_provider(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_gate_blocks_disabled_subscription(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path, {"state": "Disabled"})
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE" in result.stdout + result.stderr
@@ -564,9 +569,9 @@ def test_deploy_gate_blocks_disabled_subscription(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_apply_failure_runs_cleanup_in_finally(tmp_path: Path) -> None:
     env = _stub_environment(
-        tmp_path, {"fail_commands": ["containerapp job create"]}
+        tmp_path, {"fail_commands": ["containerapp create"]}
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
 
@@ -581,7 +586,7 @@ def test_deploy_apply_failure_runs_cleanup_in_finally(tmp_path: Path) -> None:
 @requires_powershell
 def test_deploy_keep_for_debug_skips_cleanup(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload", "-KeepForDebug"]
+    args = _deploy_args(tmp_path) + ["-Apply", "-KeepForDebug"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -814,7 +819,7 @@ def test_deploy_apply_manifest_never_exposes_secret_names_or_connection_strings(
         "canary_redis_key": "CANARY_REDIS_KEY_QA_0123456789",
     }
     env = _stub_environment(tmp_path, canaries)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -928,7 +933,7 @@ def test_deploy_gate_blocks_missing_blank_or_negative_infinity(
 @requires_powershell
 def test_deploy_apply_with_unconfirmed_budget_creates_nothing(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path, BudgetUsd="NaN") + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path, BudgetUsd="NaN") + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "BLOQUEO" in result.stdout + result.stderr
@@ -1041,7 +1046,7 @@ def test_teardown_group_delete_timeout_reports_residual_and_fails(tmp_path: Path
 @requires_powershell
 def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1084,44 +1089,65 @@ def test_deploy_apply_uses_run_prefix_and_runtime_env_contract(tmp_path: Path) -
     ]:
         assert assignment in backend_env, assignment
     assert any(item.startswith("ML_SERVICE_URL=https://") for item in backend_env)
-
-    redis_values = [item for item in backend_env if item.startswith("REDIS_URL=")]
-    assert len(redis_values) == 1, backend_env
-    redis_url = redis_values[0].split("=", 1)[1]
-    assert redis_url.startswith("redis://clearsight-run123-redis.")
-    assert redis_url.endswith(":6379/0")
-    assert "rediss://" not in redis_url
-    assert "secretref:" not in redis_url
+    assert not any(item.startswith("REDIS_URL=") for item in backend_env)
     assert not any("redis" in item for item in _option_values(backend, "--secrets"))
+    assert not any(item.startswith("BOOTSTRAP_ADMIN_") for item in backend_env)
+    assert not any(
+        item.startswith("bootstrap-admin-password=")
+        for item in _option_values(backend, "--secrets")
+    )
 
     worker = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-worker")
     worker_env = _option_values(worker, "--env-vars")
-    assert f"REDIS_URL={redis_url}" in worker_env
+    for assignment in [
+        "JWT_SECRET=secretref:jwt-secret",
+        "EXPORT_HMAC_SECRET=secretref:export-hmac-secret",
+    ]:
+        assert assignment in worker_env, assignment
+    assert not any(item.startswith("REDIS_URL=") for item in worker_env)
     assert not any("redis" in item for item in _option_values(worker, "--secrets"))
+    worker_secrets = _option_values(worker, "--secrets")
+    assert any(item.startswith("jwt-secret=") for item in worker_secrets)
+    assert any(item.startswith("export-hmac-secret=") for item in worker_secrets)
 
     ml_app = _entry_with_name(entries, ["containerapp", "create"], "clearsight-run123-ml")
-    assert "ML_INFERENCE_BACKEND=onnx" in _option_values(ml_app, "--env-vars")
+    assert "ML_INFERENCE_BACKEND=pytorch" in _option_values(ml_app, "--env-vars")
 
-    migrate = _entry_with_name(
-        entries, ["containerapp", "job", "create"], "clearsight-run123-migrate"
-    )
-    assert _option_values(migrate, "--image") == ["clearsight-migrate:deadbeefcafe"]
-    assert "DATABASE_URL=secretref:database-url" in _option_values(migrate, "--env-vars")
+    expected_images = {
+        "clearsight-run123-backend": "clearsight-backend:deadbeefcafe",
+        "clearsight-run123-worker": "clearsight-worker:deadbeefcafe",
+        "clearsight-run123-ml": "clearsight-ml-service:deadbeefcafe",
+        "clearsight-run123-frontend": "clearsight-frontend:deadbeefcafe",
+    }
+    for name, short_image in expected_images.items():
+        app = _entry_with_name(entries, ["containerapp", "create"], name)
+        assert _option_values(app, "--image") == [
+            f"clearsightrun123.azurecr.io/{short_image}"
+        ], name
 
     assert any(
         _args_start(entry, ["storage", "container", "create"])
         and _option_values(entry, "--name") == ["clinical-reports"]
         for entry in entries
     )
-    purposes = {resource.get("purpose") for resource in manifest["resources"]}
-    assert "prisma:deploy" in purposes
-    assert manifest["jobs"]["migrate"] == "succeeded"
+    assert not any(
+        _args_start(entry, ["storage", "container", "create"])
+        and _option_values(entry, "--name") == ["models"]
+        for entry in entries
+    ), "deploy must not create the 'models' container"
+    assert not [
+        entry for entry in entries if _args_start(entry, ["storage", "blob", "upload"])
+    ], "deploy must not upload model blobs"
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
+    assert "jobs" not in manifest
 
 
 @requires_powershell
 def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1158,37 +1184,26 @@ def test_deploy_backend_sets_auth_public_origin_without_secretref(tmp_path: Path
 
 
 @requires_powershell
-def test_deploy_redis_is_internal_container_app(tmp_path: Path) -> None:
+def test_deploy_does_not_provision_redis(tmp_path: Path) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
     entries = _read_log(tmp_path / "az-calls.jsonl")
     assert not [entry for entry in entries if _args_start(entry, ["redis"])]
 
-    redis_app = _entry_with_name(
-        entries, ["containerapp", "create"], "clearsight-run123-redis"
+    containerapp_creates = [
+        entry for entry in entries if _args_start(entry, ["containerapp", "create"])
+    ]
+    assert containerapp_creates, "expected container app creates"
+    for entry in containerapp_creates:
+        assert _option_values(entry, "--image") != ["redis:7-alpine"], entry
+        assert _option_values(entry, "--transport") != ["tcp"], entry
+    assert not any(
+        _option_values(entry, "--name") == ["clearsight-run123-redis"]
+        for entry in containerapp_creates
     )
-    assert _option_values(redis_app, "--image") == ["redis:7-alpine"]
-    assert _option_values(redis_app, "--target-port") == ["6379"]
-    assert _option_values(redis_app, "--ingress") == ["internal"]
-    assert _option_values(redis_app, "--transport") == ["tcp"]
-    assert _option_values(redis_app, "--min-replicas") == ["1"]
-    assert _option_values(redis_app, "--max-replicas") == ["1"]
-    assert not _option_values(redis_app, "--secrets")
-
-    for app_name in ("clearsight-run123-backend", "clearsight-run123-worker"):
-        app = _entry_with_name(entries, ["containerapp", "create"], app_name)
-        env_values = _option_values(app, "--env-vars")
-        redis_values = [item for item in env_values if item.startswith("REDIS_URL=")]
-        assert len(redis_values) == 1, env_values
-        value = redis_values[0].split("=", 1)[1]
-        assert value.startswith("redis://clearsight-run123-redis.")
-        assert value.endswith(":6379/0")
-        assert "rediss://" not in value
-        assert "secretref:" not in value
-        assert not any("redis" in item for item in _option_values(app, "--secrets"))
 
 
 @requires_powershell
@@ -1196,7 +1211,7 @@ def test_deploy_manifest_marks_group_created_by_run_and_teardown_deletes_it(
     tmp_path: Path,
 ) -> None:
     env = _stub_environment(tmp_path)
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload", "-KeepForDebug"]
+    args = _deploy_args(tmp_path) + ["-Apply", "-KeepForDebug"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1228,7 +1243,7 @@ def test_deploy_manifest_marks_group_created_by_run_and_teardown_deletes_it(
 
 
 @requires_powershell
-def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) -> None:
+def test_deploy_backend_receives_bootstrap_env_and_secret(tmp_path: Path) -> None:
     canary = "BootstrapQaCanary1!x"
     env = _stub_environment(tmp_path)
     values = {
@@ -1247,7 +1262,6 @@ def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) 
     parts = [f"-{key} '{value}'" for key, value in values.items()]
     parts += [
         "-Apply",
-        "-SkipModelUpload",
         f"-BootstrapAdminPassword (ConvertTo-SecureString '{canary}' -AsPlainText -Force)",
     ]
     command = f"& '{DEPLOY_SCRIPT}' " + " ".join(parts)
@@ -1255,21 +1269,38 @@ def test_deploy_bootstrap_job_runs_admin_bootstrap_without_seed(tmp_path: Path) 
     assert result.returncode == 0, result.stdout + result.stderr
 
     entries = _read_log(tmp_path / "az-calls.jsonl")
-    bootstrap = _entry_with_name(
-        entries, ["containerapp", "job", "create"], "clearsight-run123-bootstrap"
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
+
+    backend = _entry_with_name(
+        entries, ["containerapp", "create"], "clearsight-run123-backend"
     )
-    assert _option_values(bootstrap, "--command") == ["npm", "run", "admin:bootstrap"]
-    assert "seed" not in " ".join(bootstrap["args"]).lower()
+    backend_env = _option_values(backend, "--env-vars")
+    for assignment in [
+        "BOOTSTRAP_ADMIN_EMAIL=qa-bootstrap@example.test",
+        "BOOTSTRAP_ADMIN_FULL_NAME=Clearsight Administrator",
+        "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password",
+    ]:
+        assert assignment in backend_env, assignment
+    assert "DATABASE_URL=secretref:database-url" in backend_env
+
+    bootstrap_secrets = [
+        value
+        for value in _option_values(backend, "--secrets")
+        if value.startswith("bootstrap-admin-password=")
+    ]
+    assert bootstrap_secrets == [f"bootstrap-admin-password={canary}"], bootstrap_secrets
+
+    assert "seed" not in " ".join(backend["args"]).lower()
 
     manifest_text = _manifest_path(tmp_path).read_text(encoding="utf-8")
-    manifest = json.loads(manifest_text)
-    assert manifest["jobs"]["bootstrap"] == "succeeded"
     assert canary not in result.stdout + result.stderr
     assert canary not in manifest_text
 
 
 @requires_powershell
-def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path) -> None:
+def test_deploy_uses_workload_profiles_for_env_and_all_apps(tmp_path: Path) -> None:
     canary = "WorkloadProfileCanary1!x"
     env = _stub_environment(tmp_path)
     values = {
@@ -1288,7 +1319,6 @@ def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path)
     parts = [f"-{key} '{value}'" for key, value in values.items()]
     parts += [
         "-Apply",
-        "-SkipModelUpload",
         f"-BootstrapAdminPassword (ConvertTo-SecureString '{canary}' -AsPlainText -Force)",
     ]
     command = f"& '{DEPLOY_SCRIPT}' " + " ".join(parts)
@@ -1302,17 +1332,18 @@ def test_deploy_uses_workload_profiles_for_env_and_all_apps_jobs(tmp_path: Path)
     assert "--enable-workload-profiles" in env_create["args"]
 
     profile_creates = [
-        (["containerapp", "create"], "clearsight-run123-redis"),
         (["containerapp", "create"], "clearsight-run123-ml"),
         (["containerapp", "create"], "clearsight-run123-backend"),
         (["containerapp", "create"], "clearsight-run123-worker"),
         (["containerapp", "create"], "clearsight-run123-frontend"),
-        (["containerapp", "job", "create"], "clearsight-run123-migrate"),
-        (["containerapp", "job", "create"], "clearsight-run123-bootstrap"),
     ]
     for prefix, name in profile_creates:
         entry = _entry_with_name(entries, prefix, name)
         assert _option_values(entry, "--workload-profile-name") == ["Consumption"], name
+
+    assert not [
+        entry for entry in entries if _args_start(entry, ["containerapp", "job"])
+    ], "deploy must not create Container Apps jobs"
 
     assert any(
         _args_start(entry, ["containerapp", "env", "show"])
@@ -1335,9 +1366,135 @@ def test_deploy_refuses_preexisting_resource_group_of_another_run(
         tmp_path,
         {"pre_existing": [RESOURCE_GROUP], "id_tags": {rg_id: live_tags}},
     )
-    args = _deploy_args(tmp_path) + ["-Apply", "-SkipModelUpload"]
+    args = _deploy_args(tmp_path) + ["-Apply"]
     result = _run_powershell(DEPLOY_SCRIPT, args, env)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "no se reutiliza ni se borra" in result.stdout + result.stderr
     entries = _read_log(tmp_path / "az-calls.jsonl")
     assert _mutation_entries(entries) == [], entries
+
+
+# ---------------------------------------------------------------------------
+# Native stderr handling in Invoke-AzCli / Get-AzValue (PS 5.1 RemoteException).
+# ---------------------------------------------------------------------------
+
+STDERR_MARKER = "az-stub-progress-marker"
+
+
+def _write_native_az_stub(tmp_path: Path, exit_code: int) -> Path:
+    """Write a native (non-PowerShell) stub that always writes to stderr."""
+
+    if os.name == "nt":
+        stub = tmp_path / "az-native-stub.cmd"
+        stub.write_text(
+            "@echo off\r\n"
+            f">&2 echo {STDERR_MARKER}\r\n"
+            f"exit /b {exit_code}\r\n",
+            encoding="ascii",
+        )
+    else:
+        stub = tmp_path / "az-native-stub.sh"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{STDERR_MARKER}' >&2\n"
+            f"exit {exit_code}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+    return stub
+
+
+def _write_az_helper_harness(tmp_path: Path) -> Path:
+    """Harness that loads the two az helpers from the deploy AST and invokes one."""
+
+    harness = tmp_path / "deploy-az-helper-harness.ps1"
+    harness.write_text(
+        "param(\n"
+        "    [Parameter(Mandatory = $true)][string]$ScriptPath,\n"
+        "    [Parameter(Mandatory = $true)][string]$FunctionName\n"
+        ")\n"
+        '$ErrorActionPreference = "Stop"\n'
+        "Set-StrictMode -Version Latest\n"
+        "$script:AzExe = $env:CLEARSIGHT_AZ_EXE\n"
+        "if (-not $script:AzExe) {\n"
+        '    [Console]::Error.WriteLine("harness: CLEARSIGHT_AZ_EXE is not set")\n'
+        "    exit 4\n"
+        "}\n"
+        "$tokens = $null\n"
+        "$parseErrors = $null\n"
+        "$ast = [System.Management.Automation.Language.Parser]::ParseFile("
+        "$ScriptPath, [ref]$tokens, [ref]$parseErrors)\n"
+        "if ($parseErrors -and $parseErrors.Count -gt 0) {\n"
+        '    [Console]::Error.WriteLine("harness: parse errors")\n'
+        "    exit 2\n"
+        "}\n"
+        '$wanted = @("Invoke-AzCli", "Get-AzValue")\n'
+        "$definitions = $ast.FindAll({ param($node) "
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst] "
+        "-and $wanted -contains $node.Name }, $true)\n"
+        "foreach ($definition in $definitions) {\n"
+        "    . ([scriptblock]::Create($definition.Extent.Text))\n"
+        "}\n"
+        "try {\n"
+        '    if ($FunctionName -eq "Invoke-AzCli") {\n'
+        '        Invoke-AzCli @("storage", "blob", "upload") '
+        '-Operation "storage blob upload"\n'
+        "    }\n"
+        '    elseif ($FunctionName -eq "Get-AzValue") {\n'
+        '        $null = Get-AzValue @("account", "show", "--query", "id", '
+        '"-o", "tsv") -Operation "account context"\n'
+        "    }\n"
+        "    else {\n"
+        '        [Console]::Error.WriteLine("harness: unknown function")\n'
+        "        exit 3\n"
+        "    }\n"
+        '    Write-Output "NO_THROW"\n'
+        "    exit 0\n"
+        "}\n"
+        "catch {\n"
+        '    Write-Output ("THREW:" + $_.Exception.Message)\n'
+        "    exit 1\n"
+        "}\n",
+        encoding="utf-8-sig",
+    )
+    return harness
+
+
+@requires_powershell
+@pytest.mark.parametrize("function_name", ["Invoke-AzCli", "Get-AzValue"])
+def test_az_helpers_ignore_stderr_on_success(
+    tmp_path: Path, function_name: str
+) -> None:
+    stub = _write_native_az_stub(tmp_path, 0)
+    env = os.environ.copy()
+    env["CLEARSIGHT_AZ_EXE"] = str(stub)
+
+    result = _run_powershell(
+        _write_az_helper_harness(tmp_path),
+        ["-ScriptPath", str(DEPLOY_SCRIPT), "-FunctionName", function_name],
+        env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "NO_THROW" in result.stdout, result.stdout + result.stderr
+    assert "THREW:" not in result.stdout, result.stdout + result.stderr
+
+
+@requires_powershell
+@pytest.mark.parametrize("function_name", ["Invoke-AzCli", "Get-AzValue"])
+def test_az_helpers_raise_with_stderr_on_failure(
+    tmp_path: Path, function_name: str
+) -> None:
+    stub = _write_native_az_stub(tmp_path, 1)
+    env = os.environ.copy()
+    env["CLEARSIGHT_AZ_EXE"] = str(stub)
+
+    result = _run_powershell(
+        _write_az_helper_harness(tmp_path),
+        ["-ScriptPath", str(DEPLOY_SCRIPT), "-FunctionName", function_name],
+        env,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "THREW:" in result.stdout, result.stdout + result.stderr
+    message = result.stdout.split("THREW:", 1)[1].strip()
+    assert message, result.stdout + result.stderr
+    assert STDERR_MARKER in message, result.stdout + result.stderr

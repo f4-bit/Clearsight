@@ -153,7 +153,7 @@ export function createInferenceProcessor(
     }
 
     if (!isTerminalInferenceStatus(statusResponse.status)) {
-      // Timeout is retryable; BullMQ persists FAILED only when attempts run out.
+      // Timeout is retryable; the queue persists FAILED only when attempts run out.
       throw new InferenceRetryableError();
     }
 
@@ -494,7 +494,7 @@ async function resolveImageUrl(
     try {
       return await deps.signMlDownloadUrl(storagePath);
     } catch {
-      // Signing is retried; BullMQ writes FAILED only after attempts run out.
+      // Signing is retried; the queue writes FAILED only after attempts run out.
       throw new InferenceRetryableError();
     }
   }

@@ -28,3 +28,5 @@ backend/dist/
 **/.mypy_cache
 **/.pytest_cache
 **/.ruff_cache
+!models_cache
+!models_cache/**

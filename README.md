@@ -1,7 +1,8 @@
 # Clearsight
 Clinical ophthalmology platform for glaucoma detection from bilateral retinographies (see PROJECT.md).
 - frontend/: Next.js clinical UI
-- backend/: Fastify API, Prisma data layer, BullMQ workers
+- backend/: Fastify + Prisma service with a PostgreSQL-backed inference worker
+- Inference queue: PostgreSQL (`SKIP LOCKED` + 300 s lease); Redis is not required. See `backend/README.md` and `docs/hito29-inference-postgres-queue-runbook.md`.
 - ml/: model architectures, ONNX inference, Grad-CAM, MLOps
 - docker/: image build stubs
 - scripts/: developer and MLOps helper stubs

@@ -122,7 +122,7 @@ export class MlClient implements ClinicalContextPreparer {
     this.baseUrl = (options.baseUrl ?? env.ML_SERVICE_URL).replace(/\/$/, "");
     const token = options.apiToken === undefined ? env.ML_API_TOKEN : options.apiToken;
     this.authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
-    this.timeoutMs = options.timeoutMs ?? 15_000;
+    this.timeoutMs = options.timeoutMs ?? 60_000;
   }
 
   private async request(path: string, init: MlRequestInit): Promise<unknown> {

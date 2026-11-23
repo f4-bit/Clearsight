@@ -80,8 +80,8 @@ function publicationErrorCode(error: unknown): string {
 
 /**
  * Bounded, non-overlapping dispatch reconciliation: claim due PENDING rows,
- * dispatch each one, then record the outcome. The timer is intentionally
- * unref'd so tests or a worker shutdown are not kept alive by it.
+ * dispatch each one, then record the outcome. The timer stays ref'd so the
+ * standalone worker process stays alive; `stop()` clears it.
  */
 export function startDispatchReconciler(
   deps: DispatchReconcilerDeps,
@@ -176,7 +176,9 @@ export function startDispatchReconciler(
     timer = schedule(() => {
       void runOnce();
     }, intervalMs);
-    timer.unref?.();
+    // The timer must stay ref'd: in the standalone worker the Prisma pool is
+    // lazy, so an unref'd timer would let the event loop drain and the process
+    // exit before the first reconcile runs.
   }
 
   return {

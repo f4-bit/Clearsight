@@ -1,17 +1,13 @@
 import type { ClinicalFeatures } from "../schemas/clinical.js";
 
-export const INFERENCE_QUEUE_NAME = "inference-jobs";
+/** Due time and explicit claim lease for the PostgreSQL-backed poller. */
+export const INFERENCE_PROCESS_POLL_INTERVAL_MS = 1_000;
+export const INFERENCE_PROCESS_BATCH_SIZE = 4;
+export const INFERENCE_PROCESS_MAX_ATTEMPTS = 3;
+export const INFERENCE_PROCESS_CLAIM_LEASE_SECONDS = 300;
+
 export const INFERENCE_POLL_INTERVAL_MS = 2_000;
 export const INFERENCE_MAX_POLLS = 60;
-export const INFERENCE_DEFAULT_JOB_OPTIONS = {
-  attempts: 3,
-  backoff: {
-    type: "exponential" as const,
-    delay: 2_000,
-  },
-  removeOnComplete: 1_000,
-  removeOnFail: 5_000,
-} as const;
 
 export const INFERENCE_TERMINAL_STATUSES = [
   "COMPLETED",
@@ -29,6 +25,13 @@ export function isTerminalInferenceStatus(
     status === "FAILED"
   );
 }
+
+/**
+ * Exponential retry policy for the durable queue: 2s * 2^attempts, capped.
+ * The repository applies it in SQL so the increment and the schedule are one
+ * atomic statement.
+ */
+export const INFERENCE_PROCESS_RETRY_CAP_SECONDS = 120;
 
 export interface InferenceExpectedContext {
   schemaVersion: string;

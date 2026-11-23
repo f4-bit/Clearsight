@@ -7,13 +7,20 @@
     Creates an isolated Azure run identified by `clearsight-<runId>`:
 
       1. Resource group (tags on every resource)
-      2. Blob Storage account + containers (raw, gradcam, mask, overlay, pdf, models)
-      3. Azure Container Registry (Basic) and five SHA-tagged images
+      2. Blob Storage account + containers (raw, gradcam, mask, overlay, pdf)
+      3. Azure Container Registry (Basic) and four SHA-tagged images
       4. PostgreSQL Flexible Server + database + firewall
-      5. Redis 7 as an internal Container App (TCP 6379, no public ingress)
-      6. Container Apps environment
-      7. Manual Container Apps jobs: prisma:deploy (migrate) and admin:bootstrap
-      8. Container Apps: ml-service, backend, worker, frontend
+      5. Container Apps environment
+      6. Container Apps: ml-service, backend, worker, frontend
+
+    The backend image applies `prisma:deploy` migrations on startup and, when
+    `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` are configured, runs
+    `admin:bootstrap` before starting the server. This avoids Container Apps
+    Jobs, which are not available in the "express" tier.
+
+    Redis is intentionally NOT provisioned. The backend and worker use the
+    PostgreSQL-backed inference queue and the ML service runs with an in-memory
+    queue (ML_REDIS_URL is never set).
 
     Without `-Apply` the script only computes and writes a plan manifest; it
     never calls a mutating `az` verb. With `-Apply` it re-validates the
@@ -87,8 +94,6 @@ param(
     [securestring]$PostgresPassword,
     [string]$BootstrapAdminEmail = "",
     [securestring]$BootstrapAdminPassword,
-    [string]$ModelsDir = "",
-    [switch]$SkipModelUpload,
     [string]$ManifestRoot = "",
     [int]$CleanupTimeoutSeconds = 300,
     [int]$CleanupPollSeconds = 10
@@ -233,14 +238,11 @@ $StorageName = $compact
 $acrName = $compact
 if ($acrName.Length -gt 50) { $acrName = $acrName.Substring(0, 50) }
 $PostgresName = "$RunPrefix-pg"
-$RedisApp = "$RunPrefix-redis"
 $EnvName = "$RunPrefix-env"
 $MlApp = "$RunPrefix-ml"
 $BackendApp = "$RunPrefix-backend"
 $WorkerApp = "$RunPrefix-worker"
 $FrontendApp = "$RunPrefix-frontend"
-$MigrateJob = "$RunPrefix-migrate"
-$BootstrapJob = "$RunPrefix-bootstrap"
 
 # A workload-profiles (non-express) environment is required for TCP ingress.
 # The default profile is "Consumption"; the script verifies it after creating
@@ -282,11 +284,9 @@ $Containers = @(
     "gradcam-overlays",
     "segmentation-masks",
     "segmentation-overlays",
-    "clinical-reports",
-    "models"
+    "clinical-reports"
 )
 
-if (-not $ModelsDir) { $ModelsDir = Join-Path $RepoRoot "models_cache" }
 if (-not $ManifestRoot) { $ManifestRoot = Join-Path $RepoRoot "artifacts/azure-runs" }
 $script:ManifestPath = [System.IO.Path]::Combine($ManifestRoot, $runIdSafe, "manifest.json")
 
@@ -318,9 +318,31 @@ function Invoke-AzCli {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [string]$Operation = "az"
     )
-    & $script:AzExe @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed (exit $LASTEXITCODE): $Operation"
+    # Native stderr (az progress/warnings) is surfaced as a RemoteException
+    # under $ErrorActionPreference = "Stop" in PowerShell 5.1 and can abort the
+    # deploy with an empty message. Run the native call under "Continue" and
+    # capture stderr to a temp file so the exit code and stderr remain readable.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        & $script:AzExe @Arguments 2>$stderrPath
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $stderrText = ""
+            if (Test-Path -LiteralPath $stderrPath) {
+                $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+            }
+            if ($null -eq $stderrText) { $stderrText = "" }
+            $stderrText = ("$stderrText").Trim()
+            throw "Azure CLI command failed (exit $exitCode): $Operation. stderr: $stderrText"
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+        if (Test-Path -LiteralPath $stderrPath) {
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -345,9 +367,29 @@ function Get-AzValue {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [string]$Operation = "az query"
     )
-    $value = & $script:AzExe @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI query failed (exit $LASTEXITCODE): $Operation"
+    # Same native-stderr hazard as Invoke-AzCli: capture stdout in $value and
+    # stderr in a temp file while the native call runs under "Continue".
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $value = & $script:AzExe @Arguments 2>$stderrPath
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $stderrText = ""
+            if (Test-Path -LiteralPath $stderrPath) {
+                $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+            }
+            if ($null -eq $stderrText) { $stderrText = "" }
+            $stderrText = ("$stderrText").Trim()
+            throw "Azure CLI query failed (exit $exitCode): $Operation. stderr: $stderrText"
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+        if (Test-Path -LiteralPath $stderrPath) {
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
     }
     return ("$value").Trim()
 }
@@ -425,7 +467,6 @@ $script:Manifest = [ordered]@{
     resources       = @()
     images          = [ordered]@{}
     endpoints       = [ordered]@{}
-    jobs            = [ordered]@{ migrate = "not-created"; bootstrap = "not-created" }
     cleanup         = [ordered]@{ status = "not-started"; checkedAt = $null; residuals = @(); message = "" }
 }
 
@@ -446,14 +487,12 @@ $ImageSha = $ImageSha.ToLowerInvariant()
 
 $imageRefs = [ordered]@{
     "backend"    = "clearsight-backend:$ImageSha"
-    "migrate"    = "clearsight-migrate:$ImageSha"
     "worker"     = "clearsight-worker:$ImageSha"
     "frontend"   = "clearsight-frontend:$ImageSha"
     "ml-service" = "clearsight-ml-service:$ImageSha"
 }
 $dockerfiles = @{
     "backend"    = "docker/backend.Dockerfile"
-    "migrate"    = "docker/migrate.Dockerfile"
     "worker"     = "docker/worker.Dockerfile"
     "frontend"   = "docker/frontend.Dockerfile"
     "ml-service" = "docker/ml-service.Dockerfile"
@@ -472,9 +511,8 @@ function Write-Plan {
     Write-Host "  Storage        : $StorageName"
     Write-Host "  Registry       : $acrName"
     Write-Host "  PostgreSQL     : $PostgresName/$PostgresDatabase"
-    Write-Host "  Redis          : $RedisApp (internal TCP 6379)"
+    Write-Host "  Redis          : not provisioned (PostgreSQL queue in backend/worker; in-memory in ML)"
     Write-Host "  Container apps : $MlApp, $BackendApp, $WorkerApp, $FrontendApp"
-    Write-Host "  Jobs           : $MigrateJob (prisma:deploy), $BootstrapJob (admin:bootstrap)"
     Write-Host "  Images         : $($imageRefs.Values -join ', ')"
     Write-Host "  Manifest       : $script:ManifestPath"
     Write-Host "  Tags           : $($tagArgs -join ', ')"
@@ -509,23 +547,6 @@ function Assert-DeployGate {
             throw "GATE: el provider $namespace no está registrado (permisos/quota no verificados)."
         }
     }
-}
-
-function Wait-AzJobSucceeded {
-    param([string]$JobName, [int]$TimeoutSeconds = 900)
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $status = Get-AzValue @(
-            "containerapp", "job", "execution", "list",
-            "--name", $JobName,
-            "--resource-group", $rgName,
-            "--query", "[0].properties.status", "-o", "tsv"
-        ) -Operation "job execution $JobName"
-        if ($status -eq "Succeeded") { return }
-        if ($status -eq "Failed") { throw "El job '$JobName' falló." }
-        Start-Sleep -Seconds 10
-    }
-    throw "Timeout esperando al job '$JobName'."
 }
 
 function Invoke-Cleanup {
@@ -630,35 +651,6 @@ try {
             "--public-access", "off",
             "--output", "none"
         ) -Operation "storage container $container"
-    }
-
-    if ($SkipModelUpload) {
-        Write-Warn "Skipping model upload (-SkipModelUpload)."
-    }
-    elseif (-not (Test-Path -LiteralPath $ModelsDir)) {
-        Write-Warn "Models directory '$ModelsDir' not found; skipping upload."
-    }
-    else {
-        $modelFiles = @(Get-ChildItem -LiteralPath $ModelsDir -File -ErrorAction SilentlyContinue)
-        if ($modelFiles.Count -eq 0) {
-            Write-Warn "No model artifacts found in '$ModelsDir'; skipping upload."
-        }
-        else {
-            Write-Info "Uploading $($modelFiles.Count) artifact(s) to the 'models' container..."
-            foreach ($file in $modelFiles) {
-                Invoke-AzCli @(
-                    "storage", "blob", "upload",
-                    "--account-name", $StorageName,
-                    "--account-key", $storageKey,
-                    "--container-name", "models",
-                    "--name", $file.Name,
-                    "--file", $file.FullName,
-                    "--overwrite",
-                    "--only-show-errors",
-                    "--output", "none"
-                ) -Operation "storage blob upload"
-            }
-        }
     }
 
     # 3. Registry + images ---------------------------------------------------
@@ -799,42 +791,6 @@ try {
     Add-ManifestResource -Type "containerapp.env" -Name $EnvName -Id $envId -ResourceTags $tags
     Save-Manifest
 
-    # 6b. Redis (self-hosted Container App) ----------------------------------
-    # Internal TCP ingress only: apps in the same Container Apps environment
-    # resolve <redis-app>.<env-default-domain>; there is no public ingress and
-    # no auth secret. REDIS_URL is redis://<redis-fqdn>:6379/0 for backend and
-    # worker.
-    if (Test-AzExists @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName)) {
-        $redisAppId = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis app id"
-        Assert-RunOwnership "container app" $RedisApp $redisAppId
-    }
-    else {
-        Invoke-AzCli (@(
-            "containerapp", "create",
-            "--name", $RedisApp,
-            "--resource-group", $rgName,
-            "--environment", $EnvName,
-            "--image", "redis:7-alpine",
-            "--target-port", "6379",
-            "--ingress", "internal",
-            "--transport", "tcp",
-            "--cpu", "0.25",
-            "--memory", "0.5Gi",
-            "--min-replicas", "1",
-            "--max-replicas", "1",
-            "--workload-profile-name", $WorkloadProfileName,
-            "--tags"
-        ) + $tagArgs + @("--output", "none")) -Operation "containerapp create redis"
-        $redisAppId = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "redis app id"
-        $script:CreatedAny = $true
-    }
-    $redisFqdn = Get-AzValue @("containerapp", "show", "--name", $RedisApp, "--resource-group", $rgName, "--query", "properties.configuration.ingress.fqdn", "-o", "tsv") -Operation "redis app fqdn"
-    $redisUrl = "redis://${redisFqdn}:6379/0"
-    $script:Manifest["endpoints"]["redis"] = $redisUrl
-    Add-ManifestResource -Type "containerapp" -Name $RedisApp -Id $redisAppId -ResourceTags $tags -Extra @{ image = "redis:7-alpine"; fqdn = $redisFqdn; ingress = "internal"; port = 6379; url = $redisUrl }
-    Save-Manifest
-    Write-Info "Redis internal endpoint: $redisUrl (same Container Apps environment)."
-
     # 7. Derived configuration (secrets stay in memory / Container App secrets).
     $databaseUrl = "postgresql://${PostgresAdmin}:${pgPassword}@${pgHost}:5432/${PostgresDatabase}?sslmode=require"
     $jwtSecret = Register-Secret (New-StrongToken 48)
@@ -856,80 +812,10 @@ try {
         "STORAGE_DOWNLOAD_TTL_SECONDS=3600"
     )
 
-    # 8. Manual jobs: migrate then bootstrap --------------------------------
-    Invoke-AzCli (@(
-        "containerapp", "job", "create",
-        "--name", $MigrateJob,
-        "--resource-group", $rgName,
-        "--environment", $EnvName,
-        "--trigger-type", "Manual",
-        "--replica-timeout", "600",
-        "--replica-retry-limit", "1",
-        "--image", $imageRefs["migrate"],
-        "--registry-server", $acrLoginServer,
-        "--registry-username", $acrUser,
-        "--registry-password", $acrPass,
-        "--cpu", "0.5",
-        "--memory", "1.0Gi",
-        "--secrets", "database-url=$databaseUrl",
-        "--env-vars", "NODE_ENV=production", "DATABASE_URL=secretref:database-url",
-        "--workload-profile-name", $WorkloadProfileName,
-        "--tags"
-    ) + $tagArgs + @("--output", "none")) -Operation "job create migrate"
-    $migrateJobId = Get-AzValue @("containerapp", "job", "show", "--name", $MigrateJob, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "job id migrate"
-    Add-ManifestResource -Type "containerapp.job" -Name $MigrateJob -Id $migrateJobId -ResourceTags $tags -Extra @{ purpose = "prisma:deploy" }
-    $script:CreatedAny = $true
-    Save-Manifest
-
-    Invoke-AzCli @("containerapp", "job", "start", "--name", $MigrateJob, "--resource-group", $rgName, "--output", "none") -Operation "job start migrate"
-    Wait-AzJobSucceeded -JobName $MigrateJob
-    $script:Manifest["jobs"]["migrate"] = "succeeded"
-    Save-Manifest
-
-    $bootstrapPassword = ConvertTo-PlainText $BootstrapAdminPassword
-    if ($BootstrapAdminEmail -and $bootstrapPassword) {
-        Register-Secret $bootstrapPassword | Out-Null
-        Invoke-AzCli (@(
-            "containerapp", "job", "create",
-            "--name", $BootstrapJob,
-            "--resource-group", $rgName,
-            "--environment", $EnvName,
-            "--trigger-type", "Manual",
-            "--replica-timeout", "600",
-            "--replica-retry-limit", "0",
-            "--image", $imageRefs["backend"],
-            "--registry-server", $acrLoginServer,
-            "--registry-username", $acrUser,
-            "--registry-password", $acrPass,
-            "--cpu", "0.5",
-            "--memory", "1.0Gi",
-            "--command", "npm", "run", "admin:bootstrap",
-            "--secrets", "database-url=$databaseUrl", "bootstrap-admin-password=$bootstrapPassword",
-            "--env-vars", "NODE_ENV=production", "DATABASE_URL=secretref:database-url",
-            "BOOTSTRAP_ADMIN_EMAIL=$BootstrapAdminEmail",
-            "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password",
-            "--workload-profile-name", $WorkloadProfileName,
-            "--tags"
-        ) + $tagArgs + @("--output", "none")) -Operation "job create bootstrap"
-        $bootstrapJobId = Get-AzValue @("containerapp", "job", "show", "--name", $BootstrapJob, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "job id bootstrap"
-        Add-ManifestResource -Type "containerapp.job" -Name $BootstrapJob -Id $bootstrapJobId -ResourceTags $tags -Extra @{ purpose = "admin:bootstrap" }
-        $script:CreatedAny = $true
-        Save-Manifest
-
-        Invoke-AzCli @("containerapp", "job", "start", "--name", $BootstrapJob, "--resource-group", $rgName, "--output", "none") -Operation "job start bootstrap"
-        Wait-AzJobSucceeded -JobName $BootstrapJob
-        $script:Manifest["jobs"]["bootstrap"] = "succeeded"
-    }
-    else {
-        Write-Warn "Bootstrap admin omitido: pase -BootstrapAdminEmail y -BootstrapAdminPassword (SecureString)."
-        $script:Manifest["jobs"]["bootstrap"] = "skipped-missing-credentials"
-    }
-    Save-Manifest
-
     # 9. ML service ----------------------------------------------------------
     $mlSecrets = @("azure-storage-key=$storageKey", "ml-api-token=$mlToken")
     $mlEnv = @(
-        "ML_INFERENCE_BACKEND=onnx",
+        "ML_INFERENCE_BACKEND=pytorch",
         "ML_DEVICE=cpu",
         "ML_HOST=0.0.0.0",
         "ML_PORT=8000",
@@ -956,7 +842,7 @@ try {
             "--name", $MlApp,
             "--resource-group", $rgName,
             "--environment", $EnvName,
-            "--image", $imageRefs["ml-service"],
+            "--image", "$acrLoginServer/$($imageRefs['ml-service'])",
             "--registry-server", $acrLoginServer,
             "--registry-username", $acrUser,
             "--registry-password", $acrPass,
@@ -993,9 +879,21 @@ try {
         "JWT_SECRET=secretref:jwt-secret",
         "EXPORT_HMAC_SECRET=secretref:export-hmac-secret",
         "ML_API_TOKEN=secretref:ml-api-token",
-        "REDIS_URL=$redisUrl",
         "ML_SERVICE_URL=https://$mlFqdn"
     ) + $commonBuckets
+    $bootstrapPassword = ConvertTo-PlainText $BootstrapAdminPassword
+    if ($BootstrapAdminEmail -and $bootstrapPassword) {
+        Register-Secret $bootstrapPassword | Out-Null
+        $backendSecrets += "bootstrap-admin-password=$bootstrapPassword"
+        $backendEnv += @(
+            "BOOTSTRAP_ADMIN_EMAIL=$BootstrapAdminEmail",
+            "BOOTSTRAP_ADMIN_FULL_NAME=Clearsight Administrator",
+            "BOOTSTRAP_ADMIN_PASSWORD=secretref:bootstrap-admin-password"
+        )
+    }
+    else {
+        Write-Warn "Bootstrap admin omitido: pase -BootstrapAdminEmail y -BootstrapAdminPassword (SecureString) para crear el administrador inicial."
+    }
     if (Test-AzExists @("containerapp", "show", "--name", $BackendApp, "--resource-group", $rgName)) {
         $backendAppId = Get-AzValue @("containerapp", "show", "--name", $BackendApp, "--resource-group", $rgName, "--query", "id", "-o", "tsv") -Operation "backend app id"
         Assert-RunOwnership "container app" $BackendApp $backendAppId
@@ -1006,7 +904,7 @@ try {
             "--name", $BackendApp,
             "--resource-group", $rgName,
             "--environment", $EnvName,
-            "--image", $imageRefs["backend"],
+            "--image", "$acrLoginServer/$($imageRefs['backend'])",
             "--registry-server", $acrLoginServer,
             "--registry-username", $acrUser,
             "--registry-password", $acrPass,
@@ -1031,14 +929,17 @@ try {
     $workerSecrets = @(
         "database-url=$databaseUrl",
         "azure-storage-key=$storageKey",
+        "jwt-secret=$jwtSecret",
+        "export-hmac-secret=$exportSecret",
         "ml-api-token=$mlToken"
     )
     $workerEnv = @(
         "NODE_ENV=production",
         "DATABASE_URL=secretref:database-url",
         "AZURE_STORAGE_ACCOUNT_KEY=secretref:azure-storage-key",
+        "JWT_SECRET=secretref:jwt-secret",
+        "EXPORT_HMAC_SECRET=secretref:export-hmac-secret",
         "ML_API_TOKEN=secretref:ml-api-token",
-        "REDIS_URL=$redisUrl",
         "ML_SERVICE_URL=https://$mlFqdn"
     ) + $commonBuckets
     if (Test-AzExists @("containerapp", "show", "--name", $WorkerApp, "--resource-group", $rgName)) {
@@ -1051,13 +952,13 @@ try {
             "--name", $WorkerApp,
             "--resource-group", $rgName,
             "--environment", $EnvName,
-            "--image", $imageRefs["worker"],
+            "--image", "$acrLoginServer/$($imageRefs['worker'])",
             "--registry-server", $acrLoginServer,
             "--registry-username", $acrUser,
             "--registry-password", $acrPass,
             "--cpu", "0.5",
             "--memory", "1.0Gi",
-            "--min-replicas", "0",
+            "--min-replicas", "1",
             "--max-replicas", "1",
             "--secrets"
         ) + $workerSecrets + @("--env-vars") + $workerEnv + @("--workload-profile-name", $WorkloadProfileName, "--tags") + $tagArgs + @("--output", "none")) -Operation "containerapp create worker"
@@ -1086,7 +987,7 @@ try {
             "--name", $FrontendApp,
             "--resource-group", $rgName,
             "--environment", $EnvName,
-            "--image", $imageRefs["frontend"],
+            "--image", "$acrLoginServer/$($imageRefs['frontend'])",
             "--registry-server", $acrLoginServer,
             "--registry-username", $acrUser,
             "--registry-password", $acrPass,

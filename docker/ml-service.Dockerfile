@@ -17,6 +17,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY ml /app/ml
+COPY models_cache /models
 
 RUN python -m pip install --no-cache-dir torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cpu
 RUN python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -e "/app/ml"

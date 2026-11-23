@@ -26,6 +26,7 @@ const INTEGRATION_INCLUDE = [
   "tests/inference-idempotency.integration.test.ts",
   "tests/inference-dispatch.integration.test.ts",
   "tests/inference-worker.integration.test.ts",
+  "tests/inference-poller.integration.test.ts",
   "tests/migration-deploy.integration.test.ts",
   "tests/admin-bootstrap.integration.test.ts",
   "tests/jwt.test.ts",
